@@ -119,6 +119,10 @@ class OpenStep(StepPanel):
         cad_help.setFlat(True)
         cad_help.clicked.connect(lambda: HelpDialog("file.export_step", self.window()).exec())
         self.add(with_help(cad_help, "file.export_step"))
+        mesh_help = QPushButton("STL·FBX 등 메시 파일은?")
+        mesh_help.setFlat(True)
+        mesh_help.clicked.connect(lambda: HelpDialog("file.mesh_formats", self.window()).exec())
+        self.add(with_help(mesh_help, "file.mesh_formats"))
 
         samples = QHBoxLayout()
         for label, name in (("예제: 브래킷", "bracket"), ("예제: 판 2장", "two_plates")):

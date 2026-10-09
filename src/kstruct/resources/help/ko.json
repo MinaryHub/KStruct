@@ -3,7 +3,10 @@
     "title": "KStruct 사용 안내",
     "short": "왼쪽의 1~7단계를 차례로 따라가면 해석이 끝납니다. 모든 ? 를 누르면 설명이 나옵니다.",
     "detail": "<b>순서</b><br>1. 모델 열기 → 2. 재료 → 3. 고정 → 4. 하중 → 5. 메시 → 6. 해석 → 7. 결과<br><br><b>마우스</b><br>• 왼쪽 드래그: 회전<br>• 휠: 확대·축소<br>• 가운데 버튼 또는 Shift+드래그: 이동<br>• 클릭: 면 선택, Ctrl+클릭: 여러 면 선택<br>• F 키: 화면 맞춤<br><br>모든 버튼과 입력칸에 마우스를 올리면 짧은 설명이, ? 를 누르면 자세한 설명이 나옵니다.",
-    "related": ["step.open", "step.result"]
+    "related": [
+      "step.open",
+      "step.result"
+    ]
   },
   "project.new": {
     "title": "새로 시작",
@@ -23,8 +26,12 @@
   "step.open": {
     "title": "1단계: 모델 열기",
     "short": "해석할 부품의 3D 파일을 불러옵니다.",
-    "detail": "CAD 프로그램에서 만든 부품 파일을 엽니다.<br><br><b>지원 형식</b>: STEP(.step, .stp), IGES(.iges, .igs)<br><br>SolidWorks·Inventor·CATIA 원본 파일은 해당 프로그램에서 STEP으로 저장한 뒤 열어 주세요.<br><br>어셈블리를 STEP으로 저장해 열면 각 부품이 따로 불러와지고, 맞닿은 면은 자동으로 '접합'됩니다.",
-    "related": ["file.export_step", "connection.bonded"]
+    "detail": "CAD 프로그램에서 만든 부품 파일을 엽니다.<br><br><b>CAD 형식 (권장)</b>: STEP(.step, .stp), IGES(.iges, .igs)<br><b>메시 형식</b>: STL, OBJ, FBX, glTF(.gltf, .glb), 3MF<br><br>SolidWorks·Inventor·CATIA 원본 파일은 해당 프로그램에서 STEP으로 저장한 뒤 열어 주세요.<br><br>어셈블리를 STEP으로 저장해 열면 각 부품이 따로 불러와지고, 맞닿은 면은 자동으로 '접합'됩니다.",
+    "related": [
+      "file.export_step",
+      "file.mesh_formats",
+      "connection.bonded"
+    ]
   },
   "file.export_step": {
     "title": "원본 CAD 파일은 어떻게 여나요?",
@@ -50,13 +57,18 @@
     "title": "부품 접합",
     "short": "맞닿은 부품들이 하나처럼 붙어 있다고 보고 계산합니다.",
     "detail": "여러 부품을 함께 해석하려면 부품끼리 어떻게 붙어 있는지 알려줘야 합니다. '접합'은 용접·접착처럼 맞닿은 면이 <b>떨어지거나 미끄러지지 않는다</b>고 가정합니다.<br><br>'맞닿은 면 자동으로 찾기'는 서로 마주 닿아 있는 평면과, 축이 구멍에 꼭 맞게 끼워진 원통면을 찾아 접합합니다.<br><br><b>주의</b>: 볼트로 조인 판처럼 실제로는 벌어질 수 있는 곳도 접합으로 계산되므로 결과가 실제보다 튼튼하게 나올 수 있습니다.",
-    "related": ["step.fixture"]
+    "related": [
+      "step.fixture"
+    ]
   },
   "step.material": {
     "title": "2단계: 재료",
     "short": "부품이 어떤 재료로 만들어지는지 고릅니다.",
     "detail": "재료에 따라 단단함(탄성계수)과 견딜 수 있는 힘(항복강도)이 달라집니다. 같은 모양이라도 알루미늄은 강철보다 약 3배 더 휩니다.<br><br>부품 목록에서 부품을 고르고, 아래 목록에서 재료를 선택하세요.",
-    "related": ["material.standard", "material.properties"]
+    "related": [
+      "material.standard",
+      "material.properties"
+    ]
   },
   "material.standard": {
     "title": "적용 기준",
@@ -77,7 +89,11 @@
     "title": "3단계: 고정",
     "short": "부품이 어디에 붙잡혀 있는지 지정합니다.",
     "detail": "실제로 볼트로 조이거나, 용접되거나, 바닥에 놓여 움직이지 않는 면을 클릭한 뒤 고정 종류를 고르고 '선택한 면을 고정'을 누릅니다.<br><br>고정이 하나도 없으면 부품이 공중에 떠 있는 상태라 해석할 수 없습니다. 고정한 면은 화면에 초록색(완전 고정), 청록색(미끄럼), 보라색(핀)으로 표시됩니다.",
-    "related": ["fixture.fixed", "fixture.roller", "fixture.pin"]
+    "related": [
+      "fixture.fixed",
+      "fixture.roller",
+      "fixture.pin"
+    ]
   },
   "fixture.fixed": {
     "title": "완전 고정",
@@ -98,13 +114,20 @@
     "title": "4단계: 하중",
     "short": "부품에 가해지는 힘이나 압력을 지정합니다.",
     "detail": "힘이 걸리는 면을 클릭하고, 하중 종류와 크기·방향을 입력한 뒤 '하중 추가'를 누릅니다. 하중이 걸린 면은 주황색과 화살표로 표시됩니다.<br><br><b>참고</b>: 1 kg의 물체가 누르는 힘은 약 9.81 N(뉴턴)입니다. 100 kg이면 약 981 N입니다.",
-    "related": ["load.force", "load.pressure", "load.gravity", "load.temperature"]
+    "related": [
+      "load.force",
+      "load.pressure",
+      "load.gravity",
+      "load.temperature"
+    ]
   },
   "load.force": {
     "title": "힘",
     "short": "선택한 면 전체에 고르게 나누어 걸리는 힘(N)입니다.",
     "detail": "입력한 힘이 선택한 면의 넓이에 비례해 고르게 퍼진다고 가정합니다. 여러 면을 선택하면 그 면들에 합쳐서 입력한 크기만큼 걸립니다(면마다 따로 걸리는 것이 아님).<br><br>무게로 생각하면 쉽습니다: 50 kg을 매달면 약 490 N입니다.",
-    "related": ["load.direction"]
+    "related": [
+      "load.direction"
+    ]
   },
   "load.direction": {
     "title": "힘의 방향",
@@ -130,7 +153,9 @@
     "title": "5단계: 메시",
     "short": "계산을 위해 부품을 작은 조각으로 나눕니다.",
     "detail": "컴퓨터는 부품을 수많은 작은 사면체 조각(요소)으로 나누어 계산합니다. 조각이 작을수록 정확하지만 계산이 오래 걸립니다.<br><br>보통은 '보통'을 그대로 쓰면 됩니다. 이 단계를 건너뛰어도 6단계에서 자동으로 만듭니다.",
-    "related": ["mesh.quality"]
+    "related": [
+      "mesh.quality"
+    ]
   },
   "mesh.quality": {
     "title": "메시 품질",
@@ -146,7 +171,11 @@
     "title": "7단계: 결과",
     "short": "부품이 안전한지, 얼마나 휘는지 확인합니다.",
     "detail": "맨 위의 판정 카드가 결론입니다. 색으로 응력(부품 내부에 걸리는 힘의 세기)과 변형을 보여주며, 빨간색일수록 위험한 곳입니다.<br><br>결과 위를 클릭하면 그 위치의 값이 표시됩니다. '보고서 저장'으로 PDF 보고서를 만들 수 있습니다.",
-    "related": ["result.verdict", "result.field", "result.disclaimer"]
+    "related": [
+      "result.verdict",
+      "result.field",
+      "result.disclaimer"
+    ]
   },
   "result.verdict": {
     "title": "판정",
@@ -172,5 +201,10 @@
     "title": "결과 활용 시 주의",
     "short": "참고용 결과입니다. 최종 판단은 자격을 갖춘 기술자가 해야 합니다.",
     "detail": "이 프로그램은 선형 정적 해석을 합니다. 다음 경우에는 결과가 실제와 크게 다를 수 있습니다.<br>• 변형이 큰 경우(얇은 판, 스프링)<br>• 재료가 항복한 이후의 거동<br>• 반복 하중에 의한 피로, 충격, 진동<br>• 부품끼리 미끄러지거나 벌어지는 접촉<br>• 고온, 부식, 용접 품질<br><br>실제 제작과 사용 여부는 하중 조건, 재료 성적서, 관련 법규를 고려해 자격을 갖춘 기술자가 최종 판단해야 합니다."
+  },
+  "file.mesh_formats": {
+    "title": "메시 형식(STL·OBJ·FBX·glTF·3MF)으로 열 때",
+    "short": "삼각형으로 된 파일도 열 수 있지만, 가능하면 STEP을 쓰세요.",
+    "detail": "메시 형식은 겉면을 작은 삼각형으로 근사한 파일입니다. 3D 프린팅, 게임·그래픽 프로그램에서 많이 씁니다.<br><br><b>주의할 점</b><br>• 면이 완전히 닫혀 있어야(구멍·틈이 없어야) 속이 찬 물체로 해석할 수 있습니다.<br>• 평평한 면은 하나의 면으로 합쳐지지만, 둥근 면(구멍 안쪽 등)은 작은 조각으로 나뉘어 있어 Ctrl+클릭으로 여러 조각을 함께 골라야 합니다.<br>• 둥근 부분이 각져 있어 그 근처 응력이 실제와 다를 수 있습니다.<br><br><b>단위</b>: STL·OBJ는 mm, glTF는 m, FBX·3MF는 파일에 적힌 단위로 읽습니다. 크기가 이상하면 원본 프로그램에서 mm 단위로 다시 저장하세요."
   }
 }

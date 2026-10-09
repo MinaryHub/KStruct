@@ -44,8 +44,12 @@ def _read_shape(path: Path) -> TopoDS_Shape:
 
 
 def load_cad(path: str | Path) -> Project:
-    """Read a STEP/IGES file into a new Project (lengths in mm)."""
+    """Read a CAD (STEP/IGES) or mesh (STL/OBJ/glTF/3MF/FBX) file into a new Project (mm)."""
     path = Path(path)
+    from kstruct.geometry.mesh_import import MESH_SUFFIXES, load_mesh
+
+    if path.suffix.lower() in MESH_SUFFIXES:
+        return load_mesh(path)
     shape = _read_shape(path)
 
     solids: list[TopoDS_Shape] = []

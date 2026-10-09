@@ -38,7 +38,12 @@ from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 from kstruct.ui.viewer import ModelViewer, ResultField
 from kstruct.ui.worker import run_job
 
-CAD_FILTER = "3D CAD 파일 (*.step *.stp *.iges *.igs);;모든 파일 (*)"
+CAD_FILTER = (
+    "모든 3D 파일 (*.step *.stp *.iges *.igs *.stl *.obj *.fbx *.gltf *.glb *.3mf *.kst);;"
+    "CAD 파일 (*.step *.stp *.iges *.igs);;"
+    "메시 파일 (*.stl *.obj *.fbx *.gltf *.glb *.3mf);;"
+    "모든 파일 (*)"
+)
 PROJECT_FILTER = f"KStruct 프로젝트 (*{SUFFIX})"
 SAMPLES = {"bracket": l_bracket, "two_plates": two_plates}
 
