@@ -794,6 +794,8 @@ class ResultStep(StepPanel):
         self.mode_label = QLabel("진동 모드")
         self.mode_box = with_help(self.mode, "result.mode")
         form.addRow(self.mode_label, self.mode_box)
+        self.scale_note = _hint("")
+        form.addRow("", self.scale_note)
         self.animate = QCheckBox("움직임 보기 (애니메이션)")
         self.animate.toggled.connect(app.viewer.set_animated)
         form.addRow("", self.animate)

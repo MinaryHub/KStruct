@@ -554,8 +554,14 @@ class MainWindow(QMainWindow):
         panel: steps.ResultStep = self.panels[STEP_RESULT]
         field = self.result_field(panel.field_key())
         scale = self.deformation_scale(panel.scale_key())
-        if scale not in (0.0, 1.0) and not isinstance(self.result, ModalResult):
-            field.title += f"  [변형 ×{scale:,.0f}]"
+        if isinstance(self.result, ModalResult) or scale == 0.0:
+            panel.scale_note.setText("")
+        elif scale == 1.0:
+            panel.scale_note.setText("변형을 실제 크기로 보여줍니다.")
+        else:
+            panel.scale_note.setText(
+                f"변형을 {scale:,.0f}배 확대해서 보여줍니다. 회색 선은 변형 전 모양입니다."
+            )
         self.viewer.show_result(
             self.mesh,
             self._displacement(),

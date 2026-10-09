@@ -1,0 +1,75 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Headless display (VTK / Qt tests)
+        uses: pyvista/setup-headless-display-action@v3
+        with:
+          qt: true
+
+      - name: Install
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check src tests
+
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Freeze
+        run: uv run pyinstaller packaging/kstruct.spec --noconfirm --log-level WARN
+
+      - name: Smoke test frozen app
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            BIN=dist/KStruct.app/Contents/MacOS/KStruct
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            BIN=dist/KStruct/KStruct.exe
+          else
+            BIN=dist/KStruct/KStruct
+          fi
+          "$BIN" --selftest
+          "$BIN" --selftest-gui selftest.png
+
+      - name: Package (Windows installer)
+        if: runner.os == 'Windows'
+        run: |
+          choco install innosetup -y --no-progress
+          iscc /DAppVersion=${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }} packaging\windows\kstruct.iss
+
+      - name: Package (macOS dmg)
+        if: runner.os == 'macOS'
+        run: hdiutil create -volname KStruct -srcfolder dist/KStruct.app -ov -format UDZO dist/KStruct-macOS.dmg
+
+      - name: Package (Linux tarball)
+        if: runner.os == 'Linux'
+        run: tar -C dist -czf dist/KStruct-linux-x86_64.tar.gz KStruct
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KStruct-${{ matrix.os }}
+          path: |
+            dist/KStruct-Setup-*.exe
+            dist/KStruct-macOS.dmg
+            dist/KStruct-linux-x86_64.tar.gz
+            selftest.png
+          if-no-files-found: error
