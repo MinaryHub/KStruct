@@ -156,6 +156,17 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             "최대 응력이 고정한 면 가장자리에 있습니다. 완전 고정의 경계에서는 응력이 실제보다 "
             "크게 계산되는 경우가 많습니다(응력 특이점). 고정면에서 조금 떨어진 곳의 값도 확인하세요."
         )
+    bolt_nodes = result.bolt_nodes if result.bolt_nodes is not None else np.zeros(0, int)
+    if len(bolt_nodes):
+        # within about one element of a head / nut bearing area
+        tets = mesh.tets
+        h = float(np.linalg.norm(mesh.nodes[tets[:, 1]] - mesh.nodes[tets[:, 0]], axis=1).mean())
+        bearing = mesh.nodes[bolt_nodes]
+        if any(np.linalg.norm(bearing - s.max_stress_at, axis=1).min() < 1.5 * h for s in parts):
+            notes.append(
+                "최대 응력이 볼트 머리·너트가 누르는 자리에 있습니다. 체결력이 좁은 면적에 몰리는 "
+                "국부 응력이므로, 와셔를 쓰거나 체결력을 낮추거나 볼트 자리 두께를 늘리는 것을 검토하세요."
+            )
     for i, (closed, total) in enumerate(result.contact or []):
         if closed == 0:
             notes.append(f"접촉 {i + 1}: 맞닿은 면이 모두 떨어졌습니다(힘을 전달하지 않음).")

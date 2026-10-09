@@ -569,7 +569,10 @@ class MainWindow(QMainWindow):
                 np.log10(fatigue.life), "수명 (10의 거듭제곱 회)", "RdYlGn", (3, 9), "(log10 회)"
             )
         if key == "vm":
-            return ResultField(r.von_mises, "응력 (MPa)", unit="MPa")
+            # non-negative by definition: pin the colour scale at 0 so quadratic
+            # interpolation overshoot does not show as a negative minimum
+            vm = r.von_mises
+            return ResultField(vm, "응력 (MPa)", clim=(0.0, float(vm.max())), unit="MPa")
         if key == "fos":
             pack = standards.pack(self.project.standard)
             target = max(pack.target(m) for m in r.materials.values())
@@ -578,7 +581,8 @@ class MainWindow(QMainWindow):
             values = np.minimum(r.safety_factor, 2 * target)
             return ResultField(values, "안전율", cmap="RdYlGn", clim=(0, 2 * target))
         if key == "disp":
-            return ResultField(r.displacement_magnitude, "변형량 (mm)", unit="mm")
+            d = r.displacement_magnitude
+            return ResultField(d, "변형량 (mm)", clim=(0.0, float(d.max())), unit="mm")
         if key in ("ux", "uy", "uz"):
             comp = r.displacement[:, "xyz".index(key[1])]
             lim = float(np.abs(comp).max()) or 1.0

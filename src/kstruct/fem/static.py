@@ -48,6 +48,7 @@ class StaticResult:
     thermal: ThermalResult | None = None  # temperature field used for thermal stress
     contact: list[tuple[int, int]] | None = None  # per contact: (closed pairs, total pairs)
     bolts: list | None = None  # fem.bolts.BoltResult per bolt
+    bolt_nodes: np.ndarray | None = None  # nodes under bolt heads / nuts
 
     @property
     def von_mises(self) -> np.ndarray:
@@ -270,4 +271,9 @@ def solve_static(
         thermal=thermal,
         contact=[(int(cs.active.sum()), len(cs.active)) for cs in contacts],
         bolts=evaluate(connectors, u, pulls),
+        bolt_nodes=np.unique(
+            np.concatenate([np.r_[b.weights_a[0], b.weights_b[0]] for b in connectors])
+        )
+        if connectors
+        else np.zeros(0, dtype=int),
     )
