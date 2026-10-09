@@ -1,0 +1,30 @@
+{
+  "_comment": "Standards packs. 'names' picks which material designation column to show. Target safety factors are general machine-design recommendations (static, well-known loads), not values mandated by the standard; users can override them per project.",
+  "default": "iso",
+  "packs": [
+    {"id": "iso", "label": "국제 (ISO)", "names": "iso", "units": "SI",
+     "targets": {"ductile": 1.5, "brittle": 3.0},
+     "fatigue": "FKM 가이드라인 방식의 수정 굿맨(Goodman) 선도",
+     "references": ["ISO 683 / ISO 630 (강재)", "ISO 209 (알루미늄)", "ISO 185, ISO 1083 (주철)", "ISO 898-1 (볼트)"]},
+    {"id": "en", "label": "유럽 (EN)", "names": "en", "units": "SI",
+     "targets": {"ductile": 1.5, "brittle": 3.0},
+     "fatigue": "FKM 가이드라인 방식의 수정 굿맨(Goodman) 선도",
+     "references": ["EN 10025 (구조용강)", "EN 10083 (조질강)", "EN 10088 (스테인리스)", "EN 573 / EN 755 (알루미늄)", "EN 1561, EN 1563 (주철)"]},
+    {"id": "ks", "label": "한국 (KS)", "names": "ks", "units": "SI",
+     "targets": {"ductile": 1.5, "brittle": 3.0},
+     "fatigue": "수정 굿맨(Goodman) 선도",
+     "references": ["KS D 3503 (일반구조용 압연강재)", "KS D 3752 (기계구조용 탄소강)", "KS D 3867 (합금강)", "KS D 3698 / 3705 (스테인리스)", "KS D 6701 (알루미늄)", "KS D 4301, KS D 4302 (주철)"]},
+    {"id": "jis", "label": "일본 (JIS)", "names": "jis", "units": "SI",
+     "targets": {"ductile": 1.5, "brittle": 3.0},
+     "fatigue": "수정 굿맨(Goodman) 선도",
+     "references": ["JIS G 3101 (SS재)", "JIS G 4051 (S-C재)", "JIS G 4053 (SCM재)", "JIS G 4303 / 4304 (SUS)", "JIS H 4000 / 4040 (알루미늄)", "JIS G 5501, G 5502 (주철)"]},
+    {"id": "astm", "label": "미국 (ASTM / ASME)", "names": "astm", "units": "US",
+     "targets": {"ductile": 1.5, "brittle": 3.0},
+     "fatigue": "Modified Goodman (Shigley)",
+     "references": ["ASTM A36, A572", "SAE/AISI 1045, 4140", "ASTM A240 (stainless)", "ASTM B209 / B221 (aluminum)", "ASTM A48, A536 (cast iron)"]},
+    {"id": "gb", "label": "중국 (GB)", "names": "gb", "units": "SI",
+     "targets": {"ductile": 1.5, "brittle": 3.0},
+     "fatigue": "수정 굿맨(Goodman) 선도",
+     "references": ["GB/T 700 (Q235)", "GB/T 1591 (Q355)", "GB/T 699 (45#)", "GB/T 3077 (42CrMo)", "GB/T 20878 (스테인리스)", "GB/T 3190 (알루미늄)", "GB/T 9439, GB/T 1348 (주철)"]}
+  ]
+}

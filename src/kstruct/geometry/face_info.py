@@ -51,3 +51,15 @@ def face_at(shape, point: tuple[float, float, float]) -> int:
     vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex()
     distances = [BRepExtrema_DistShapeShape(vertex, f).Value() for f in faces_of(shape)]
     return min(range(len(distances)), key=distances.__getitem__)
+
+
+def outward_normal(face: TopoDS_Face) -> tuple[float, float, float] | None:
+    """Outward unit normal of a planar face, None for curved faces."""
+    from OCP.TopAbs import TopAbs_REVERSED
+
+    surface = BRepAdaptor_Surface(face)
+    if surface.GetType() != GeomAbs_Plane:
+        return None
+    x, y, z = surface.Plane().Axis().Direction().Coord()
+    sign = -1.0 if face.Orientation() == TopAbs_REVERSED else 1.0
+    return (sign * x, sign * y, sign * z)

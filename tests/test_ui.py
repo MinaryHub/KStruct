@@ -4,18 +4,20 @@ from pathlib import Path
 import pytest
 
 from kstruct.geometry.face_info import face_info
-from kstruct.geometry.samples import _box, two_plates
+from kstruct.geometry.samples import _box
 from kstruct.geometry.tessellate import faces_of
 from kstruct.ui import help as kshelp
 
-SRC = Path(__file__).parents[1] / "src" / "kstruct"
+UI_SRC = Path(__file__).parents[1] / "src" / "kstruct" / "ui"  # help keys live in UI code
+PREFIXES = "step|view|file|help|project|connection|material|fixture|load|mesh|result"
+HELP_KEY = rf'"((?:{PREFIXES})\.[a-z_]+)"'
 
 
 def test_every_help_key_used_in_code_exists():
     topics = kshelp._topics()
     used = set()
-    for py in SRC.rglob("*.py"):
-        used |= set(re.findall(r'"((?:step|view|file|help)\.[a-z_]+)"', py.read_text("utf-8")))
+    for py in UI_SRC.rglob("*.py"):
+        used |= set(re.findall(HELP_KEY, py.read_text("utf-8")))
     assert used, "no help keys found — regex out of date?"
     assert used <= topics.keys(), f"missing help text: {sorted(used - topics.keys())}"
     for t in topics.values():
@@ -29,15 +31,21 @@ def test_face_info_plane():
     assert info.area in (pytest.approx(200), pytest.approx(300), pytest.approx(600))
 
 
-def test_main_window_loads_sample_and_picks_face(qtbot):
+def _window(qtbot):
     from kstruct.ui.main_window import MainWindow
 
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
-    window._open_sample(two_plates, "")
+    return window
 
-    assert window.parts.count() == 2
+
+def test_viewer_picks_upper_plate(qtbot):
+    window = _window(qtbot)
+    window.open_sample("two_plates")
+    assert window.panels[0].parts.count() == 2
+    assert len(window.project.connections) == 1  # auto-bonded on load
+
     viewer = window.viewer
     viewer.plotter.view_xy()  # look down -z: the upper plate covers the center
     viewer.plotter.render()
@@ -45,5 +53,51 @@ def test_main_window_loads_sample_and_picks_face(qtbot):
     ref = viewer._pick(w // 2, h // 2)
     assert ref is not None and ref.part_id == 1
 
-    window._on_face_picked(ref)
-    assert "면 #" in window.face_label.text()
+
+def test_full_workflow(qtbot, tmp_path):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef
+    from kstruct.report.pdf import build_html, write_pdf
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    shape = window.project.parts[0].shape
+
+    window._go(mw.STEP_MATERIAL)
+    material = window.panels[mw.STEP_MATERIAL]
+    material.material.setCurrentIndex(material.material.findData("s235"))
+    material._material_chosen()
+    assert window.project.parts[0].material_id == "s235"
+
+    window._go(mw.STEP_FIXTURE)
+    window.viewer.set_selection([FaceRef(0, face_at(shape, (0, 30, 40)))])  # back of the wall
+    window.panels[mw.STEP_FIXTURE]._add()
+    assert len(window.project.fixtures) == 1
+
+    window._go(mw.STEP_LOAD)
+    loads = window.panels[mw.STEP_LOAD]
+    window.viewer.set_selection([FaceRef(0, face_at(shape, (90, 30, 8)))])  # top of the base
+    loads.value.setValue(2000)
+    loads.direction.setCurrentIndex(0)  # push the face
+    loads._add()
+    load = window.project.loads[0]
+    assert load.vector == pytest.approx((0, 0, -2000))
+
+    window._go(mw.STEP_SOLVE)
+    assert all(ok for ok, _ in window.readiness())
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    assert window.nav.currentRow() == mw.STEP_RESULT
+    assert window.summary.parts[0].min_fos > 0
+    assert window.panels[mw.STEP_RESULT].card_title.text()
+
+    for i in range(window.panels[mw.STEP_RESULT].field.count()):
+        window.panels[mw.STEP_RESULT].field.setCurrentIndex(i)
+
+    images = window.capture_result_images()
+    assert len(images) == 3 and all(png[1:4] == b"PNG" for _, png in images)
+    pdf = write_pdf(
+        build_html(window.project, window.result, window.summary, images), tmp_path / "r.pdf"
+    )
+    assert pdf.stat().st_size > 10_000

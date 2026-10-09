@@ -38,3 +38,14 @@ def test_unsupported_format(tmp_path):
     bad.write_bytes(b"")
     with pytest.raises(GeometryImportError):
         load_cad(bad)
+
+
+def test_touching_faces_are_detected(tmp_path):
+    from kstruct.geometry.contacts import find_touching_faces
+
+    project = load_cad(write_step(two_plates(), tmp_path / "plates.step"))
+    connections = find_touching_faces(project)
+    assert len(connections) == 1
+    c = connections[0]
+    # the upper plate's bottom (smaller) is tied onto the lower plate's top
+    assert c.faces_a[0].part_id == 0 and c.faces_b[0].part_id == 1
