@@ -29,12 +29,25 @@ from PySide6.QtWidgets import (
 from kstruct import standards
 from kstruct.geometry import faces_of
 from kstruct.geometry.face_info import face_info, outward_normal
-from kstruct.model import GRAVITY, AnalysisKind, FaceRef, Fixture, FixtureKind, Load, LoadKind
+from kstruct.model import (
+    GRAVITY,
+    AnalysisKind,
+    ConnectionKind,
+    FaceRef,
+    Fixture,
+    FixtureKind,
+    Load,
+    LoadKind,
+)
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 
 if TYPE_CHECKING:
     from kstruct.ui.main_window import MainWindow
 
+CONNECTION_LABELS = {
+    ConnectionKind.BONDED: "접합 (붙어 있음 — 용접·접착)",
+    ConnectionKind.CONTACT: "접촉 (눌리면 버티고, 당기면 떨어짐·미끄러짐)",
+}
 FIXTURE_LABELS = {
     FixtureKind.FIXED: ("완전 고정", "fixture.fixed"),
     FixtureKind.ROLLER: ("미끄럼 지지", "fixture.roller"),
@@ -158,6 +171,12 @@ class OpenStep(StepPanel):
         self.connections = QListWidget()
         self.connections.setMaximumHeight(110)
         conn.addWidget(self.connections)
+        self.conn_kind = QComboBox()
+        for kind, label in CONNECTION_LABELS.items():
+            self.conn_kind.addItem(label, kind)
+        self.conn_kind.activated.connect(self._kind_chosen)
+        self.connections.currentRowChanged.connect(self._connection_selected)
+        conn.addWidget(with_help(self.conn_kind, "connection.contact"))
         remove = QPushButton("선택한 연결 삭제")
         remove.clicked.connect(self._remove_connection)
         conn.addWidget(remove)
@@ -175,11 +194,33 @@ class OpenStep(StepPanel):
             self.parts.addItem(item)
         self.parts.blockSignals(False)
         self.conn_box.setVisible(bool(project and len(project.parts) > 1))
+        row = self.connections.currentRow()
+        self.connections.blockSignals(True)
         self.connections.clear()
         for c in project.connections if project else []:
+            label = CONNECTION_LABELS[c.kind].split(" ")[0]
             self.connections.addItem(
-                f"접합: {self.describe_faces(c.faces_a)} ↔ {self.describe_faces(c.faces_b)}"
+                f"{label}: {self.describe_faces(c.faces_a)} ↔ {self.describe_faces(c.faces_b)}"
             )
+        self.connections.blockSignals(False)
+        if project and project.connections:
+            self.connections.setCurrentRow(min(max(row, 0), len(project.connections) - 1))
+        self._connection_selected()
+
+    def _connection_selected(self) -> None:
+        row = self.connections.currentRow()
+        self.conn_kind.setEnabled(row >= 0)
+        if row >= 0:
+            kind = self.app.project.connections[row].kind
+            self.conn_kind.setCurrentIndex(self.conn_kind.findData(kind))
+
+    def _kind_chosen(self) -> None:
+        row = self.connections.currentRow()
+        if row < 0:
+            return
+        self.app.project.connections[row].kind = self.conn_kind.currentData()
+        self.changed.emit()
+        self.refresh()
 
     def _toggled(self, item: QListWidgetItem) -> None:
         part = self.app.project.part(item.data(Qt.ItemDataRole.UserRole))

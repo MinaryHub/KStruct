@@ -194,7 +194,9 @@ def test_buckling_workflow(qtbot, tmp_path):
     window = _bracket_with_material(qtbot)
     shape = window.project.parts[0].shape
     # stand the bracket on its base and push down on the top edge of the wall
-    window.project.fixtures = [Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (50, 30, 0)))])]
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (50, 30, 0)))])
+    ]
     window.project.loads = [
         Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (4, 30, 80)))], vector=(0, 0, -5000.0))
     ]
@@ -204,3 +206,17 @@ def test_buckling_workflow(qtbot, tmp_path):
     assert result.factors[0] > 0
     assert window.panels[6].mode.count() == 3
     assert "좌굴" in window.summary.headline
+
+
+def test_connection_kind_can_be_switched(qtbot):
+    from kstruct.model import ConnectionKind
+
+    window = _window(qtbot)
+    window.open_sample("two_plates")
+    panel = window.panels[0]
+    panel.refresh()
+    assert panel.connections.currentRow() == 0
+    panel.conn_kind.setCurrentIndex(panel.conn_kind.findData(ConnectionKind.CONTACT))
+    panel._kind_chosen()
+    assert window.project.connections[0].kind == ConnectionKind.CONTACT
+    assert panel.connections.item(0).text().startswith("접촉")

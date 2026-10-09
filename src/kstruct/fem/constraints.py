@@ -18,7 +18,7 @@ from scipy.spatial import cKDTree
 from kstruct.fem import tet10
 from kstruct.fem.mesh import FEMesh
 from kstruct.geometry.tessellate import faces_of
-from kstruct.model import Connection, FaceRef, FixtureKind, Project
+from kstruct.model import Connection, ConnectionKind, FaceRef, FixtureKind, Project
 
 PENALTY_FACTOR = 1e6  # relative to the largest stiffness diagonal
 AXIS_TOL = 1e-6
@@ -83,7 +83,11 @@ def _surface_kind(project: Project, ref: FaceRef) -> BRepAdaptor_Surface:
     return BRepAdaptor_Surface(faces_of(project.part(ref.part_id).shape)[ref.face_index])
 
 
-def build_constraints(project: Project, mesh: FEMesh) -> Constraints:
+def build_constraints(
+    project: Project, mesh: FEMesh, contacts_as_bonded: bool = True
+) -> Constraints:
+    """Fixtures and connections. Contact connections are linear (bonded) unless the caller
+    handles them itself (`contacts_as_bonded=False`, static analysis)."""
     if not project.fixtures:
         raise ConstraintError("고정이 하나도 없습니다. 부품이 공중에 떠 있어 해석할 수 없습니다.")
     c = Constraints(fixed=np.zeros(mesh.n_nodes * 3, dtype=bool))
@@ -133,6 +137,8 @@ def build_constraints(project: Project, mesh: FEMesh) -> Constraints:
         c.fixture_equations.append(range(first_equation, len(c.penalty_rows)))
 
     for connection in project.connections:
+        if connection.kind == ConnectionKind.CONTACT and not contacts_as_bonded:
+            continue
         add_bonded(c, mesh, connection)
     return c
 

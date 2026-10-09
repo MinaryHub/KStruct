@@ -18,9 +18,10 @@ from kstruct.fem.assembly import (
     stiffness_matrix,
 )
 from kstruct.fem.constraints import Constraints, build_constraints
+from kstruct.fem.contact import build_contact, solve_with_contact
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.thermal import ThermalResult, has_thermal_loads, solve_thermal
-from kstruct.model import LoadKind, Material, Project
+from kstruct.model import ConnectionKind, LoadKind, Material, Project
 
 Progress = Callable[[float, str], None]
 
@@ -37,6 +38,7 @@ class StaticResult:
     reactions: list[np.ndarray]  # per fixture, (3,) N
     applied_load: np.ndarray  # (3,) N, sum of external forces
     thermal: ThermalResult | None = None  # temperature field used for thermal stress
+    contact: list[tuple[int, int]] | None = None  # per contact: (closed pairs, total pairs)
 
     @property
     def von_mises(self) -> np.ndarray:
@@ -166,7 +168,9 @@ def solve_static(
     n_dof = mesh.n_nodes * 3
 
     report(0.05, "경계조건 준비 중")
-    c = constraints or build_constraints(project, mesh)
+    c = constraints or build_constraints(project, mesh, contacts_as_bonded=False)
+    contact_connections = [x for x in project.connections if x.kind == ConnectionKind.CONTACT]
+    contacts = [build_contact(mesh, x) for x in contact_connections]
 
     report(0.1, "강성행렬 조립 중")
     K = stiffness_matrix(mesh, materials)
@@ -186,10 +190,18 @@ def solve_static(
     Kp = K + c.penalty_matrix(n_dof, scale)
     free = np.flatnonzero(~c.fixed)
     near_null = rigid_body_modes(mesh.nodes)[free]
-    u = np.zeros(n_dof)
-    u[free] = solve_spd(Kp[free][:, free].tocsr(), f[free], near_null)
-
     size = np.ptp(mesh.nodes, axis=0).max()
+    if contacts:
+        report(0.4, "접촉 상태 계산 중 (반복)")
+        u, iterations = solve_with_contact(
+            Kp, f, free, contacts, lambda A, b: solve_spd(A, b, near_null), scale
+        )
+        # only the stabilising springs hold a part that slid or lifted off
+        if np.abs(u).max() > 0.2 * size:
+            raise SolverError("contact unstable")
+    else:
+        u = np.zeros(n_dof)
+        u[free] = solve_spd(Kp[free][:, free].tocsr(), f[free], near_null)
     if np.abs(u).max() > 1e3 * size:
         raise SolverError("unstable")
 
@@ -213,4 +225,5 @@ def solve_static(
         reactions=reactions,
         applied_load=applied,
         thermal=thermal,
+        contact=[(int(cs.active.sum()), len(cs.active)) for cs in contacts],
     )

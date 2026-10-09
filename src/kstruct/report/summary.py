@@ -144,6 +144,14 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             "최대 응력이 고정한 면 가장자리에 있습니다. 완전 고정의 경계에서는 응력이 실제보다 "
             "크게 계산되는 경우가 많습니다(응력 특이점). 고정면에서 조금 떨어진 곳의 값도 확인하세요."
         )
+    for i, (closed, total) in enumerate(result.contact or []):
+        if closed == 0:
+            notes.append(f"접촉 {i + 1}: 맞닿은 면이 모두 떨어졌습니다(힘을 전달하지 않음).")
+        elif closed < total:
+            notes.append(
+                f"접촉 {i + 1}: 맞닿은 면의 약 {closed / total * 100:.0f}%만 눌려 있고 "
+                "나머지는 살짝 벌어졌습니다."
+            )
     size = float(np.ptp(mesh.nodes, axis=0).max())
     max_node = int(np.argmax(disp))
     if disp[max_node] > 0.05 * size:
