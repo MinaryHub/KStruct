@@ -38,3 +38,16 @@ def face_info(face: TopoDS_Face) -> FaceInfo:
     BRepGProp.SurfaceProperties_s(face, props)
     radius = surface.Cylinder().Radius() if kind == GeomAbs_Cylinder else None
     return FaceInfo(_KIND_NAMES.get(kind, "곡면"), props.Mass(), radius)
+
+
+def face_at(shape, point: tuple[float, float, float]) -> int:
+    """Index (faces_of order) of the face closest to a point; used by scripts and tests."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.gp import gp_Pnt
+
+    from kstruct.geometry.tessellate import faces_of
+
+    vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex()
+    distances = [BRepExtrema_DistShapeShape(vertex, f).Value() for f in faces_of(shape)]
+    return min(range(len(distances)), key=distances.__getitem__)
