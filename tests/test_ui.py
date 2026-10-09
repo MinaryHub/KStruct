@@ -10,7 +10,7 @@ from kstruct.geometry.tessellate import faces_of
 from kstruct.ui import help as kshelp
 
 UI_SRC = Path(__file__).parents[1] / "src" / "kstruct" / "ui"  # help keys live in UI code
-PREFIXES = "step|view|file|help|project|connection|material|fixture|load|mesh|result|analysis|modal|fatigue"
+PREFIXES = "step|view|file|help|project|connection|material|fixture|load|mesh|result|analysis|modal|fatigue|bolt"
 HELP_KEY = rf'"((?:{PREFIXES})\.[a-z_]+)"'
 
 
@@ -220,3 +220,64 @@ def test_connection_kind_can_be_switched(qtbot):
     panel._kind_chosen()
     assert window.project.connections[0].kind == ConnectionKind.CONTACT
     assert panel.connections.item(0).text().startswith("접촉")
+
+
+def test_bolt_workflow(qtbot, tmp_path):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import ConnectionKind, FaceRef, Fixture, FixtureKind, Load, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bolted")
+    project = window.project
+    lower, upper = (p.shape for p in project.parts)
+    for part in project.parts:
+        part.material_id = "s235"
+    project.connections[0].kind = ConnectionKind.CONTACT  # plates only pressed together
+
+    window._go(mw.STEP_FIXTURE)
+    panel = window.panels[mw.STEP_FIXTURE]
+    for x, y in ((10, 10), (70, 10), (40, 50)):
+        window.viewer.set_selection(
+            [
+                FaceRef(0, face_at(lower, (x + 5.5, y, 2.5))),
+                FaceRef(1, face_at(upper, (x + 5.5, y, 7.5))),
+            ]
+        )
+        assert panel.bolt_add.isEnabled()
+        assert panel.bolt_size.currentData() == "M10"  # suggested from the 11 mm hole
+        panel._add_bolt()
+    assert len(project.bolts) == 3
+    project.fixtures = [Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(lower, (40, 30, 0)))])]
+    project.loads = [
+        Load(LoadKind.FORCE, [FaceRef(1, face_at(upper, (40, 30, 10)))], vector=(0, 0, 3000.0))
+    ]
+
+    window._go(mw.STEP_SOLVE)
+    _run(qtbot, window, tmp_path)
+    bolts = window.result.bolts
+    assert len(bolts) == 3
+    # preloaded joint: the clamped interface absorbs most of the 3 kN pull
+    change = sum(b.axial - b.preload for b in bolts)
+    assert abs(change) < 0.5 * 3000.0
+    assert "볼트" in window.panels[mw.STEP_RESULT].summary.text()
+
+
+def test_us_units_input_and_results(qtbot):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    window.project.standard = "astm"  # US pack -> inches, lbf, psi
+    shape = window.project.parts[0].shape
+    window._go(mw.STEP_LOAD)
+    loads = window.panels[mw.STEP_LOAD]
+    assert "lbf" in loads.value_label.text()
+    window.viewer.set_selection([FaceRef(0, face_at(shape, (90, 30, 8)))])
+    loads.direction.setCurrentIndex(7)  # -Z
+    loads.value.setValue(100.0)  # lbf
+    loads._add()
+    assert window.project.loads[0].vector[2] == pytest.approx(-444.822, rel=1e-5)
+    assert "lbf" in loads.items.item(0).text()

@@ -27,6 +27,7 @@ FIXTURE_COLORS = {
     FixtureKind.PIN: "#7b5cc4",
 }
 LOAD_COLOR = "#e8743b"
+BOLT_COLOR = "#4a4f57"
 CLICK_TOLERANCE_PX = 4  # press/release further apart than this is a rotate, not a click
 
 # Netgen TRI6 (mid nodes on edges 12, 02, 01) -> VTK quadratic triangle (01, 12, 20)
@@ -152,9 +153,12 @@ class ModelViewer(QWidget):
         self._repaint()
         self.selection_changed.emit(self.selection)
 
-    def annotate(self, fixtures: list[Fixture], loads: list[Load]) -> None:
-        """Color fixture/load faces and draw load arrows."""
+    def annotate(self, fixtures: list[Fixture], loads: list[Load], bolts=()) -> None:
+        """Color fixture/load/bolt faces and draw load arrows."""
         self._face_colors.clear()
+        for b in bolts:
+            self._face_colors[b.hole_a] = BOLT_COLOR
+            self._face_colors[b.hole_b] = BOLT_COLOR
         for fx in fixtures:
             for ref in fx.faces:
                 self._face_colors[ref] = FIXTURE_COLORS[fx.kind]

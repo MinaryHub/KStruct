@@ -27,11 +27,16 @@ from PySide6.QtWidgets import (
 )
 
 from kstruct import standards
+from kstruct.fem.bolts import grades as bolt_grades
+from kstruct.fem.bolts import hole_axis, recommended_preload, suggest_size
+from kstruct.fem.bolts import sizes as bolt_sizes
+from kstruct.fem.constraints import ConstraintError
 from kstruct.geometry import faces_of
 from kstruct.geometry.face_info import face_info, outward_normal
 from kstruct.model import (
     GRAVITY,
     AnalysisKind,
+    Bolt,
     ConnectionKind,
     FaceRef,
     Fixture,
@@ -40,6 +45,7 @@ from kstruct.model import (
     LoadKind,
 )
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
+from kstruct.units import fmt, quantity, system_of
 
 if TYPE_CHECKING:
     from kstruct.ui.main_window import MainWindow
@@ -47,6 +53,21 @@ if TYPE_CHECKING:
 CONNECTION_LABELS = {
     ConnectionKind.BONDED: "접합 (붙어 있음 — 용접·접착)",
     ConnectionKind.CONTACT: "접촉 (눌리면 버티고, 당기면 떨어짐·미끄러짐)",
+}
+UNIT_LABELS = [
+    (None, "기준에 따름"),
+    ("SI", "SI (mm · N · MPa · °C)"),
+    ("US", "미국 (in · lbf · psi · °F)"),
+]
+# which physical quantity each load's value is, for unit conversion (None: no unit change)
+LOAD_QUANTITY = {
+    LoadKind.FORCE: "force",
+    LoadKind.PRESSURE: "stress",
+    LoadKind.GRAVITY: None,
+    LoadKind.TEMPERATURE: "temperature_change",
+    LoadKind.FACE_TEMPERATURE: "temperature",
+    LoadKind.HEAT_FLOW: None,
+    LoadKind.CONVECTION: None,
 }
 FIXTURE_LABELS = {
     FixtureKind.FIXED: ("완전 고정", "fixture.fixed"),
@@ -149,7 +170,11 @@ class OpenStep(StepPanel):
         self.add(with_help(mesh_help, "file.mesh_formats"))
 
         samples = QHBoxLayout()
-        for label, name in (("예제: 브래킷", "bracket"), ("예제: 판 2장", "two_plates")):
+        for label, name in (
+            ("예제: 브래킷", "bracket"),
+            ("예제: 판 2장", "two_plates"),
+            ("예제: 볼트", "bolted"),
+        ):
             b = QPushButton(label)
             b.clicked.connect(lambda _=False, n=name: app.open_sample(n))
             samples.addWidget(b)
@@ -248,6 +273,11 @@ class MaterialStep(StepPanel):
         self.standard.currentIndexChanged.connect(self._standard_changed)
         form = QFormLayout()
         form.addRow("적용 기준", with_help(self.standard, "material.standard"))
+        self.units = QComboBox()
+        for key, label in UNIT_LABELS:
+            self.units.addItem(label, key)
+        self.units.currentIndexChanged.connect(self._units_changed)
+        form.addRow("표시 단위", with_help(self.units, "material.units"))
         box = QWidget()
         box.setLayout(form)
         self.add(box)
@@ -280,6 +310,9 @@ class MaterialStep(StepPanel):
         self.standard.blockSignals(True)
         self.standard.setCurrentIndex(max(0, self.standard.findData(project.standard)))
         self.standard.blockSignals(False)
+        self.units.blockSignals(True)
+        self.units.setCurrentIndex(max(0, self.units.findData(project.units)))
+        self.units.blockSignals(False)
         self._fill_materials()
         row = max(0, self.parts.currentRow())
         self.parts.blockSignals(True)
@@ -353,6 +386,11 @@ class MaterialStep(StepPanel):
         self.changed.emit()
         self.refresh()
 
+    def _units_changed(self) -> None:
+        self.app.project.units = self.units.currentData()
+        self.changed.emit()
+        self.refresh()
+
     def _standard_changed(self) -> None:
         self.app.project.standard = self.standard.currentData()
         self.changed.emit()
@@ -419,6 +457,104 @@ class FixtureStep(_FaceListStep):
         self.add_btn.clicked.connect(self._add)
         self.add(self.add_btn)
         self.finish_layout()
+        self._build_bolt_box()
+
+    # --- bolts ---------------------------------------------------------------------
+
+    def _build_bolt_box(self) -> None:
+        box = QGroupBox("볼트 체결")
+        layout = QVBoxLayout(box)
+        layout.addWidget(
+            _hint("두 부품의 구멍 면을 Ctrl+클릭으로 하나씩 고른 뒤 볼트를 추가하세요.")
+        )
+        form = QFormLayout()
+        self.bolt_size = QComboBox()
+        for name in bolt_sizes():
+            self.bolt_size.addItem(name, name)
+        self.bolt_grade = QComboBox()
+        for name in bolt_grades():
+            self.bolt_grade.addItem(name, name)
+        self.bolt_grade.setCurrentIndex(self.bolt_grade.findData("8.8"))
+        self.bolt_preload = QDoubleSpinBox()
+        self.bolt_preload.setRange(0, 1e7)
+        self.bolt_preload.setDecimals(0)
+        self.bolt_preload.setSuffix(" N")
+        self.bolt_auto = QCheckBox("권장 체결력 자동")
+        self.bolt_auto.setChecked(True)
+        for w in (self.bolt_size, self.bolt_grade):
+            w.currentIndexChanged.connect(self._update_preload)
+        self.bolt_auto.toggled.connect(self._update_preload)
+        form.addRow("크기", with_help(self.bolt_size, "bolt.size"))
+        form.addRow("강도 등급", with_help(self.bolt_grade, "bolt.grade"))
+        form.addRow("체결력", with_help(_row(self.bolt_preload, self.bolt_auto), "bolt.preload"))
+        layout.addLayout(form)
+        self.bolt_add = QPushButton("선택한 두 구멍을 볼트로 연결")
+        self.bolt_add.clicked.connect(self._add_bolt)
+        layout.addWidget(self.bolt_add)
+        self.bolt_list = QListWidget()
+        self.bolt_list.setMaximumHeight(100)
+        layout.addWidget(self.bolt_list)
+        remove = QPushButton("선택한 볼트 삭제")
+        remove.clicked.connect(self._remove_bolt)
+        layout.addWidget(remove)
+        self.add(with_help(box, "bolt.joint"))
+        self._update_preload()
+
+    def _update_preload(self) -> None:
+        self.bolt_preload.setEnabled(not self.bolt_auto.isChecked())
+        if self.bolt_auto.isChecked():
+            self.bolt_preload.setValue(
+                recommended_preload(self.bolt_size.currentData(), self.bolt_grade.currentData())
+            )
+
+    def _hole_pair(self, refs: list[FaceRef]):
+        if len(refs) != 2 or refs[0].part_id == refs[1].part_id:
+            return None
+        project = self.app.project
+        try:
+            holes = [hole_axis(project, r) for r in refs]
+        except ConstraintError:
+            return None
+        return holes
+
+    def _add_bolt(self) -> None:
+        refs = self.app.viewer.selection
+        if self._hole_pair(refs) is None:
+            self.app.warn(
+                "서로 다른 두 부품의 구멍(원통면)을 하나씩, 모두 두 개 골라 주세요. "
+                "Ctrl을 누른 채 클릭하면 여러 면을 고를 수 있습니다."
+            )
+            return
+        bolts = self.app.project.bolts
+        bolts.append(
+            Bolt(
+                refs[0],
+                refs[1],
+                self.bolt_size.currentData(),
+                self.bolt_grade.currentData(),
+                self.bolt_preload.value(),
+                f"볼트 {len(bolts) + 1}",
+            )
+        )
+        self.app.viewer.set_selection([])
+        self.changed.emit()
+        self.refresh()
+
+    def _remove_bolt(self) -> None:
+        row = self.bolt_list.currentRow()
+        if row >= 0:
+            del self.app.project.bolts[row]
+            self.changed.emit()
+            self.refresh()
+
+    def refresh(self) -> None:
+        super().refresh()
+        self.bolt_list.clear()
+        for b in self.app.project.bolts:
+            self.bolt_list.addItem(
+                f"{b.name}: {b.size} {b.grade}, 체결력 {b.preload:,.0f} N — "
+                f"{self.describe_faces([b.hole_a, b.hole_b])}"
+            )
 
     def entries(self) -> list:
         return self.app.project.fixtures
@@ -429,6 +565,13 @@ class FixtureStep(_FaceListStep):
     def update_selection(self, refs: list[FaceRef]) -> None:
         super().update_selection(refs)
         self.add_btn.setEnabled(bool(refs))
+        holes = self._hole_pair(refs) if hasattr(self, "bolt_add") else None
+        if hasattr(self, "bolt_add"):
+            self.bolt_add.setEnabled(holes is not None)
+        if holes is not None:
+            # suggest the bolt that fits the smaller hole
+            name = suggest_size(min(d for _, _, d in holes))
+            self.bolt_size.setCurrentIndex(self.bolt_size.findData(name))
 
     def _add(self) -> None:
         refs = self.app.viewer.selection
@@ -506,26 +649,49 @@ class LoadStep(_FaceListStep):
         self.direction_label.setVisible(self.direction.isVisible())
         self.ambient.setVisible(kind == LoadKind.CONVECTION)
         self.ambient_label.setVisible(kind == LoadKind.CONVECTION)
-        units = {
-            LoadKind.FORCE: ("크기 (N)", 1000.0),
-            LoadKind.PRESSURE: ("압력 (MPa)", 1.0),
+        defaults = {  # internal units
+            LoadKind.FORCE: ("크기", 1000.0),
+            LoadKind.PRESSURE: ("압력", 1.0),
             LoadKind.GRAVITY: ("배수 (g)", 1.0),
-            LoadKind.TEMPERATURE: ("온도 변화 (°C)", 50.0),
-            LoadKind.FACE_TEMPERATURE: ("온도 (°C)", 100.0),
+            LoadKind.TEMPERATURE: ("온도 변화", 50.0),
+            LoadKind.FACE_TEMPERATURE: ("온도", 100.0),
             LoadKind.HEAT_FLOW: ("열량 (W)", 10.0),
             LoadKind.CONVECTION: ("열전달계수 h (W/m²·K)", 10.0),
         }
-        label, default = units[kind]
+        label, default = defaults[kind]
+        q = self._quantity(kind)
+        if q is not None:
+            label += f" ({q.unit})"
+            default = round(q.show(default), 3)
         self.value_label.setText(label)
         self.value.setValue(default)
+        t = quantity(system_of(self.app.project), "temperature") if self.app.project else None
+        if t is not None:
+            self.ambient_label.setText(f"주변 공기 온도 ({t.unit})")
+            self.ambient.setValue(round(t.show(20.0), 1))
         if kind == LoadKind.GRAVITY:
             self.direction.setCurrentIndex(len(DIRECTIONS) - 1)
         self._update_hint()
         self.update_selection(self.app.viewer.selection)
 
-    def _update_hint(self) -> None:
+    def _quantity(self, kind: LoadKind):
+        name = LOAD_QUANTITY[kind]
+        if name is None or self.app.project is None:
+            return None
+        return quantity(system_of(self.app.project), name)
+
+    def _internal_value(self, kind: LoadKind) -> float:
+        q = self._quantity(kind)
         v = self.value.value()
+        return q.parse(v) if q is not None else v
+
+    def refresh(self) -> None:
+        self._kind_changed()
+        super().refresh()
+
+    def _update_hint(self) -> None:
         kind = self._current_kind()
+        v = self._internal_value(kind)
         hints = {
             LoadKind.FORCE: f"≈ {v / 9.81:,.1f} kg의 물체를 올려놓은 무게와 같습니다.",
             LoadKind.PRESSURE: f"= {v * 10:,.2f} bar (자동차 타이어는 약 2.4 bar)",
@@ -546,27 +712,33 @@ class LoadStep(_FaceListStep):
         return self.app.project.loads
 
     def describe(self, ld: Load) -> str:
+        system = system_of(self.app.project)
         if ld.kind == LoadKind.FORCE:
-            fx, fy, fz = ld.vector
+            fq = quantity(system, "force")
+            fx, fy, fz = (fq.show(c) for c in ld.vector)
             mag = (fx**2 + fy**2 + fz**2) ** 0.5
-            return f"힘 {mag:,.1f} N ({fx:+.0f}, {fy:+.0f}, {fz:+.0f}): {self.describe_faces(ld.faces)}"
+            return (
+                f"힘 {mag:,.1f} {fq.unit} ({fx:+.0f}, {fy:+.0f}, {fz:+.0f}): "
+                f"{self.describe_faces(ld.faces)}"
+            )
         if ld.kind == LoadKind.PRESSURE:
-            return f"압력 {ld.magnitude:,.3g} MPa: {self.describe_faces(ld.faces)}"
+            return f"압력 {fmt(system, 'stress', ld.magnitude)}: {self.describe_faces(ld.faces)}"
         if ld.kind == LoadKind.GRAVITY:
             g = (sum(c * c for c in ld.vector) ** 0.5) / GRAVITY
             return f"자중 {g:.2g} g"
         faces = self.describe_faces(ld.faces)
         if ld.kind == LoadKind.FACE_TEMPERATURE:
-            return f"고정 온도 {ld.magnitude:.1f} °C: {faces}"
+            return f"고정 온도 {fmt(system, 'temperature', ld.magnitude, '.1f')}: {faces}"
         if ld.kind == LoadKind.HEAT_FLOW:
             return f"열 입력 {ld.magnitude:.3g} W: {faces}"
         if ld.kind == LoadKind.CONVECTION:
-            return f"대류 h={ld.magnitude:.3g} W/m²K, 공기 {ld.ambient:.0f} °C: {faces}"
-        return f"온도 변화 {ld.magnitude:+.1f} °C"
+            air = fmt(system, "temperature", ld.ambient, ".0f")
+            return f"대류 h={ld.magnitude:.3g} W/m²K, 공기 {air}: {faces}"
+        return f"온도 변화 {fmt(system, 'temperature_change', ld.magnitude, '+.1f')}"
 
     def _add(self) -> None:
         kind = self._current_kind()
-        v = self.value.value()
+        v = self._internal_value(kind)
         refs = self.app.viewer.selection
         project = self.app.project
         if kind == LoadKind.FORCE:
@@ -599,7 +771,8 @@ class LoadStep(_FaceListStep):
             project.loads[:] = [ld for ld in project.loads if ld.kind != LoadKind.TEMPERATURE]
             load = Load(LoadKind.TEMPERATURE, magnitude=v)
         else:
-            load = Load(kind, refs, magnitude=v, ambient=self.ambient.value())
+            t = quantity(system_of(project), "temperature")
+            load = Load(kind, refs, magnitude=v, ambient=t.parse(self.ambient.value()))
         project.loads.append(load)
         if kind in FACE_LOADS:
             self.app.viewer.set_selection([])

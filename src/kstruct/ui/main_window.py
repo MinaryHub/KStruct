@@ -32,7 +32,7 @@ from kstruct.fem.static import StaticResult
 from kstruct.fem.thermal import ThermalResult, solve_thermal
 from kstruct.geometry import GeometryImportError, load_cad
 from kstruct.geometry.contacts import find_touching_faces
-from kstruct.geometry.samples import l_bracket, two_plates, write_step
+from kstruct.geometry.samples import bolted_plates, l_bracket, two_plates, write_step
 from kstruct.model import THERMAL_LOADS, AnalysisKind, LoadKind, Project
 from kstruct.project_io import SUFFIX, ProjectFileError, load_project, save_project
 from kstruct.report.summary import (
@@ -47,6 +47,7 @@ from kstruct.ui import steps
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 from kstruct.ui.viewer import ModelViewer, ResultField
 from kstruct.ui.worker import run_job
+from kstruct.units import fmt, quantity, system_of
 
 CAD_FILTER = (
     "모든 3D 파일 (*.step *.stp *.iges *.igs *.stl *.obj *.fbx *.gltf *.glb *.3mf *.kst);;"
@@ -55,7 +56,7 @@ CAD_FILTER = (
     "모든 파일 (*)"
 )
 PROJECT_FILTER = f"KStruct 프로젝트 (*{SUFFIX})"
-SAMPLES = {"bracket": l_bracket, "two_plates": two_plates}
+SAMPLES = {"bracket": l_bracket, "two_plates": two_plates, "bolted": bolted_plates}
 
 STEP_OPEN, STEP_MATERIAL, STEP_FIXTURE, STEP_LOAD, STEP_MESH, STEP_SOLVE, STEP_RESULT = range(7)
 STEP_NAMES = ["1. 모델 열기", "2. 재료", "3. 고정", "4. 하중", "5. 메시", "6. 해석", "7. 결과"]
@@ -78,6 +79,12 @@ def friendly_error(e: Exception) -> str:
                 "부품이 충분히 고정되지 않아 공중에서 움직이거나 돌 수 있습니다.\n\n"
                 "• 고정을 추가하세요 (예: 볼트 구멍이나 바닥면을 '완전 고정').\n"
                 "• 여러 부품이면 각 부품이 고정되어 있거나, 다른 부품과 '접합'되어 있어야 합니다."
+            )
+        if str(e) == "bolt without contact":
+            return (
+                "볼트로 조인 두 부품 사이에 맞닿은 면(접촉 또는 접합)이 없습니다. 체결력은 부품끼리 "
+                "서로 눌러 줄 때만 생기므로, 1단계에서 '맞닿은 면 자동으로 찾기'를 누르고 연결 종류를 "
+                "'접촉'으로 지정하세요. (체결력을 0으로 하면 연결 없이도 계산할 수 있습니다.)"
             )
         if str(e) == "contact unstable":
             return (
@@ -345,7 +352,7 @@ class MainWindow(QMainWindow):
 
     def _annotate(self) -> None:
         if self.project is not None:
-            self.viewer.annotate(self.project.fixtures, self.project.loads)
+            self.viewer.annotate(self.project.fixtures, self.project.loads, self.project.bolts)
 
     def _selection_changed(self, refs: list) -> None:
         panel = self.panels[self.nav.currentRow()]
@@ -518,6 +525,27 @@ class MainWindow(QMainWindow):
         return r.displacement
 
     def result_field(self, key: str) -> ResultField:
+        field = self._result_field_internal(key)
+        kind = {
+            "vm": "stress",
+            "p1": "stress",
+            "disp": "length",
+            "ux": "length",
+            "uy": "length",
+            "uz": "length",
+            "temp": "temperature",
+        }.get(key)
+        if kind is None:
+            return field
+        q = quantity(system_of(self.project), kind)
+        field.values = q.show(field.values)
+        if field.clim is not None:
+            field.clim = (q.show(field.clim[0]), q.show(field.clim[1]))
+        field.title = field.title.replace(f"({field.unit})", f"({q.unit})")
+        field.unit = q.unit
+        return field
+
+    def _result_field_internal(self, key: str) -> ResultField:
         r = self.result
         if key == "mode":
             mag = np.linalg.norm(self._displacement(), axis=1)
@@ -608,6 +636,7 @@ class MainWindow(QMainWindow):
         panel.card_body.setText(s.explanation)
         lines = []
         r = self.result
+        us = system_of(self.project)
         if isinstance(r, ModalResult):
             rows = []
             for i, f in enumerate(r.frequencies):
@@ -634,8 +663,9 @@ class MainWindow(QMainWindow):
                     else ""
                 )
                 lines.append(
-                    f"<b>{self.project.part(pid).name}</b>: {r.temperature[nodes].min():.1f}"
-                    f" ~ <b>{r.temperature[nodes].max():.1f} °C</b>{limit}"
+                    f"<b>{self.project.part(pid).name}</b>: "
+                    f"{fmt(us, 'temperature', r.temperature[nodes].min(), '.1f')}"
+                    f" ~ <b>{fmt(us, 'temperature', r.temperature[nodes].max(), '.1f')}</b>{limit}"
                 )
             if r.heat_in:
                 lines.append(f"들어온 열 {r.heat_in:.3g} W · 빠져나간 열 {r.heat_out:.3g} W")
@@ -643,15 +673,22 @@ class MainWindow(QMainWindow):
             for p in s.parts:
                 lines.append(
                     f"<b>{p.name}</b> ({p.material})<br>"
-                    f"&nbsp;최대 응력 {p.max_stress:,.1f} MPa / 강도 {p.capacity:,.0f} MPa<br>"
+                    f"&nbsp;최대 응력 {fmt(us, 'stress', p.max_stress, ',.1f')}"
+                    f" / 강도 {fmt(us, 'stress', p.capacity, ',.0f')}<br>"
                     f"&nbsp;최소 안전율 <b>{p.min_fos:.2f}</b> (권장 {p.target:.1f})"
-                    f" · 최대 변형 {p.max_disp:.4g} mm"
+                    f" · 최대 변형 {fmt(us, 'length', p.max_disp)}"
                 )
                 if p.fatigue_fos is not None:
                     life = "무한" if p.fatigue_life >= 1e9 else f"{p.fatigue_life:,.0f}회"
                     lines[-1] += (
                         f"<br>&nbsp;피로 안전율 <b>{p.fatigue_fos:.2f}</b> · 예상 수명 {life}"
                     )
+            for b in r.bolts or []:
+                lines.append(
+                    f"<b>{b.name}</b> ({b.size} {b.grade}) 축력 {fmt(us, 'force', b.axial, ',.0f')}"
+                    f" · 전단 {fmt(us, 'force', b.shear, ',.0f')}"
+                    f" · 안전율 <b>{b.safety_factor:.2f}</b>"
+                )
             if r.thermal is not None:
                 lines.append(
                     f"열응력 포함: 온도 {r.thermal.temperature.min():.1f}"

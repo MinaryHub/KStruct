@@ -17,6 +17,9 @@ VERDICT_STYLE = {
     Verdict.FAIL: ("❌ 위험", "#c0392b", "#fbeaea"),
 }
 _RANK = {Verdict.OK: 0, Verdict.WARN: 1, Verdict.FAIL: 2}
+# bolts are tightened to ~70 % of proof load on purpose, so their margin is judged against
+# proof strength with a small reserve rather than the 1.5 used for parts
+BOLT_TARGET = 1.1
 
 
 @dataclass
@@ -138,6 +141,15 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
     else:
         worst_verdict, worst_fos = worst.verdict, worst.min_fos
 
+    for b in result.bolts or []:
+        bv = verdict(b.safety_factor, BOLT_TARGET)
+        if _RANK[bv] > _RANK[worst_verdict]:
+            worst_verdict, worst_fos = bv, b.safety_factor
+            explanation = (
+                f"부품은 견디지만 {b.name}({b.size} {b.grade})에 걸리는 힘이 볼트 강도에 비해 큽니다"
+                f"(안전율 {b.safety_factor:.2f}). 더 굵거나 등급이 높은 볼트, 또는 볼트 추가를 검토하세요."
+            )
+
     notes = []
     if any(s.at_fixture for s in parts):
         notes.append(
@@ -161,7 +173,11 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
         )
 
     title = VERDICT_STYLE[worst_verdict][0]
-    label = "피로 안전율" if worst_fos != worst.min_fos else "최소 안전율"
+    label = "최소 안전율"
+    if fatigue is not None and worst_fos == min(s.fatigue_fos for s in parts):
+        label = "피로 안전율"
+    elif any(b.safety_factor == worst_fos for b in result.bolts or []):
+        label = "볼트 안전율"
     return Summary(
         parts=parts,
         verdict=worst_verdict,

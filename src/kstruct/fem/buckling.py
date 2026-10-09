@@ -22,6 +22,7 @@ from kstruct.fem.assembly import (
     part_property,
     stiffness_matrix,
 )
+from kstruct.fem.bolts import bolt_stiffness_and_preload, build_bolts
 from kstruct.fem.constraints import build_constraints
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.static import THERMAL_STRAIN, StaticResult, solve_static, temperature_change
@@ -99,6 +100,7 @@ def solve_buckling(
     c = build_constraints(project, mesh)
     K = stiffness_matrix(mesh, materials)
     K = K + c.penalty_matrix(n_dof, K.diagonal().max())
+    K = K + bolt_stiffness_and_preload(build_bolts(project, mesh), n_dof)[0]
     free = np.flatnonzero(~c.fixed)
     Kf, Kgf = K[free][:, free].tocsc(), Kg[free][:, free].tocsc()
 

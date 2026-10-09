@@ -16,6 +16,7 @@ from kstruct import standards
 from kstruct.fem.static import StaticResult
 from kstruct.model import FixtureKind, LoadKind, Project
 from kstruct.report.summary import VERDICT_STYLE, Summary
+from kstruct.units import fmt, system_of
 
 FIXTURE_NAMES = {
     FixtureKind.FIXED: "완전 고정",
@@ -46,6 +47,7 @@ def _static_html(
     project: Project, result: StaticResult, summary: Summary, images: list[tuple[str, bytes]]
 ) -> str:
     pack = standards.pack(project.standard)
+    us = system_of(project)
     title, color, bg = VERDICT_STYLE[summary.verdict]
     esc = html.escape
     rows = []
@@ -54,8 +56,9 @@ def _static_html(
         cap = "항복강도" if s.ductile else "인장강도"
         rows.append(
             f"<tr><td>{esc(s.name)}</td><td>{esc(s.material)}</td>"
-            f"<td>{s.max_stress:,.1f} MPa ({crit})</td><td>{s.capacity:,.0f} MPa ({cap})</td>"
-            f"<td><b>{s.min_fos:.2f}</b> / {s.target:.1f}</td><td>{s.max_disp:.4g} mm</td>"
+            f"<td>{fmt(us, 'stress', s.max_stress, ',.1f')} ({crit})</td>"
+            f"<td>{fmt(us, 'stress', s.capacity, ',.0f')} ({cap})</td>"
+            f"<td><b>{s.min_fos:.2f}</b> / {s.target:.1f}</td><td>{fmt(us, 'length', s.max_disp)}</td>"
             f"<td>{VERDICT_STYLE[s.verdict][0]}</td></tr>"
         )
         if s.fatigue_fos is not None:
@@ -93,6 +96,20 @@ def _static_html(
         f"X {r[0]:+,.1f} N, Y {r[1]:+,.1f} N, Z {r[2]:+,.1f} N</li>"
         for f, r in zip(project.fixtures, summary.reactions, strict=True)
     )
+    bolt_rows = "".join(
+        f"<tr><td>{esc(b.name)}</td><td>{b.size} {b.grade}</td><td>{b.preload:,.0f} N</td>"
+        f"<td>{b.axial:,.0f} N</td><td>{b.shear:,.0f} N</td><td>{b.stress:,.0f} / {b.proof:,.0f} MPa</td>"
+        f"<td><b>{b.safety_factor:.2f}</b></td></tr>"
+        for b in result.bolts or []
+    )
+    bolts = (
+        "<h3>볼트</h3><table width='100%' border='1' cellspacing='0' cellpadding='4'>"
+        "<tr style='background:#eef1f5;'><th>볼트</th><th>규격</th><th>체결력</th><th>축력</th>"
+        "<th>전단력</th><th>응력 / 보증응력</th><th>안전율</th></tr>"
+        f"{bolt_rows}</table>"
+        if bolt_rows
+        else ""
+    )
     notes = "".join(f"<li>{esc(n)}</li>" for n in summary.notes)
     pictures = "".join(f"<h3>{esc(cap)}</h3><p>{_img(png)}</p>" for cap, png in images)
     source = esc(project.source_path.name) if project.source_path else "-"
@@ -113,6 +130,7 @@ def _static_html(
 <th>안전율 / 권장</th><th>최대 변형</th><th>판정</th></tr>
 {"".join(rows)}
 </table>
+{bolts}
 <p>최대 변형량: {summary.max_disp:.4g} mm (위치 X {summary.max_disp_at[0]:.1f}, Y {summary.max_disp_at[1]:.1f}, Z {summary.max_disp_at[2]:.1f} mm)</p>
 
 <h2>2. 해석 조건</h2>

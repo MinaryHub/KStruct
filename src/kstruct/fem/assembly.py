@@ -84,10 +84,10 @@ def rigid_body_modes(nodes: np.ndarray) -> np.ndarray:
     return B.reshape(3 * n, 6)
 
 
-def solve_spd(K: sp.csr_matrix, f: np.ndarray, near_nullspace: np.ndarray) -> np.ndarray:
-    """Solve K x = f for a symmetric positive definite K (free DOFs only).
+def make_solver(K: sp.csr_matrix, near_null: np.ndarray):
+    """Factorize once, solve many right-hand sides: returns `solve(f) -> x`.
 
-    near_nullspace: rigid body modes restricted to the same DOFs (for AMG).
+    near_null: rigid body modes restricted to the same DOFs (for AMG).
     A singular K (part not held in place) raises SolverError("unstable").
     """
     import warnings
@@ -97,19 +97,43 @@ def solve_spd(K: sp.csr_matrix, f: np.ndarray, near_nullspace: np.ndarray) -> np
         with warnings.catch_warnings():
             warnings.simplefilter("error", spla.MatrixRankWarning)
             try:
-                x = spla.spsolve(K.tocsc(), f)
+                # K is symmetric positive definite: symmetric minimum-degree ordering with
+                # plain diagonal pivots. Partial pivoting (SuperLU's default) wrecks the
+                # ordering once stiff penalty ties are present (30x more fill, 30x slower).
+                lu = spla.splu(
+                    K.tocsc(),
+                    permc_spec="MMD_AT_PLUS_A",
+                    options={"SymmetricMode": True, "DiagPivotThresh": 0.0},
+                )
             except (RuntimeError, spla.MatrixRankWarning) as e:
                 raise SolverError("unstable") from e
-    else:
-        import pyamg
 
-        ml = pyamg.smoothed_aggregation_solver(
-            K, B=near_nullspace, symmetry="symmetric", strength="symmetric"
-        )
+        def solve(f: np.ndarray) -> np.ndarray:
+            x = lu.solve(f)
+            if not np.all(np.isfinite(x)):
+                raise SolverError("unstable")
+            return x
+
+        return solve
+
+    import pyamg
+
+    ml = pyamg.smoothed_aggregation_solver(
+        K, B=near_null, symmetry="symmetric", strength="symmetric"
+    )
+
+    def solve(f: np.ndarray) -> np.ndarray:
         residuals: list[float] = []
         x = ml.solve(f, tol=1e-9, accel="cg", maxiter=800, residuals=residuals)
         if residuals and residuals[-1] > 1e-6 * residuals[0]:
             raise SolverError("not converged")
-    if not np.all(np.isfinite(x)):
-        raise SolverError("unstable")
-    return x
+        if not np.all(np.isfinite(x)):
+            raise SolverError("unstable")
+        return x
+
+    return solve
+
+
+def solve_spd(K: sp.csr_matrix, f: np.ndarray, near_null: np.ndarray) -> np.ndarray:
+    """Solve K x = f once for a symmetric positive definite K (free DOFs only)."""
+    return make_solver(K, near_null)(f)

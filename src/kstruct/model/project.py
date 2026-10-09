@@ -95,6 +95,18 @@ class Connection:
 
 
 @dataclass
+class Bolt:
+    """A bolt joining the hole face of one part to the hole face of another."""
+
+    hole_a: FaceRef
+    hole_b: FaceRef
+    size: str = "M10"  # resources/bolts.json size name
+    grade: str = "8.8"  # ISO 898-1 property class
+    preload: float = 0.0  # N, assembly tension
+    name: str = ""
+
+
+@dataclass
 class Part:
     id: int
     name: str
@@ -115,6 +127,7 @@ class Project:
     source_path: Path | None = None
     parts: list[Part] = field(default_factory=list)
     connections: list[Connection] = field(default_factory=list)
+    bolts: list[Bolt] = field(default_factory=list)
     fixtures: list[Fixture] = field(default_factory=list)
     loads: list[Load] = field(default_factory=list)
     mesh_quality: str = "normal"  # key of fem.mesh.MESH_PRESETS
@@ -124,6 +137,7 @@ class Project:
     operating_frequency: float = 0.0  # Hz, excitation to compare natural frequencies with
     n_modes: int = 6
     load_cycle: str = "none"  # fem.fatigue.LoadCycle value
+    units: str | None = None  # "SI" / "US"; None follows the standards pack
 
     def part(self, part_id: int) -> Part:
         return next(p for p in self.parts if p.id == part_id)

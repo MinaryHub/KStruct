@@ -1,0 +1,26 @@
+{
+  "_comment": "Metric coarse thread bolts. stress_area = tensile stress area As (mm², ISO 898-1 Table). clearance = ISO 273 medium clearance hole (mm). Grades: Rm = nominal tensile strength, Rp = lower yield / 0.2 % proof stress (MPa).",
+  "sizes": [
+    {"name": "M3", "d": 3, "stress_area": 5.03, "clearance": 3.4},
+    {"name": "M4", "d": 4, "stress_area": 8.78, "clearance": 4.5},
+    {"name": "M5", "d": 5, "stress_area": 14.2, "clearance": 5.5},
+    {"name": "M6", "d": 6, "stress_area": 20.1, "clearance": 6.6},
+    {"name": "M8", "d": 8, "stress_area": 36.6, "clearance": 9.0},
+    {"name": "M10", "d": 10, "stress_area": 58.0, "clearance": 11.0},
+    {"name": "M12", "d": 12, "stress_area": 84.3, "clearance": 13.5},
+    {"name": "M16", "d": 16, "stress_area": 157.0, "clearance": 17.5},
+    {"name": "M20", "d": 20, "stress_area": 245.0, "clearance": 22.0},
+    {"name": "M24", "d": 24, "stress_area": 353.0, "clearance": 26.0},
+    {"name": "M30", "d": 30, "stress_area": 561.0, "clearance": 33.0}
+  ],
+  "grades": [
+    {"name": "4.6", "Rm": 400, "Rp": 240, "E": 210000},
+    {"name": "5.6", "Rm": 500, "Rp": 300, "E": 210000},
+    {"name": "8.8", "Rm": 800, "Rp": 640, "E": 210000},
+    {"name": "10.9", "Rm": 1000, "Rp": 900, "E": 210000},
+    {"name": "12.9", "Rm": 1200, "Rp": 1080, "E": 210000},
+    {"name": "A2-70", "Rm": 700, "Rp": 450, "E": 193000},
+    {"name": "A4-80", "Rm": 800, "Rp": 600, "E": 193000}
+  ],
+  "default_preload_ratio": 0.7
+}

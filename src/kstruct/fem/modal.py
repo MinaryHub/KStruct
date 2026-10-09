@@ -9,6 +9,7 @@ import numpy as np
 import scipy.sparse.linalg as spla
 
 from kstruct.fem.assembly import SolverError, mass_matrix, stiffness_matrix
+from kstruct.fem.bolts import bolt_stiffness_and_preload, build_bolts
 from kstruct.fem.constraints import build_constraints
 from kstruct.fem.mesh import FEMesh
 from kstruct.model import Material, Project
@@ -54,6 +55,7 @@ def solve_modal(
     report(0.15, "강성·질량 행렬 조립 중")
     K = stiffness_matrix(mesh, materials)
     K = K + c.penalty_matrix(n_dof, K.diagonal().max())
+    K = K + bolt_stiffness_and_preload(build_bolts(project, mesh), n_dof)[0]
     M = mass_matrix(mesh, materials)
     free = np.flatnonzero(~c.fixed)
     Kf, Mf = K[free][:, free].tocsc(), M[free][:, free].tocsc()

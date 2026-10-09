@@ -12,10 +12,18 @@ from kstruct.fem.assembly import (
     SolverError,
     d_matrices,
     element_dofs,
+    make_solver,
     part_property,
     rigid_body_modes,
     solve_spd,
     stiffness_matrix,
+)
+from kstruct.fem.bolts import (
+    axial_vectors,
+    bolt_stiffness_and_preload,
+    build_bolts,
+    evaluate,
+    locked_pulls,
 )
 from kstruct.fem.constraints import Constraints, build_constraints
 from kstruct.fem.contact import build_contact, solve_with_contact
@@ -39,6 +47,7 @@ class StaticResult:
     applied_load: np.ndarray  # (3,) N, sum of external forces
     thermal: ThermalResult | None = None  # temperature field used for thermal stress
     contact: list[tuple[int, int]] | None = None  # per contact: (closed pairs, total pairs)
+    bolts: list | None = None  # fem.bolts.BoltResult per bolt
 
     @property
     def von_mises(self) -> np.ndarray:
@@ -171,6 +180,7 @@ def solve_static(
     c = constraints or build_constraints(project, mesh, contacts_as_bonded=False)
     contact_connections = [x for x in project.connections if x.kind == ConnectionKind.CONTACT]
     contacts = [build_contact(mesh, x) for x in contact_connections]
+    connectors = build_bolts(project, mesh)
 
     report(0.1, "강성행렬 조립 중")
     K = stiffness_matrix(mesh, materials)
@@ -182,7 +192,10 @@ def solve_static(
         )
     dT = temperature_change(project, mesh, thermal)
     f = f_mech if dT is None else f_mech + _thermal_load(mesh, materials, dT)
-    if not np.any(f):
+    pulls = np.zeros(len(connectors))
+    if connectors:
+        K = K + bolt_stiffness_and_preload(connectors, n_dof)[0]
+    if not np.any(f) and not any(c.bolt.preload for c in connectors):
         raise SolverError("하중이 없습니다. 힘, 압력, 중력 또는 온도 하중을 추가하세요.")
 
     report(0.4, "연립방정식 푸는 중")
@@ -191,17 +204,47 @@ def solve_static(
     free = np.flatnonzero(~c.fixed)
     near_null = rigid_body_modes(mesh.nodes)[free]
     size = np.ptp(mesh.nodes, axis=0).max()
-    if contacts:
-        report(0.4, "접촉 상태 계산 중 (반복)")
-        u, iterations = solve_with_contact(
-            Kp, f, free, contacts, lambda A, b: solve_spd(A, b, near_null), scale
+
+    def contact_solve(rhs):
+        return solve_with_contact(
+            Kp, rhs, free, contacts, lambda A, b: solve_spd(A, b, near_null), scale
         )
+
+    def linear_solver(matrix):
+        """Factorize once; the returned function solves full-size right-hand sides."""
+        solve = make_solver(matrix.tocsr(), near_null)
+
+        def run(rhs):
+            out = np.zeros(n_dof)
+            out[free] = solve(rhs[free])
+            return out
+
+        return run
+
+    if any(c.bolt.preload for c in connectors):
+        joined = {
+            frozenset((x.faces_a[0].part_id, x.faces_b[0].part_id)) for x in project.connections
+        }
+        for bc in connectors:
+            pair = frozenset((bc.bolt.hole_a.part_id, bc.bolt.hole_b.part_id))
+            if bc.bolt.preload and pair not in joined:
+                raise SolverError("bolt without contact")
+        # lock the preload: settle contact under the nominal pulls, then (with that contact
+        # state frozen) solve for the pulls that give exactly P in each bolt
+        report(0.35, "볼트 체결 상태 계산 중")
+        _, f_nominal = bolt_stiffness_and_preload(connectors, n_dof)
+        reduced = contact_solve(f_nominal)[1] if contacts else Kp[free][:, free]
+        axial = axial_vectors(connectors, n_dof)
+        pulls = locked_pulls(connectors, axial, linear_solver(reduced))
+        f = f + bolt_stiffness_and_preload(connectors, n_dof, pulls)[1]
+    if contacts:
+        report(0.5, "접촉 상태 계산 중 (반복)")
+        u = contact_solve(f)[0]
         # only the stabilising springs hold a part that slid or lifted off
         if np.abs(u).max() > 0.2 * size:
             raise SolverError("contact unstable")
     else:
-        u = np.zeros(n_dof)
-        u[free] = solve_spd(Kp[free][:, free].tocsr(), f[free], near_null)
+        u = linear_solver(Kp[free][:, free])(f)
     if np.abs(u).max() > 1e3 * size:
         raise SolverError("unstable")
 
@@ -226,4 +269,5 @@ def solve_static(
         applied_load=applied,
         thermal=thermal,
         contact=[(int(cs.active.sum()), len(cs.active)) for cs in contacts],
+        bolts=evaluate(connectors, u, pulls),
     )

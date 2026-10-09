@@ -13,6 +13,7 @@ from OCP.TopoDS import TopoDS_Shape
 
 from kstruct.model import (
     AnalysisKind,
+    Bolt,
     Connection,
     ConnectionKind,
     FaceRef,
@@ -53,6 +54,7 @@ def save_project(project: Project, path: str | Path) -> Path:
         "operating_frequency": project.operating_frequency,
         "n_modes": project.n_modes,
         "load_cycle": project.load_cycle,
+        "units": project.units,
         "parts": [
             {"id": p.id, "name": p.name, "material_id": p.material_id, "visible": p.visible}
             for p in project.parts
@@ -67,6 +69,17 @@ def save_project(project: Project, path: str | Path) -> Path:
                 "ambient": ld.ambient,
             }
             for ld in project.loads
+        ],
+        "bolts": [
+            {
+                "hole_a": _refs([b.hole_a])[0],
+                "hole_b": _refs([b.hole_b])[0],
+                "size": b.size,
+                "grade": b.grade,
+                "preload": b.preload,
+                "name": b.name,
+            }
+            for b in project.bolts
         ],
         "connections": [
             {
@@ -109,6 +122,7 @@ def load_project(path: str | Path) -> Project:
             operating_frequency=doc.get("operating_frequency", 0.0),
             n_modes=doc.get("n_modes", 6),
             load_cycle=doc.get("load_cycle", "none"),
+            units=doc.get("units"),
         )
         for pd in doc["parts"]:
             brep = Path(z.extract(f"parts/{pd['id']}.brep", tmp))
@@ -130,6 +144,17 @@ def load_project(path: str | Path) -> Project:
             ld.get("ambient", 20.0),
         )
         for ld in doc["loads"]
+    ]
+    project.bolts = [
+        Bolt(
+            _unrefs([b["hole_a"]])[0],
+            _unrefs([b["hole_b"]])[0],
+            b["size"],
+            b["grade"],
+            b["preload"],
+            b.get("name", ""),
+        )
+        for b in doc.get("bolts", [])
     ]
     project.connections = [
         Connection(

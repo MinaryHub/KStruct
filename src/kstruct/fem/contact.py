@@ -95,28 +95,41 @@ def solve_with_contact(
     contacts: list[ContactSet],
     solve,
     scale: float,
-) -> tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, sp.csr_matrix]:
     """Active-set loop. `solve(K_free, f_free)` solves the reduced system.
-    Returns the displacement and the number of iterations used."""
+    Returns the displacement and the reduced matrix of the final contact state."""
     n_dof = K.shape[0]
     alpha = PENALTY_FACTOR * scale
+    position = np.full(n_dof, -1)
+    position[free] = np.arange(len(free))
     # tiny springs everywhere keep parts that are only held by contact from being singular
-    # while the active set settles; they carry a negligible share of the load
-    stabilise = sp.identity(n_dof, format="csr") * (1e-9 * scale)
+    # while the active set settles; they carry a negligible share of the load.
+    # The reduced matrix is built once; each iteration only adds the active contact terms.
+    K_ff = (K[free][:, free] + sp.identity(len(free), format="csr") * (1e-9 * scale)).tocsr()
+    f_f = f[free]
+    force_tol = 1e-9 * max(np.abs(f).max(), 1e-30)
     u = np.zeros(n_dof)
-    for iteration in range(1, MAX_ITERATIONS + 1):
-        Kc, fc = K + stabilise, f.copy()
+    for _ in range(MAX_ITERATIONS):
+        rows, cols, vals = [], [], []
+        f_c = f_f.copy()
         for cs in contacts:
-            Kp, fp = cs.penalty(n_dof, alpha)
-            Kc = Kc + Kp
-            fc += fp
+            dofs, c = position[cs.dofs[cs.active]], cs.coefs[cs.active]
+            c = np.where(dofs >= 0, c, 0.0)  # fixed DOFs stay at zero
+            dofs = np.where(dofs >= 0, dofs, 0)
+            rows.append(np.repeat(dofs, 21, axis=1).ravel())
+            cols.append(np.tile(dofs, (1, 21)).ravel())
+            vals.append(alpha * np.einsum("pi,pj->pij", c, c).ravel())
+            np.add.at(f_c, dofs.ravel(), (alpha * c * -cs.gap0[cs.active][:, None]).ravel())
+        K_c = K_ff + sp.csr_matrix(
+            (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+            shape=K_ff.shape,
+        )
         u = np.zeros(n_dof)
-        u[free] = solve(Kc[free][:, free].tocsr(), fc[free])
-        changed = False
+        u[free] = solve(K_c, f_c)
         # decide by the spring force, not the gap: a stiff penalty keeps even a pulling
         # pair's gap at round-off size. Release a pair when it pulls with more than a
         # negligible share of the applied load; engage an open pair when it penetrates.
-        force_tol = 1e-9 * max(np.abs(f).max(), 1e-30)
+        changed = False
         for cs in contacts:
             g = cs.gap(u)
             geom_tol = 1e-9 * max(np.abs(cs.gap0).max(), 1.0)
@@ -124,5 +137,5 @@ def solve_with_contact(
             changed |= bool(np.any(new_active != cs.active))
             cs.active = new_active
         if not changed:
-            return u, iteration
-    return u, MAX_ITERATIONS
+            return u, K_c
+    return u, K_c

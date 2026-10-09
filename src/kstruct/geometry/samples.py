@@ -53,3 +53,16 @@ def write_step(shape: TopoDS_Shape, path: str | Path) -> Path:
     if writer.Write(str(path)) != IFSelect_RetDone:
         raise OSError(f"STEP 저장 실패: {path}")
     return path
+
+
+def bolted_plates() -> TopoDS_Shape:
+    """Two 80x60x5 plates, one on the other, each with three 11 mm (M10 clearance) holes."""
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    for z0 in (0.0, 5.0):
+        plate = _box(0, 0, z0, 80, 60, 5)
+        for x, y in ((10, 10), (70, 10), (40, 50)):
+            plate = BRepAlgoAPI_Cut(plate, _hole(x, y, z0 - 1, gp_Dir(0, 0, 1), 5.5, 7)).Shape()
+        builder.Add(compound, plate)
+    return compound
