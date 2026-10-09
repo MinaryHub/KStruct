@@ -1,0 +1,41 @@
+[project]
+name = "kstruct"
+version = "0.1.0"
+description = "Mechanical part FEA for non-experts"
+readme = "README.md"
+authors = [
+    { name = "Kwang Beom Kim", email = "knoxxr@gmail.com" }
+]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "cadquery-ocp>=8.0.1.1.0",
+    "numpy>=2.5.3",
+    "pyside6>=6.12.0",
+    "pyvista>=0.49.0",
+    "pyvistaqt>=0.13.1",
+]
+
+[project.scripts]
+kstruct = "kstruct.app:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-qt>=4.5.0",
+    "ruff>=0.16.10",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore:Setting the shape on a NumPy array:DeprecationWarning"]
