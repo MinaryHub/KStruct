@@ -627,6 +627,12 @@ class MeshStep(StepPanel):
 
 # --- 6. solve -------------------------------------------------------------------------
 
+CYCLE_LABELS = [
+    ("none", "아니오 — 한 번 또는 가끔 걸림"),
+    ("pulsating", "한 방향 반복 — 0 → 최대 → 0 (예: 누름, 들어올림)"),
+    ("reversed", "양방향 반복 — +최대 ↔ −최대 (예: 회전축의 굽힘)"),
+]
+
 ANALYSIS_LABELS = [
     (AnalysisKind.STATIC, "강도 — 부러지거나 휘지 않을까?", "analysis.static"),
     (AnalysisKind.MODAL, "진동 — 어떤 진동수에서 흔들릴까? (공진)", "analysis.modal"),
@@ -664,6 +670,15 @@ class SolveStep(StepPanel):
         )
         self.add(self.modal_box)
 
+        self.static_box = QGroupBox("강도 해석 설정")
+        sform = QFormLayout(self.static_box)
+        self.cycle = QComboBox()
+        for key, label in CYCLE_LABELS:
+            self.cycle.addItem(label, key)
+        self.cycle.currentIndexChanged.connect(self._cycle_changed)
+        sform.addRow("하중이 반복되나요?", with_help(self.cycle, "fatigue.cycle"))
+        self.add(self.static_box)
+
         self.checklist = QLabel()
         self.checklist.setTextFormat(Qt.TextFormat.RichText)
         self.add(self.checklist)
@@ -685,6 +700,10 @@ class SolveStep(StepPanel):
         for b in self.kinds.buttons():
             b.setChecked(b.property("kind") == project.analysis)
         self.modal_box.setVisible(project.analysis == AnalysisKind.MODAL)
+        self.static_box.setVisible(project.analysis == AnalysisKind.STATIC)
+        self.cycle.blockSignals(True)
+        self.cycle.setCurrentIndex(max(0, self.cycle.findData(project.load_cycle)))
+        self.cycle.blockSignals(False)
         for w in (self.n_modes, self.speed, self.speed_unit):
             w.blockSignals(True)
         self.n_modes.setValue(project.n_modes)
@@ -708,6 +727,10 @@ class SolveStep(StepPanel):
         self.app.project.analysis = self.kinds.checkedButton().property("kind")
         self.changed.emit()
         self.refresh()
+
+    def _cycle_changed(self) -> None:
+        self.app.project.load_cycle = self.cycle.currentData()
+        self.changed.emit()
 
     def _modal_changed(self) -> None:
         project = self.app.project

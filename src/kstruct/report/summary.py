@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from kstruct.fem.fatigue import INFINITE_LIFE, LoadCycle, fatigue_check
 from kstruct.fem.static import StaticResult
 from kstruct.model import Project
 from kstruct.standards import StandardPack, Verdict, verdict
@@ -32,6 +33,9 @@ class PartSummary:
     verdict: Verdict
     max_disp: float
     at_fixture: bool  # peak sits on a fixture face (likely a stress singularity)
+    fatigue_fos: float | None = None
+    fatigue_life: float | None = None  # cycles at the weakest node
+    fatigue_verdict: Verdict | None = None
 
 
 @dataclass
@@ -44,6 +48,7 @@ class Summary:
     max_disp: float
     max_disp_at: np.ndarray
     reactions: list[np.ndarray]
+    fatigue: object | None = None  # fem.fatigue.FatigueResult
 
 
 def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Summary:
@@ -78,6 +83,17 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             )
         )
 
+    fatigue = None
+    cycle = LoadCycle(project.load_cycle)
+    if cycle != LoadCycle.NONE:
+        fatigue = fatigue_check(result, cycle)
+        for s in parts:
+            nodes = mesh.part_nodes(s.part_id)
+            weakest = nodes[int(np.argmin(fatigue.safety_factor[nodes]))]
+            s.fatigue_fos = float(fatigue.safety_factor[weakest])
+            s.fatigue_life = float(fatigue.life[nodes].min())
+            s.fatigue_verdict = verdict(s.fatigue_fos, s.target)
+
     worst = max(parts, key=lambda s: (_RANK[s.verdict], -s.min_fos))
     failure = "영구적으로 휘어질" if worst.ductile else "깨질"
     if worst.verdict == Verdict.OK:
@@ -96,6 +112,32 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             f"형상이나 재료를 바꿔야 합니다."
         )
 
+    if fatigue is not None:
+        weak = max(parts, key=lambda s: (_RANK[s.fatigue_verdict], -s.fatigue_fos))
+        life = (
+            "무한 수명(피로 한도 이하)"
+            if weak.fatigue_life >= INFINITE_LIFE
+            else f"약 {weak.fatigue_life:,.0f}회"
+        )
+        kind = "한 방향" if cycle == LoadCycle.PULSATING else "양방향"
+        fatigue_text = (
+            f" 반복 하중({kind}) 피로 안전율은 {weak.fatigue_fos:.2f}, 예상 수명은 {life}입니다."
+        )
+        if _RANK[weak.fatigue_verdict] > _RANK[worst.verdict]:
+            worst_verdict, worst_fos = weak.fatigue_verdict, weak.fatigue_fos
+            if weak.fatigue_verdict == Verdict.FAIL:
+                explanation = (
+                    f"한 번의 하중은 견디지만, 반복되면 피로로 균열이 생길 수 있습니다"
+                    f"(예상 수명 {life})."
+                )
+            else:
+                explanation = "한 번의 하중은 충분히 견디지만 반복 하중에 대한 여유가 부족합니다."
+        else:
+            worst_verdict, worst_fos = worst.verdict, worst.min_fos
+        explanation += fatigue_text
+    else:
+        worst_verdict, worst_fos = worst.verdict, worst.min_fos
+
     notes = []
     if any(s.at_fixture for s in parts):
         notes.append(
@@ -110,16 +152,18 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             "실제 거동과 차이가 클 수 있습니다."
         )
 
-    title = VERDICT_STYLE[worst.verdict][0]
+    title = VERDICT_STYLE[worst_verdict][0]
+    label = "피로 안전율" if worst_fos != worst.min_fos else "최소 안전율"
     return Summary(
         parts=parts,
-        verdict=worst.verdict,
-        headline=f"{title} — 최소 안전율 {worst.min_fos:.2f}",
+        verdict=worst_verdict,
+        headline=f"{title} — {label} {worst_fos:.2f}",
         explanation=explanation,
         notes=notes,
         max_disp=float(disp[max_node]),
         max_disp_at=mesh.nodes[max_node],
         reactions=result.reactions,
+        fatigue=fatigue,
     )
 
 

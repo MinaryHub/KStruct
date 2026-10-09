@@ -1,0 +1,71 @@
+"""High-cycle fatigue check of a linear static result (stress-life method).
+
+The static load is taken as the peak of a repeated load:
+  - pulsating:  0 -> peak -> 0     (sigma_a = sigma_m = sigma_peak / 2)
+  - reversed:  -peak -> +peak      (sigma_a = sigma_peak, sigma_m = 0)
+
+Equivalent stress is the signed von Mises stress (sign of the hydrostatic part), so
+compressive mean stress is not credited as harmful. Modified Goodman for mean stress,
+Basquin S-N line from (1e3, 0.9 Su) to (1e6, Se). Se is the polished-specimen fatigue
+limit times a combined Marin factor for an ordinary machined surface and size.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+import numpy as np
+
+from kstruct.fem.static import FOS_CAP, StaticResult
+
+MARIN_FACTOR = 0.7  # surface (machined ≈ 0.8) × size (≈ 0.85-0.9), rounded down
+LOW_CYCLES, HIGH_CYCLES = 1e3, 1e6
+INFINITE_LIFE = 1e9  # shown as "무한 수명"
+
+
+class LoadCycle(Enum):
+    NONE = "none"
+    PULSATING = "pulsating"
+    REVERSED = "reversed"
+
+
+@dataclass
+class FatigueResult:
+    safety_factor: np.ndarray  # (N,) Goodman safety factor against the endurance limit
+    life: np.ndarray  # (N,) predicted cycles to crack initiation (INFINITE_LIFE if below Se)
+    endurance: dict[int, float]  # part id -> corrected endurance limit Se, MPa
+
+
+def signed_von_mises(result: StaticResult) -> np.ndarray:
+    hydro = result.stress[:, :3].sum(axis=1)
+    return np.where(hydro < 0, -1.0, 1.0) * result.von_mises
+
+
+def fatigue_check(result: StaticResult, cycle: LoadCycle) -> FatigueResult:
+    peak = signed_von_mises(result)
+    if cycle == LoadCycle.REVERSED:
+        amp, mean = np.abs(peak), np.zeros_like(peak)
+    else:
+        amp, mean = np.abs(peak) / 2, peak / 2
+
+    n = result.mesh.n_nodes
+    fos = np.full(n, FOS_CAP)
+    life = np.full(n, INFINITE_LIFE)
+    endurance = {}
+    for pid, m in result.materials.items():
+        nodes = result.mesh.part_nodes(pid)
+        su = m.tensile_strength
+        se = MARIN_FACTOR * (m.fatigue_limit or 0.5 * su)
+        endurance[pid] = se
+        a, mt = amp[nodes], np.maximum(mean[nodes], 0.0)  # compressive mean: no benefit taken
+        with np.errstate(divide="ignore", invalid="ignore"):
+            demand = a / se + mt / su
+            fos[nodes] = np.minimum(np.where(demand > 0, 1.0 / demand, FOS_CAP), FOS_CAP)
+            # equivalent fully reversed amplitude (Goodman), then Basquin life
+            ar = np.where(mt < su, a / (1.0 - mt / su), np.inf)
+            b = np.log10(0.9 * su / se) / np.log10(HIGH_CYCLES / LOW_CYCLES)
+            cycles = LOW_CYCLES * (0.9 * su / ar) ** (1.0 / b)
+        cycles = np.where(ar <= se, INFINITE_LIFE, np.clip(cycles, 1.0, INFINITE_LIFE))
+        life[nodes] = np.where(ar >= 0.9 * su, np.minimum(cycles, LOW_CYCLES), cycles)
+    return FatigueResult(fos, life, endurance)

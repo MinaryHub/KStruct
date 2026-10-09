@@ -480,6 +480,8 @@ class MainWindow(QMainWindow):
             fields = list(steps.FIELD_LABELS)
             if r.thermal is not None:
                 fields += THERMAL_FIELDS
+            if self.summary.fatigue is not None:
+                fields += [("ffos", "피로 안전율"), ("life", "예상 수명 (반복 횟수)")]
             panel.set_fields(fields)
             panel.set_modes(None)
             panel.animate.setChecked(False)
@@ -505,6 +507,18 @@ class MainWindow(QMainWindow):
             if key == "temp":
                 return ResultField(thermal.temperature, "온도 (°C)", cmap="inferno", unit="°C")
             return ResultField(thermal.heat_flux_magnitude, "열 흐름 (W/m²)", "magma", None, "W/m²")
+        if key in ("ffos", "life"):
+            fatigue = self.summary.fatigue
+            target = max(
+                standards.pack(self.project.standard).target(m) for m in r.materials.values()
+            )
+            if key == "ffos":
+                values = np.minimum(fatigue.safety_factor, 2 * target)
+                return ResultField(values, "피로 안전율", cmap="RdYlGn", clim=(0, 2 * target))
+            # log scale: 10^3 (red) ... 10^9 = infinite (green)
+            return ResultField(
+                np.log10(fatigue.life), "수명 (10의 거듭제곱 회)", "RdYlGn", (3, 9), "(log10 회)"
+            )
         if key == "vm":
             return ResultField(r.von_mises, "응력 (MPa)", unit="MPa")
         if key == "fos":
@@ -597,6 +611,11 @@ class MainWindow(QMainWindow):
                     f"&nbsp;최소 안전율 <b>{p.min_fos:.2f}</b> (권장 {p.target:.1f})"
                     f" · 최대 변형 {p.max_disp:.4g} mm"
                 )
+                if p.fatigue_fos is not None:
+                    life = "무한" if p.fatigue_life >= 1e9 else f"{p.fatigue_life:,.0f}회"
+                    lines[-1] += (
+                        f"<br>&nbsp;피로 안전율 <b>{p.fatigue_fos:.2f}</b> · 예상 수명 {life}"
+                    )
             if r.thermal is not None:
                 lines.append(
                     f"열응력 포함: 온도 {r.thermal.temperature.min():.1f}"
@@ -644,6 +663,8 @@ class MainWindow(QMainWindow):
             ]
             if r.thermal is not None:
                 shots.append(("temp", "온도 분포", None))
+            if self.summary.fatigue is not None:
+                shots.append(("ffos", "피로 안전율 분포", None))
         images = []
         current_mode = panel.mode.currentIndex()
         for key, caption, mode in shots:

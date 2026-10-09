@@ -58,6 +58,13 @@ def _static_html(
             f"<td><b>{s.min_fos:.2f}</b> / {s.target:.1f}</td><td>{s.max_disp:.4g} mm</td>"
             f"<td>{VERDICT_STYLE[s.verdict][0]}</td></tr>"
         )
+        if s.fatigue_fos is not None:
+            life = "무한 수명" if s.fatigue_life >= 1e9 else f"{s.fatigue_life:,.0f}회"
+            rows.append(
+                f"<tr><td colspan='4' align='right'>반복 하중 피로 검토</td>"
+                f"<td><b>{s.fatigue_fos:.2f}</b> / {s.target:.1f}</td><td>{life}</td>"
+                f"<td>{VERDICT_STYLE[s.fatigue_verdict][0]}</td></tr>"
+            )
 
     fixtures = "".join(
         f"<li>{FIXTURE_NAMES[f.kind]}: {esc(_faces(project, f.faces))}</li>"

@@ -122,6 +122,7 @@ class Project:
     reference_temperature: float = 20.0  # °C, stress-free temperature for thermal stress
     operating_frequency: float = 0.0  # Hz, excitation to compare natural frequencies with
     n_modes: int = 6
+    load_cycle: str = "none"  # fem.fatigue.LoadCycle value
 
     def part(self, part_id: int) -> Part:
         return next(p for p in self.parts if p.id == part_id)

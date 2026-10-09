@@ -10,7 +10,7 @@ from kstruct.geometry.tessellate import faces_of
 from kstruct.ui import help as kshelp
 
 UI_SRC = Path(__file__).parents[1] / "src" / "kstruct" / "ui"  # help keys live in UI code
-PREFIXES = "step|view|file|help|project|connection|material|fixture|load|mesh|result|analysis|modal"
+PREFIXES = "step|view|file|help|project|connection|material|fixture|load|mesh|result|analysis|modal|fatigue"
 HELP_KEY = rf'"((?:{PREFIXES})\.[a-z_]+)"'
 
 
@@ -164,3 +164,22 @@ def test_thermal_workflow(qtbot, tmp_path):
     result = _run(qtbot, window, tmp_path)
     assert result.temperature.min() > 20.0
     assert result.heat_out == pytest.approx(5.0, rel=0.02)
+
+
+def test_fatigue_workflow(qtbot, tmp_path):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind, Load, LoadKind
+
+    window = _bracket_with_material(qtbot)
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])]
+    window.project.loads = [
+        Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (90, 30, 8)))], vector=(0, 0, -1500.0))
+    ]
+    window.project.load_cycle = "reversed"
+    _run(qtbot, window, tmp_path)
+    part = window.summary.parts[0]
+    # fatigue governs: reversed loading is far harsher than one static application
+    assert part.fatigue_fos < part.min_fos
+    keys = [window.panels[6].field.itemData(i) for i in range(window.panels[6].field.count())]
+    assert "ffos" in keys and "life" in keys

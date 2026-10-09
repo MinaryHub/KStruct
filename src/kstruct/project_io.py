@@ -52,6 +52,7 @@ def save_project(project: Project, path: str | Path) -> Path:
         "reference_temperature": project.reference_temperature,
         "operating_frequency": project.operating_frequency,
         "n_modes": project.n_modes,
+        "load_cycle": project.load_cycle,
         "parts": [
             {"id": p.id, "name": p.name, "material_id": p.material_id, "visible": p.visible}
             for p in project.parts
@@ -107,6 +108,7 @@ def load_project(path: str | Path) -> Project:
             reference_temperature=doc.get("reference_temperature", 20.0),
             operating_frequency=doc.get("operating_frequency", 0.0),
             n_modes=doc.get("n_modes", 6),
+            load_cycle=doc.get("load_cycle", "none"),
         )
         for pd in doc["parts"]:
             brep = Path(z.extract(f"parts/{pd['id']}.brep", tmp))
