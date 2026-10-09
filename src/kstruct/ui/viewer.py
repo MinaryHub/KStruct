@@ -7,7 +7,7 @@ from importlib import resources
 
 import numpy as np
 import pyvista as pv
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
 from scipy.spatial import cKDTree
@@ -74,6 +74,17 @@ class ModelViewer(QWidget):
         self._probe_actor = None
         self.selection_enabled = True
         self._press_pos: tuple[int, int] | None = None
+
+        # deformation animation: surface points = base + factor(t) * delta
+        self._anim_surface: pv.PolyData | None = None
+        self._anim_base: np.ndarray | None = None
+        self._anim_delta: np.ndarray | None = None
+        self._anim_symmetric = False  # modes swing both ways, static loads go 0 -> 1
+        self._anim_phase = 0.0
+        self._animated = False
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(40)
+        self._anim_timer.timeout.connect(self._anim_step)
 
         self._picker = vtkCellPicker()
         self._picker.SetTolerance(0.0005)
@@ -227,12 +238,29 @@ class ModelViewer(QWidget):
 
     # --- results -------------------------------------------------------------------
 
-    def show_result(self, mesh: FEMesh, displacement: np.ndarray, field: ResultField, scale: float):
+    def show_result(
+        self,
+        mesh: FEMesh,
+        displacement: np.ndarray,
+        field: ResultField,
+        scale: float,
+        symmetric: bool = False,
+    ):
         self.clear_result(render=False)
         points = mesh.nodes + scale * displacement
         grid = _surface_grid(mesh, points)
         grid.point_data["value"] = field.values
         surf = grid.extract_surface(algorithm="dataset_surface", nonlinear_subdivision=2)
+        # subdivision is linear in the node coordinates, so the undeformed surface has the
+        # same topology and animation can interpolate point positions directly
+        base = _surface_grid(mesh, mesh.nodes).extract_surface(
+            algorithm="dataset_surface", nonlinear_subdivision=2
+        )
+        self._anim_surface = surf
+        self._anim_base = np.array(base.points)
+        self._anim_delta = np.array(surf.points) - self._anim_base
+        self._anim_symmetric = symmetric
+        self._anim_phase = 0.0
         self._result_actor = self.plotter.add_mesh(
             surf,
             scalars="value",
@@ -268,9 +296,34 @@ class ModelViewer(QWidget):
                 actor.SetVisibility(False)
         for actor in self._overlay:
             actor.SetVisibility(False)
+        if self._animated:
+            self._anim_timer.start()
+        self.plotter.render()
+
+    def set_animated(self, on: bool) -> None:
+        self._animated = on
+        if on and self._result_actor is not None:
+            self._anim_timer.start()
+        else:
+            self._anim_timer.stop()
+            if self._anim_surface is not None:
+                self._anim_surface.points = self._anim_base + self._anim_delta
+                self.plotter.render()
+
+    def _anim_step(self) -> None:
+        if self._anim_surface is None:
+            return
+        self._anim_phase += 0.2
+        if self._anim_symmetric:
+            factor = np.sin(self._anim_phase)
+        else:
+            factor = 0.5 * (1 - np.cos(self._anim_phase))
+        self._anim_surface.points = self._anim_base + factor * self._anim_delta
         self.plotter.render()
 
     def clear_result(self, render: bool = True) -> None:
+        self._anim_timer.stop()
+        self._anim_surface = None
         if self._result_actor is not None:
             self.plotter.remove_actor(self._result_actor)
             self.plotter.remove_scalar_bar()

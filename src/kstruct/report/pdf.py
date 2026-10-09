@@ -42,7 +42,7 @@ def _img(png: bytes, width: int = 640) -> str:
     return f'<img src="data:image/png;base64,{data}" width="{width}">'
 
 
-def build_html(
+def _static_html(
     project: Project, result: StaticResult, summary: Summary, images: list[tuple[str, bytes]]
 ) -> str:
     pack = standards.pack(project.standard)
@@ -128,6 +128,144 @@ def build_html(
 <p style="color:#8a6d3b;"><b>고지</b>: {DISCLAIMER}</p>
 </body></html>
 """
+
+
+FONT = "font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;"
+
+
+def _page(title: str, project: Project, headline: str, explanation: str, verdict, body: str) -> str:
+    esc = html.escape
+    if verdict is None:
+        color, bg = "#2b5d8a", "#eaf2fa"
+    else:
+        _, color, bg = VERDICT_STYLE[verdict]
+    source = esc(project.source_path.name) if project.source_path else "-"
+    return f"""
+<html><body style="{FONT} font-size: 10pt;">
+<h1>{esc(title)}</h1>
+<p>모델: {source} &nbsp;|&nbsp; 작성일: {dt.date.today():%Y-%m-%d}</p>
+<table width="100%" cellpadding="10" style="background:{bg}; border: 2px solid {color};">
+<tr><td><span style="font-size:16pt; color:{color};"><b>{esc(headline)}</b></span><br>
+{esc(explanation)}</td></tr></table>
+{body}
+<p style="color:#8a6d3b;"><b>고지</b>: {DISCLAIMER}</p>
+</body></html>
+"""
+
+
+def _materials_list(project: Project, materials: dict) -> str:
+    pack = standards.pack(project.standard)
+    return "".join(
+        f"<li>{html.escape(project.part(pid).name)}: {html.escape(pack.material_name(m))}</li>"
+        for pid, m in materials.items()
+    )
+
+
+def _pictures(images) -> str:
+    return "".join(f"<h3>{html.escape(cap)}</h3><p>{_img(png)}</p>" for cap, png in images)
+
+
+def _modal_html(project, result, summary, images, materials) -> str:
+    rows = "".join(
+        f"<tr><td>{i + 1}차</td><td><b>{f:,.2f} Hz</b></td><td>{f * 60:,.0f} rpm</td>"
+        f"<td>{p[0] * 100:.0f}% / {p[1] * 100:.0f}% / {p[2] * 100:.0f}%</td></tr>"
+        for i, (f, p) in enumerate(zip(result.frequencies, result.participation, strict=True))
+    )
+    op = (
+        f"<p>운전 진동수: {project.operating_frequency:,.2f} Hz "
+        f"({project.operating_frequency * 60:,.0f} rpm)</p>"
+        if project.operating_frequency > 0
+        else "<p>운전 진동수: 입력하지 않음</p>"
+    )
+    fixtures = (
+        "".join(
+            f"<li>{FIXTURE_NAMES[f.kind]}: {html.escape(_faces(project, f.faces))}</li>"
+            for f in project.fixtures
+        )
+        or "<li>없음 (자유 진동)</li>"
+    )
+    notes = "".join(f"<li>{html.escape(n)}</li>" for n in summary.notes)
+    body = f"""
+{f"<ul>{notes}</ul>" if notes else ""}
+<h2>1. 고유진동수</h2>
+<table width="100%" border="1" cellspacing="0" cellpadding="4">
+<tr style="background:#eef1f5;"><th>차수</th><th>진동수</th><th>회전수 환산</th>
+<th>유효질량 X / Y / Z</th></tr>{rows}</table>
+{op}
+<p>유효질량은 그 진동 모양이 각 방향 흔들림에 얼마나 크게 관여하는지를 나타냅니다.</p>
+<h2>2. 해석 조건</h2>
+<p><b>재료</b></p><ul>{_materials_list(project, materials)}</ul>
+<p><b>고정</b></p><ul>{fixtures}</ul>
+<p><b>메시</b>: 2차 사면체 요소 {len(result.mesh.tets):,}개</p>
+<h2>3. 진동 모양</h2>
+<p>색과 변형 크기는 상대적인 값입니다(실제 진폭은 가진력의 크기에 따라 달라집니다).</p>
+{_pictures(images)}
+<h2>4. 해석 방법과 한계</h2>
+<ul><li>선형 고유치 해석 (감쇠 무시, 작은 진동 가정)</li>
+<li>공진 판정: 운전 진동수 ±10% 이내 위험, ±20% 이내 주의</li></ul>
+"""
+    return _page(
+        "진동(고유진동수) 해석 보고서",
+        project,
+        summary.headline,
+        summary.explanation,
+        summary.verdict,
+        body,
+    )
+
+
+def _thermal_html(project, result, summary, images, materials) -> str:
+    loads = []
+    for ld in project.loads:
+        faces = html.escape(_faces(project, ld.faces))
+        if ld.kind == LoadKind.FACE_TEMPERATURE:
+            loads.append(f"고정 온도 {ld.magnitude:.1f} °C: {faces}")
+        elif ld.kind == LoadKind.HEAT_FLOW:
+            loads.append(f"열 입력 {ld.magnitude:.3g} W: {faces}")
+        elif ld.kind == LoadKind.CONVECTION:
+            loads.append(f"대류 h = {ld.magnitude:.3g} W/m²K, 공기 {ld.ambient:.0f} °C: {faces}")
+    rows = []
+    for pid, m in materials.items():
+        nodes = result.mesh.part_nodes(pid)
+        limit = f"{m.max_service_temperature:.0f} °C" if m.max_service_temperature else "-"
+        rows.append(
+            f"<tr><td>{html.escape(project.part(pid).name)}</td>"
+            f"<td>{result.temperature[nodes].min():.1f} °C</td>"
+            f"<td><b>{result.temperature[nodes].max():.1f} °C</b></td><td>{limit}</td></tr>"
+        )
+    notes = "".join(f"<li>{html.escape(n)}</li>" for n in summary.notes)
+    body = f"""
+{f"<ul>{notes}</ul>" if notes else ""}
+<h2>1. 부품별 온도</h2>
+<table width="100%" border="1" cellspacing="0" cellpadding="4">
+<tr style="background:#eef1f5;"><th>부품</th><th>최저</th><th>최고</th><th>권장 최고 사용온도</th></tr>
+{"".join(rows)}</table>
+<p>들어온 열 {result.heat_in:.3g} W · 빠져나간 열 {result.heat_out:.3g} W</p>
+<h2>2. 해석 조건</h2>
+<p><b>재료</b></p><ul>{_materials_list(project, materials)}</ul>
+<p><b>열 조건</b></p><ul>{"".join(f"<li>{x}</li>" for x in loads)}</ul>
+<p>지정하지 않은 면은 열이 드나들지 않는(단열) 것으로 가정합니다.</p>
+<h2>3. 결과 그림</h2>
+{_pictures(images)}
+<h2>4. 해석 방법과 한계</h2>
+<ul><li>정상상태 열전도 해석 (충분한 시간이 지나 온도가 더 이상 변하지 않는 상태)</li>
+<li>복사 열전달과 온도에 따른 물성 변화는 고려하지 않음</li>
+<li>권장 최고 사용온도는 대략적인 값이며 재료 등급에 따라 다름</li></ul>
+"""
+    return _page(
+        "열전달 해석 보고서", project, summary.headline, summary.explanation, summary.verdict, body
+    )
+
+
+def build_html(project, result, summary, images, materials: dict | None = None) -> str:
+    from kstruct.fem.modal import ModalResult
+    from kstruct.fem.thermal import ThermalResult
+
+    if isinstance(result, ModalResult):
+        return _modal_html(project, result, summary, images, materials or {})
+    if isinstance(result, ThermalResult):
+        return _thermal_html(project, result, summary, images, materials or {})
+    return _static_html(project, result, summary, images)
 
 
 def write_pdf(html_text: str, path: str | Path) -> Path:

@@ -121,3 +121,125 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
         max_disp_at=mesh.nodes[max_node],
         reactions=result.reactions,
     )
+
+
+# --- modal ----------------------------------------------------------------------------
+
+RESONANCE_FAIL = 0.10  # natural frequency within ±10 % of the excitation
+RESONANCE_WARN = 0.20
+
+
+@dataclass
+class ModalSummary:
+    verdict: Verdict | None  # None when no operating frequency was given
+    headline: str
+    explanation: str
+    notes: list[str]
+
+
+def summarize_modal(project: Project, result) -> ModalSummary:
+    freqs = result.frequencies
+    f_op = project.operating_frequency
+    notes = []
+    if result.rigid_modes:
+        notes.append(
+            "고정이 없어 부품이 공중에 떠 있는 상태로 계산했습니다(자유 진동). "
+            "0 Hz에 해당하는 움직임 6개는 제외했습니다."
+        )
+    if f_op <= 0:
+        return ModalSummary(
+            None,
+            f"가장 낮은 고유진동수 {freqs[0]:,.1f} Hz",
+            "부품이 스스로 잘 흔들리는 진동수입니다. 모터·펌프 등 주변 진동원의 진동수가 "
+            "이 값들과 가까우면 공진으로 크게 흔들릴 수 있습니다. "
+            "6단계에서 '운전 진동수'를 입력하면 공진 위험을 판정해 드립니다.",
+            notes,
+        )
+    gaps = np.abs(freqs - f_op) / f_op
+    closest = int(np.argmin(gaps))
+    gap = float(gaps[closest])
+    if gap <= RESONANCE_FAIL:
+        verdict = Verdict.FAIL
+        text = (
+            f"{closest + 1}차 고유진동수 {freqs[closest]:,.1f} Hz가 운전 진동수 {f_op:,.1f} Hz와 "
+            f"{gap * 100:.0f}% 차이로 매우 가깝습니다. 공진으로 크게 흔들리거나 피로 파손될 수 "
+            "있습니다. 두께·리브로 강성을 바꾸거나 운전 속도를 조정하세요."
+        )
+    elif gap <= RESONANCE_WARN:
+        verdict = Verdict.WARN
+        text = (
+            f"{closest + 1}차 고유진동수 {freqs[closest]:,.1f} Hz가 운전 진동수 {f_op:,.1f} Hz와 "
+            f"{gap * 100:.0f}% 차이입니다. 공진 여유(보통 ±20% 이상)가 부족합니다."
+        )
+    else:
+        verdict = Verdict.OK
+        text = (
+            f"모든 고유진동수가 운전 진동수 {f_op:,.1f} Hz와 20% 이상 떨어져 있어 "
+            f"공진 위험이 낮습니다(가장 가까운 것: {closest + 1}차 {freqs[closest]:,.1f} Hz)."
+        )
+    if f_op > freqs[-1] * (1 + RESONANCE_WARN):
+        notes.append(
+            f"운전 진동수가 계산한 {len(freqs)}개 진동수보다 높습니다. 더 높은 차수의 진동수는 "
+            "확인하지 않았습니다."
+        )
+    title = VERDICT_STYLE[verdict][0]
+    headline = f"{title} — 1차 고유진동수 {freqs[0]:,.1f} Hz (운전 {f_op:,.1f} Hz)"
+    return ModalSummary(verdict, headline, text, notes)
+
+
+# --- thermal --------------------------------------------------------------------------
+
+
+@dataclass
+class ThermalSummary:
+    verdict: Verdict | None
+    headline: str
+    explanation: str
+    notes: list[str]
+
+
+def summarize_thermal(project: Project, result, materials: dict) -> ThermalSummary:
+    T = result.temperature
+    mesh = result.mesh
+    worst, worst_ratio, limit_text = None, -np.inf, ""
+    for pid, m in materials.items():
+        if m.max_service_temperature is None:
+            continue
+        t_max = float(T[mesh.part_nodes(pid)].max())
+        ratio = t_max / m.max_service_temperature
+        if ratio > worst_ratio:
+            worst, worst_ratio = (pid, m, t_max), ratio
+    notes = []
+    if result.heat_in > 0:
+        balance = abs(result.heat_out - result.heat_in) / result.heat_in
+        if balance > 0.02:
+            notes.append(
+                f"들어온 열 {result.heat_in:.3g} W와 나간 열 {result.heat_out:.3g} W의 차이가 "
+                f"{balance * 100:.0f}%입니다. 메시를 더 세밀하게 하면 정확해집니다."
+            )
+    headline = f"최고 {T.max():,.1f} °C · 최저 {T.min():,.1f} °C"
+    if worst is None:
+        return ThermalSummary(None, headline, "온도 분포를 계산했습니다.", notes)
+    pid, m, t_max = worst
+    limit = m.max_service_temperature
+    name = project.part(pid).name
+    if t_max <= 0.9 * limit:
+        verdict = Verdict.OK
+        limit_text = (
+            f"가장 뜨거운 곳도 {name} 재료의 권장 최고 사용온도({limit:.0f} °C)보다 "
+            "충분히 낮습니다."
+        )
+    elif t_max <= limit:
+        verdict = Verdict.WARN
+        limit_text = (
+            f"{name}의 최고 온도 {t_max:.0f} °C가 재료의 권장 최고 사용온도({limit:.0f} °C)에 "
+            "가깝습니다. 냉각을 늘리거나 내열성이 높은 재료를 검토하세요."
+        )
+    else:
+        verdict = Verdict.FAIL
+        limit_text = (
+            f"{name}의 최고 온도 {t_max:.0f} °C가 재료의 권장 최고 사용온도({limit:.0f} °C)를 "
+            "넘습니다. 강도가 떨어지거나 변형·변색될 수 있습니다."
+        )
+    title = VERDICT_STYLE[verdict][0]
+    return ThermalSummary(verdict, f"{title} — {headline}", limit_text, notes)

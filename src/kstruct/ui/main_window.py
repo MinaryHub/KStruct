@@ -26,13 +26,21 @@ from PySide6.QtWidgets import (
 from kstruct import standards
 from kstruct.fem import ConstraintError, MeshingError, SolverError, generate_mesh, solve_static
 from kstruct.fem.mesh import FEMesh
+from kstruct.fem.modal import ModalResult, solve_modal
 from kstruct.fem.static import StaticResult
+from kstruct.fem.thermal import ThermalResult, solve_thermal
 from kstruct.geometry import GeometryImportError, load_cad
 from kstruct.geometry.contacts import find_touching_faces
 from kstruct.geometry.samples import l_bracket, two_plates, write_step
-from kstruct.model import Project
+from kstruct.model import THERMAL_LOADS, AnalysisKind, LoadKind, Project
 from kstruct.project_io import SUFFIX, ProjectFileError, load_project, save_project
-from kstruct.report.summary import VERDICT_STYLE, Summary, summarize
+from kstruct.report.summary import (
+    VERDICT_STYLE,
+    Summary,
+    summarize,
+    summarize_modal,
+    summarize_thermal,
+)
 from kstruct.ui import steps
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 from kstruct.ui.viewer import ModelViewer, ResultField
@@ -49,6 +57,7 @@ SAMPLES = {"bracket": l_bracket, "two_plates": two_plates}
 
 STEP_OPEN, STEP_MATERIAL, STEP_FIXTURE, STEP_LOAD, STEP_MESH, STEP_SOLVE, STEP_RESULT = range(7)
 STEP_NAMES = ["1. 모델 열기", "2. 재료", "3. 고정", "4. 하중", "5. 메시", "6. 해석", "7. 결과"]
+THERMAL_FIELDS = [("temp", "온도"), ("flux", "열 흐름 (열유속)")]
 STEP_KEYS = [
     "step.open",
     "step.material",
@@ -84,8 +93,9 @@ class MainWindow(QMainWindow):
         self.project: Project | None = None
         self.project_path: Path | None = None
         self.mesh: FEMesh | None = None
-        self.result: StaticResult | None = None
+        self.result: StaticResult | ModalResult | ThermalResult | None = None
         self.summary: Summary | None = None
+        self.materials: dict = {}
         self._busy = False
 
         self.viewer = ModelViewer()
@@ -339,16 +349,49 @@ class MainWindow(QMainWindow):
             return [(False, "모델을 여세요")]
         visible = [x for x in p.parts if x.visible]
         missing = [x.name for x in visible if x.material_id is None]
-        return [
+        checks = [
             (True, f"모델: 부품 {len(visible)}개"),
             (
                 not missing,
                 "재료: 모든 부품 지정됨" if not missing else f"재료 미지정: {', '.join(missing)}",
             ),
-            (bool(p.fixtures), f"고정: {len(p.fixtures)}개" if p.fixtures else "고정이 없습니다"),
-            (bool(p.loads), f"하중: {len(p.loads)}개" if p.loads else "하중이 없습니다"),
-            (True, "메시: 준비됨" if self.mesh else "메시: 해석할 때 자동으로 만듭니다"),
         ]
+        thermal_bcs = [ld for ld in p.loads if ld.kind in THERMAL_LOADS]
+        if p.analysis == AnalysisKind.STATIC:
+            mech = [ld for ld in p.loads if ld.kind not in THERMAL_LOADS]
+            checks += [
+                (
+                    bool(p.fixtures),
+                    f"고정: {len(p.fixtures)}개" if p.fixtures else "고정이 없습니다",
+                ),
+                (
+                    bool(mech or thermal_bcs),
+                    f"하중: {len(p.loads)}개" if p.loads else "하중이 없습니다",
+                ),
+            ]
+        elif p.analysis == AnalysisKind.MODAL:
+            checks.append(
+                (
+                    True,
+                    f"고정: {len(p.fixtures)}개"
+                    if p.fixtures
+                    else "고정 없음: 공중에 떠 있는 상태의 진동수를 구합니다",
+                )
+            )
+        else:
+            has_ref = any(
+                ld.kind in (LoadKind.FACE_TEMPERATURE, LoadKind.CONVECTION) for ld in thermal_bcs
+            )
+            checks.append(
+                (
+                    has_ref,
+                    f"열 조건: {len(thermal_bcs)}개"
+                    if has_ref
+                    else "4단계에서 '고정 온도'나 '대류 냉각'을 하나 이상 지정하세요",
+                )
+            )
+        checks.append((True, "메시: 준비됨" if self.mesh else "메시: 해석할 때 자동으로 만듭니다"))
+        return checks
 
     # --- meshing & solving -----------------------------------------------------------
 
@@ -383,6 +426,7 @@ class MainWindow(QMainWindow):
         project, mesh = self.project, self.mesh
         mats = standards.materials()
         materials = {p.id: mats[p.material_id] for p in project.parts if p.visible}
+        kind = project.analysis
         self._busy = True
         panel.set_progress(0.0, "시작")
 
@@ -391,13 +435,24 @@ class MainWindow(QMainWindow):
             if m is None:
                 progress(0.02, "메시 만드는 중 (잠시 걸릴 수 있습니다)")
                 m = generate_mesh(project)
+            if kind == AnalysisKind.MODAL:
+                return m, solve_modal(project, m, materials, project.n_modes, progress)
+            if kind == AnalysisKind.THERMAL:
+                return m, solve_thermal(project, m, materials, progress)
             return m, solve_static(project, m, materials, progress)
 
         def done(value):
             self._busy = False
             self.mesh, self.result = value
-            self.summary = summarize(project, self.result, standards.pack(project.standard))
+            self.materials = materials
+            if isinstance(self.result, ModalResult):
+                self.summary = summarize_modal(project, self.result)
+            elif isinstance(self.result, ThermalResult):
+                self.summary = summarize_thermal(project, self.result, materials)
+            else:
+                self.summary = summarize(project, self.result, standards.pack(project.standard))
             panel.set_progress(None, "")
+            self._configure_result_panel()
             self._update_nav()
             self._go(STEP_RESULT)
 
@@ -410,8 +465,46 @@ class MainWindow(QMainWindow):
 
     # --- results ---------------------------------------------------------------------
 
+    def _configure_result_panel(self) -> None:
+        panel: steps.ResultStep = self.panels[STEP_RESULT]
+        r = self.result
+        if isinstance(r, ModalResult):
+            panel.set_fields([("mode", "진동 모양 (상대 크기)")])
+            panel.set_modes(r.frequencies)
+            panel.animate.setChecked(True)
+        elif isinstance(r, ThermalResult):
+            panel.set_fields(THERMAL_FIELDS)
+            panel.set_modes(None)
+            panel.animate.setChecked(False)
+        else:
+            fields = list(steps.FIELD_LABELS)
+            if r.thermal is not None:
+                fields += THERMAL_FIELDS
+            panel.set_fields(fields)
+            panel.set_modes(None)
+            panel.animate.setChecked(False)
+        has_shape = not isinstance(r, ThermalResult)
+        panel.scale.setEnabled(has_shape)
+        panel.animate.setEnabled(has_shape)
+
+    def _displacement(self) -> np.ndarray:
+        r = self.result
+        if isinstance(r, ModalResult):
+            return r.shapes[max(0, self.panels[STEP_RESULT].mode.currentIndex())]
+        if isinstance(r, ThermalResult):
+            return np.zeros_like(r.mesh.nodes)
+        return r.displacement
+
     def result_field(self, key: str) -> ResultField:
         r = self.result
+        if key == "mode":
+            mag = np.linalg.norm(self._displacement(), axis=1)
+            return ResultField(mag / (mag.max() or 1.0), "진동 모양 (상대값)", clim=(0, 1))
+        if key in ("temp", "flux"):
+            thermal = r if isinstance(r, ThermalResult) else r.thermal
+            if key == "temp":
+                return ResultField(thermal.temperature, "온도 (°C)", cmap="inferno", unit="°C")
+            return ResultField(thermal.heat_flux_magnitude, "열 흐름 (W/m²)", "magma", None, "W/m²")
         if key == "vm":
             return ResultField(r.von_mises, "응력 (MPa)", unit="MPa")
         if key == "fos":
@@ -432,13 +525,14 @@ class MainWindow(QMainWindow):
         return ResultField(p1, "최대 주응력 (MPa)", "coolwarm", (-lim, lim), "MPa")
 
     def deformation_scale(self, key: str) -> float:
-        if key == "none":
+        if isinstance(self.result, ThermalResult) or key == "none":
             return 0.0
-        if key == "true":
-            return 1.0
+        if key == "true" and not isinstance(self.result, ModalResult):
+            return 1.0  # mode shapes have no physical size
         size = float(np.ptp(self.mesh.nodes, axis=0).max())
-        peak = float(self.result.displacement_magnitude.max())
-        return 0.05 * size / peak if peak > 0 else 0.0
+        peak = float(np.linalg.norm(self._displacement(), axis=1).max())
+        fraction = 0.1 if isinstance(self.result, ModalResult) else 0.05
+        return fraction * size / peak if peak > 0 else 0.0
 
     def show_result(self) -> None:
         if self.result is None or self.nav.currentRow() != STEP_RESULT:
@@ -446,14 +540,23 @@ class MainWindow(QMainWindow):
         panel: steps.ResultStep = self.panels[STEP_RESULT]
         field = self.result_field(panel.field_key())
         scale = self.deformation_scale(panel.scale_key())
-        if scale not in (0.0, 1.0):
+        if scale not in (0.0, 1.0) and not isinstance(self.result, ModalResult):
             field.title += f"  [변형 ×{scale:,.0f}]"
-        self.viewer.show_result(self.mesh, self.result.displacement, field, scale)
+        self.viewer.show_result(
+            self.mesh,
+            self._displacement(),
+            field,
+            scale,
+            symmetric=isinstance(self.result, ModalResult),
+        )
         self._fill_summary(panel)
 
     def _fill_summary(self, panel: steps.ResultStep) -> None:
         s = self.summary
-        _, color, bg = VERDICT_STYLE[s.verdict]
+        if s.verdict is None:
+            color, bg = "#2b5d8a", "#eaf2fa"
+        else:
+            _, color, bg = VERDICT_STYLE[s.verdict]
         panel.card.setStyleSheet(
             f"QFrame#verdictCard {{ background: {bg}; border: 2px solid {color}; border-radius: 6px; }}"
         )
@@ -462,13 +565,44 @@ class MainWindow(QMainWindow):
         )
         panel.card_body.setText(s.explanation)
         lines = []
-        for p in s.parts:
-            lines.append(
-                f"<b>{p.name}</b> ({p.material})<br>"
-                f"&nbsp;최대 응력 {p.max_stress:,.1f} MPa / 강도 {p.capacity:,.0f} MPa<br>"
-                f"&nbsp;최소 안전율 <b>{p.min_fos:.2f}</b> (권장 {p.target:.1f})"
-                f" · 최대 변형 {p.max_disp:.4g} mm"
-            )
+        r = self.result
+        if isinstance(r, ModalResult):
+            rows = []
+            for i, f in enumerate(r.frequencies):
+                px, py, pz = r.participation[i] * 100
+                rows.append(
+                    f"{i + 1}차 <b>{f:,.1f} Hz</b> ({f * 60:,.0f} rpm)"
+                    f" · 주 방향 질량 X {px:.0f}% Y {py:.0f}% Z {pz:.0f}%"
+                )
+            lines.append("<br>".join(rows))
+        elif isinstance(r, ThermalResult):
+            for pid, m in self.materials.items():
+                nodes = r.mesh.part_nodes(pid)
+                limit = (
+                    f" (권장 최고 {m.max_service_temperature:.0f} °C)"
+                    if m.max_service_temperature
+                    else ""
+                )
+                lines.append(
+                    f"<b>{self.project.part(pid).name}</b>: {r.temperature[nodes].min():.1f}"
+                    f" ~ <b>{r.temperature[nodes].max():.1f} °C</b>{limit}"
+                )
+            if r.heat_in:
+                lines.append(f"들어온 열 {r.heat_in:.3g} W · 빠져나간 열 {r.heat_out:.3g} W")
+        else:
+            for p in s.parts:
+                lines.append(
+                    f"<b>{p.name}</b> ({p.material})<br>"
+                    f"&nbsp;최대 응력 {p.max_stress:,.1f} MPa / 강도 {p.capacity:,.0f} MPa<br>"
+                    f"&nbsp;최소 안전율 <b>{p.min_fos:.2f}</b> (권장 {p.target:.1f})"
+                    f" · 최대 변형 {p.max_disp:.4g} mm"
+                )
+            if r.thermal is not None:
+                lines.append(
+                    f"열응력 포함: 온도 {r.thermal.temperature.min():.1f}"
+                    f" ~ {r.thermal.temperature.max():.1f} °C"
+                    f" (응력 없는 기준 온도 {self.project.reference_temperature:.0f} °C)"
+                )
         for note in s.notes:
             lines.append(f"<span style='color:#8a6d3b'>※ {note}</span>")
         panel.summary.setText("<br><br>".join(lines))
@@ -485,18 +619,48 @@ class MainWindow(QMainWindow):
         if not path:
             return
         images = self.capture_result_images()
-        write_pdf(build_html(self.project, self.result, self.summary, images), path)
+        write_pdf(build_html(self.project, self.result, self.summary, images, self.materials), path)
         self.statusBar().showMessage(f"보고서를 저장했습니다: {path}")
 
     def capture_result_images(self) -> list[tuple[str, bytes]]:
         """Render the main result fields to PNG for the report, then restore the view."""
+        r = self.result
+        panel: steps.ResultStep = self.panels[STEP_RESULT]
+        animated = panel.animate.isChecked()
+        self.viewer.set_animated(False)
+        shots: list[tuple[str, str, int | None]]
+        if isinstance(r, ModalResult):
+            shots = [
+                ("mode", f"{i + 1}차 진동 모양 ({f:,.1f} Hz)", i)
+                for i, f in enumerate(r.frequencies[:4])
+            ]
+        elif isinstance(r, ThermalResult):
+            shots = [("temp", "온도 분포", None), ("flux", "열 흐름", None)]
+        else:
+            shots = [
+                ("vm", "응력 분포", None),
+                ("fos", "안전율 분포", None),
+                ("disp", "변형량", None),
+            ]
+            if r.thermal is not None:
+                shots.append(("temp", "온도 분포", None))
         images = []
-        scale = self.deformation_scale("auto")
-        for key, caption in (("vm", "응력 분포"), ("fos", "안전율 분포"), ("disp", "변형량")):
+        current_mode = panel.mode.currentIndex()
+        for key, caption, mode in shots:
+            if mode is not None:
+                panel.mode.blockSignals(True)
+                panel.mode.setCurrentIndex(mode)
+                panel.mode.blockSignals(False)
             field = self.result_field(key)
-            self.viewer.show_result(self.mesh, self.result.displacement, field, scale)
+            self.viewer.show_result(
+                self.mesh, self._displacement(), field, self.deformation_scale("auto")
+            )
             images.append((caption, _png(self.viewer.plotter.screenshot(return_img=True))))
+        panel.mode.blockSignals(True)
+        panel.mode.setCurrentIndex(current_mode)
+        panel.mode.blockSignals(False)
         self.show_result()
+        self.viewer.set_animated(animated)
         return images
 
     # --- dialogs ---------------------------------------------------------------------

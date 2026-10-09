@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import (
 from kstruct import standards
 from kstruct.geometry import faces_of
 from kstruct.geometry.face_info import face_info, outward_normal
-from kstruct.model import GRAVITY, FaceRef, Fixture, FixtureKind, Load, LoadKind
+from kstruct.model import GRAVITY, AnalysisKind, FaceRef, Fixture, FixtureKind, Load, LoadKind
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 
 if TYPE_CHECKING:
@@ -43,8 +44,18 @@ LOAD_LABELS = {
     LoadKind.FORCE: ("힘", "load.force"),
     LoadKind.PRESSURE: ("압력", "load.pressure"),
     LoadKind.GRAVITY: ("자중 (중력)", "load.gravity"),
-    LoadKind.TEMPERATURE: ("온도 변화", "load.temperature"),
+    LoadKind.TEMPERATURE: ("온도 변화 (전체)", "load.temperature"),
+    LoadKind.FACE_TEMPERATURE: ("고정 온도 (면)", "load.face_temperature"),
+    LoadKind.HEAT_FLOW: ("열 입력 (면)", "load.heat_flow"),
+    LoadKind.CONVECTION: ("대류 냉각 (면)", "load.convection"),
 }
+FACE_LOADS = (
+    LoadKind.FORCE,
+    LoadKind.PRESSURE,
+    LoadKind.FACE_TEMPERATURE,
+    LoadKind.HEAT_FLOW,
+    LoadKind.CONVECTION,
+)
 DIRECTIONS = [
     ("면을 수직으로 누르기", None, 1.0),
     ("면을 수직으로 당기기", None, -1.0),
@@ -425,6 +436,11 @@ class LoadStep(_FaceListStep):
             self.direction.addItem(label)
         self.direction_label = QLabel("방향")
         form.addRow(self.direction_label, with_help(self.direction, "load.direction"))
+        self.ambient = QDoubleSpinBox()
+        self.ambient.setRange(-100, 2000)
+        self.ambient.setValue(20)
+        self.ambient_label = QLabel("주변 공기 온도 (°C)")
+        form.addRow(self.ambient_label, self.ambient)
         box = QWidget()
         box.setLayout(form)
         self.add(box)
@@ -444,15 +460,19 @@ class LoadStep(_FaceListStep):
         kind = self._current_kind()
         self.kind_help.key = LOAD_LABELS[kind][1]
         self.kind_help.setToolTip(topic(self.kind_help.key).short)
-        needs_faces = kind in (LoadKind.FORCE, LoadKind.PRESSURE)
-        self.selection_label.setVisible(needs_faces)
+        self.selection_label.setVisible(kind in FACE_LOADS)
         self.direction.setVisible(kind in (LoadKind.FORCE, LoadKind.GRAVITY))
         self.direction_label.setVisible(self.direction.isVisible())
+        self.ambient.setVisible(kind == LoadKind.CONVECTION)
+        self.ambient_label.setVisible(kind == LoadKind.CONVECTION)
         units = {
             LoadKind.FORCE: ("크기 (N)", 1000.0),
             LoadKind.PRESSURE: ("압력 (MPa)", 1.0),
             LoadKind.GRAVITY: ("배수 (g)", 1.0),
             LoadKind.TEMPERATURE: ("온도 변화 (°C)", 50.0),
+            LoadKind.FACE_TEMPERATURE: ("온도 (°C)", 100.0),
+            LoadKind.HEAT_FLOW: ("열량 (W)", 10.0),
+            LoadKind.CONVECTION: ("열전달계수 h (W/m²·K)", 10.0),
         }
         label, default = units[kind]
         self.value_label.setText(label)
@@ -470,12 +490,15 @@ class LoadStep(_FaceListStep):
             LoadKind.PRESSURE: f"= {v * 10:,.2f} bar (자동차 타이어는 약 2.4 bar)",
             LoadKind.GRAVITY: "1 g = 지구 중력. 충격·가속을 고려하려면 2~3 g를 입력하세요.",
             LoadKind.TEMPERATURE: "모든 부품이 고르게 이만큼 데워진(+) 또는 식은(−) 경우입니다.",
+            LoadKind.FACE_TEMPERATURE: "선택한 면이 항상 이 온도로 유지됩니다 (예: 히터·냉각수에 닿은 면).",
+            LoadKind.HEAT_FLOW: "선택한 면으로 들어오는 열입니다 (예: 모터·전자부품의 발열량).",
+            LoadKind.CONVECTION: "자연 공랭 5~10, 선풍기 바람 20~50, 강제 송풍 50~200, 수랭 500 이상",
         }
         self.value_hint.setText(hints[kind])
 
     def update_selection(self, refs: list[FaceRef]) -> None:
         super().update_selection(refs)
-        needs_faces = self._current_kind() in (LoadKind.FORCE, LoadKind.PRESSURE)
+        needs_faces = self._current_kind() in FACE_LOADS
         self.add_btn.setEnabled(bool(refs) or not needs_faces)
 
     def entries(self) -> list:
@@ -491,6 +514,13 @@ class LoadStep(_FaceListStep):
         if ld.kind == LoadKind.GRAVITY:
             g = (sum(c * c for c in ld.vector) ** 0.5) / GRAVITY
             return f"자중 {g:.2g} g"
+        faces = self.describe_faces(ld.faces)
+        if ld.kind == LoadKind.FACE_TEMPERATURE:
+            return f"고정 온도 {ld.magnitude:.1f} °C: {faces}"
+        if ld.kind == LoadKind.HEAT_FLOW:
+            return f"열 입력 {ld.magnitude:.3g} W: {faces}"
+        if ld.kind == LoadKind.CONVECTION:
+            return f"대류 h={ld.magnitude:.3g} W/m²K, 공기 {ld.ambient:.0f} °C: {faces}"
         return f"온도 변화 {ld.magnitude:+.1f} °C"
 
     def _add(self) -> None:
@@ -524,11 +554,13 @@ class LoadStep(_FaceListStep):
             axis = axis or (0, 0, -1)
             project.loads[:] = [ld for ld in project.loads if ld.kind != LoadKind.GRAVITY]
             load = Load(LoadKind.GRAVITY, vector=tuple(v * GRAVITY * c for c in axis))
-        else:
+        elif kind == LoadKind.TEMPERATURE:
             project.loads[:] = [ld for ld in project.loads if ld.kind != LoadKind.TEMPERATURE]
             load = Load(LoadKind.TEMPERATURE, magnitude=v)
+        else:
+            load = Load(kind, refs, magnitude=v, ambient=self.ambient.value())
         project.loads.append(load)
-        if kind in (LoadKind.FORCE, LoadKind.PRESSURE):
+        if kind in FACE_LOADS:
             self.app.viewer.set_selection([])
         self.changed.emit()
         self.refresh()
@@ -595,10 +627,43 @@ class MeshStep(StepPanel):
 
 # --- 6. solve -------------------------------------------------------------------------
 
+ANALYSIS_LABELS = [
+    (AnalysisKind.STATIC, "강도 — 부러지거나 휘지 않을까?", "analysis.static"),
+    (AnalysisKind.MODAL, "진동 — 어떤 진동수에서 흔들릴까? (공진)", "analysis.modal"),
+    (AnalysisKind.THERMAL, "열 — 온도가 몇 도까지 오를까?", "analysis.thermal"),
+]
+
 
 class SolveStep(StepPanel):
     def __init__(self, app: MainWindow) -> None:
         super().__init__(app, "6. 해석", "step.solve")
+        self.add(QLabel("<b>무엇을 알고 싶나요?</b>"))
+        self.kinds = QButtonGroup(self)
+        for i, (kind, label, key) in enumerate(ANALYSIS_LABELS):
+            radio = QRadioButton(label)
+            radio.setProperty("kind", kind)
+            self.kinds.addButton(radio, i)
+            self.add(with_help(radio, key))
+        self.kinds.buttonClicked.connect(self._kind_changed)
+
+        self.modal_box = QGroupBox("진동 해석 설정")
+        form = QFormLayout(self.modal_box)
+        self.n_modes = QSpinBox()
+        self.n_modes.setRange(1, 30)
+        self.n_modes.valueChanged.connect(self._modal_changed)
+        form.addRow("구할 진동수 개수", with_help(self.n_modes, "modal.count"))
+        self.speed = QDoubleSpinBox()
+        self.speed.setRange(0, 1e6)
+        self.speed.setDecimals(1)
+        self.speed_unit = QComboBox()
+        self.speed_unit.addItems(["rpm", "Hz"])
+        self.speed.valueChanged.connect(self._modal_changed)
+        self.speed_unit.currentIndexChanged.connect(self._modal_changed)
+        form.addRow(
+            "운전 속도 (0=없음)", with_help(_row(self.speed, self.speed_unit), "modal.operating")
+        )
+        self.add(self.modal_box)
+
         self.checklist = QLabel()
         self.checklist.setTextFormat(Qt.TextFormat.RichText)
         self.add(self.checklist)
@@ -616,6 +681,17 @@ class SolveStep(StepPanel):
         self.layout_.addStretch(1)
 
     def refresh(self) -> None:
+        project = self.app.project
+        for b in self.kinds.buttons():
+            b.setChecked(b.property("kind") == project.analysis)
+        self.modal_box.setVisible(project.analysis == AnalysisKind.MODAL)
+        for w in (self.n_modes, self.speed, self.speed_unit):
+            w.blockSignals(True)
+        self.n_modes.setValue(project.n_modes)
+        hz = project.operating_frequency
+        self.speed.setValue(hz * 60 if self.speed_unit.currentText() == "rpm" else hz)
+        for w in (self.n_modes, self.speed, self.speed_unit):
+            w.blockSignals(False)
         problems = self.app.readiness()
         lines = []
         for ok, text in problems:
@@ -627,6 +703,18 @@ class SolveStep(StepPanel):
             lines.append(f"{mark} {text}")
         self.checklist.setText("<br>".join(lines))
         self.run.setEnabled(all(ok for ok, _ in problems))
+
+    def _kind_changed(self) -> None:
+        self.app.project.analysis = self.kinds.checkedButton().property("kind")
+        self.changed.emit()
+        self.refresh()
+
+    def _modal_changed(self) -> None:
+        project = self.app.project
+        project.n_modes = self.n_modes.value()
+        v = self.speed.value()
+        project.operating_frequency = v / 60 if self.speed_unit.currentText() == "rpm" else v
+        self.changed.emit()
 
     def set_progress(self, frac: float | None, msg: str = "") -> None:
         busy = frac is not None
@@ -660,6 +748,7 @@ class ResultStep(StepPanel):
         card = QVBoxLayout(self.card)
         self.card_title = QLabel()
         self.card_title.setTextFormat(Qt.TextFormat.RichText)
+        self.card_title.setWordWrap(True)
         self.card_body = QLabel()
         self.card_body.setWordWrap(True)
         card.addWidget(self.card_title)
@@ -677,6 +766,14 @@ class ResultStep(StepPanel):
             self.scale.addItem(label, key)
         self.scale.currentIndexChanged.connect(app.show_result)
         form.addRow("변형", with_help(self.scale, "result.scale"))
+        self.mode = QComboBox()
+        self.mode.currentIndexChanged.connect(app.show_result)
+        self.mode_label = QLabel("진동 모드")
+        self.mode_box = with_help(self.mode, "result.mode")
+        form.addRow(self.mode_label, self.mode_box)
+        self.animate = QCheckBox("움직임 보기 (애니메이션)")
+        self.animate.toggled.connect(app.viewer.set_animated)
+        form.addRow("", self.animate)
         box = QWidget()
         box.setLayout(form)
         self.add(box)
@@ -700,6 +797,30 @@ class ResultStep(StepPanel):
         disclaimer = _hint(topic("result.disclaimer").short)
         disclaimer.setStyleSheet("color: #8a6d3b; font-size: 11px;")
         self.add(with_help(disclaimer, "result.disclaimer"))
+
+    def set_fields(self, fields: list[tuple[str, str]]) -> None:
+        """Repopulate the field selector for the current result type, keeping the choice."""
+        current = self.field.currentData()
+        self.field.blockSignals(True)
+        self.field.clear()
+        for key, label in fields:
+            self.field.addItem(label, key)
+        self.field.setCurrentIndex(max(0, self.field.findData(current)))
+        self.field.blockSignals(False)
+
+    def set_modes(self, frequencies) -> None:
+        visible = frequencies is not None
+        self.mode_box.setVisible(visible)
+        self.mode_label.setVisible(visible)
+        if not visible:
+            return
+        current = max(0, self.mode.currentIndex())
+        self.mode.blockSignals(True)
+        self.mode.clear()
+        for i, f in enumerate(frequencies):
+            self.mode.addItem(f"{i + 1}차: {f:,.1f} Hz ({f * 60:,.0f} rpm)", i)
+        self.mode.setCurrentIndex(min(current, len(frequencies) - 1))
+        self.mode.blockSignals(False)
 
     def field_key(self) -> str:
         return self.field.currentData()

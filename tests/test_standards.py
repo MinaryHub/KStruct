@@ -31,3 +31,17 @@ def test_pack_names_the_same_steel_differently():
 )
 def test_verdict(fos, expected):
     assert verdict(fos, 1.5) == expected
+
+
+def test_resonance_verdicts():
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from kstruct.model import Project
+    from kstruct.report.summary import summarize_modal
+
+    result = SimpleNamespace(frequencies=np.array([100.0, 250.0, 400.0]), rigid_modes=0)
+    cases = {0.0: None, 105.0: Verdict.FAIL, 118.0: Verdict.WARN, 170.0: Verdict.OK}
+    for f_op, expected in cases.items():
+        assert summarize_modal(Project(operating_frequency=f_op), result).verdict == expected

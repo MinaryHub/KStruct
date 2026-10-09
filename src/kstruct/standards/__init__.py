@@ -64,6 +64,7 @@ def materials() -> dict[str, Material]:
             thermal_conductivity=m["k"],  # W/(m·K) is numerically N/(s·K) in mm-N-s units
             specific_heat=m["cp"] * 1e6,  # J/(kg·K) -> mm²/(s²·K)
             fatigue_limit=m.get("fatigue"),
+            max_service_temperature=m.get("tmax"),
             ductile=m["ductile"],
             designations=m["names"],
         )

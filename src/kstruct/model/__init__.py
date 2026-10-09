@@ -1,5 +1,7 @@
 from kstruct.model.project import (
     GRAVITY,
+    THERMAL_LOADS,
+    AnalysisKind,
     Connection,
     ConnectionKind,
     FaceRef,
@@ -14,6 +16,8 @@ from kstruct.model.project import (
 
 __all__ = [
     "GRAVITY",
+    "THERMAL_LOADS",
+    "AnalysisKind",
     "Connection",
     "ConnectionKind",
     "FaceRef",

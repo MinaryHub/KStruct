@@ -12,6 +12,7 @@ from OCP.BRepTools import BRepTools
 from OCP.TopoDS import TopoDS_Shape
 
 from kstruct.model import (
+    AnalysisKind,
     Connection,
     ConnectionKind,
     FaceRef,
@@ -47,6 +48,10 @@ def save_project(project: Project, path: str | Path) -> Path:
         "source_path": str(project.source_path) if project.source_path else None,
         "mesh_quality": project.mesh_quality,
         "standard": project.standard,
+        "analysis": project.analysis.value,
+        "reference_temperature": project.reference_temperature,
+        "operating_frequency": project.operating_frequency,
+        "n_modes": project.n_modes,
         "parts": [
             {"id": p.id, "name": p.name, "material_id": p.material_id, "visible": p.visible}
             for p in project.parts
@@ -58,6 +63,7 @@ def save_project(project: Project, path: str | Path) -> Path:
                 "faces": _refs(ld.faces),
                 "vector": list(ld.vector),
                 "magnitude": ld.magnitude,
+                "ambient": ld.ambient,
             }
             for ld in project.loads
         ],
@@ -97,6 +103,10 @@ def load_project(path: str | Path) -> Project:
             source_path=Path(doc["source_path"]) if doc.get("source_path") else None,
             mesh_quality=doc.get("mesh_quality", "normal"),
             standard=doc.get("standard", "iso"),
+            analysis=AnalysisKind(doc.get("analysis", "static")),
+            reference_temperature=doc.get("reference_temperature", 20.0),
+            operating_frequency=doc.get("operating_frequency", 0.0),
+            n_modes=doc.get("n_modes", 6),
         )
         for pd in doc["parts"]:
             brep = Path(z.extract(f"parts/{pd['id']}.brep", tmp))
@@ -110,7 +120,13 @@ def load_project(path: str | Path) -> Project:
         Fixture(FixtureKind(f["kind"]), _unrefs(f["faces"])) for f in doc["fixtures"]
     ]
     project.loads = [
-        Load(LoadKind(ld["kind"]), _unrefs(ld["faces"]), tuple(ld["vector"]), ld["magnitude"])
+        Load(
+            LoadKind(ld["kind"]),
+            _unrefs(ld["faces"]),
+            tuple(ld["vector"]),
+            ld["magnitude"],
+            ld.get("ambient", 20.0),
+        )
         for ld in doc["loads"]
     ]
     project.connections = [

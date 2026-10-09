@@ -19,6 +19,7 @@ from kstruct.fem.assembly import (
 )
 from kstruct.fem.constraints import Constraints, build_constraints
 from kstruct.fem.mesh import FEMesh
+from kstruct.fem.thermal import ThermalResult, has_thermal_loads, solve_thermal
 from kstruct.model import LoadKind, Material, Project
 
 Progress = Callable[[float, str], None]
@@ -35,6 +36,7 @@ class StaticResult:
     stress: np.ndarray  # (N, 6) MPa, nodal average within each part
     reactions: list[np.ndarray]  # per fixture, (3,) N
     applied_load: np.ndarray  # (3,) N, sum of external forces
+    thermal: ThermalResult | None = None  # temperature field used for thermal stress
 
     @property
     def von_mises(self) -> np.ndarray:
@@ -102,39 +104,51 @@ def _load_vector(project: Project, mesh: FEMesh, materials: dict[int, Material])
     return f.ravel()
 
 
-def _thermal(project: Project, mesh: FEMesh, materials: dict[int, Material]):
-    """Uniform temperature change: returns (load vector, per-element thermal strain)."""
-    dT = sum(ld.magnitude for ld in project.loads if ld.kind == LoadKind.TEMPERATURE)
-    if dT == 0:
-        return None, None
+def temperature_change(
+    project: Project, mesh: FEMesh, thermal: ThermalResult | None
+) -> np.ndarray | None:
+    """Nodal temperature change from the stress-free state, or None without thermal loads."""
+    uniform = sum(ld.magnitude for ld in project.loads if ld.kind == LoadKind.TEMPERATURE)
+    if thermal is None and uniform == 0:
+        return None
+    dT = np.full(mesh.n_nodes, float(uniform))
+    if thermal is not None:
+        dT += thermal.temperature - project.reference_temperature
+    return dT
+
+
+def _thermal_load(mesh: FEMesh, materials: dict[int, Material], dT: np.ndarray) -> np.ndarray:
+    """Equivalent nodal forces of free thermal expansion alpha * dT."""
     alpha = part_property(mesh, materials, "thermal_expansion")
-    eps_th = np.outer(alpha * dT, THERMAL_STRAIN)  # (E, 6)
     X = mesh.nodes[mesh.tets]
     D = d_matrices(mesh, materials, slice(None))
+    dTe = dT[mesh.tets]
     fe = np.zeros((len(mesh.tets), 30))
     for p, w in zip(tet10.GAUSS_POINTS, tet10.GAUSS_WEIGHTS, strict=True):
         dNdx, det = tet10.gradients(X, p)
         B = tet10.strain_matrix(dNdx)
+        eps_th = np.outer(alpha * (dTe @ tet10.shape_functions(p)), THERMAL_STRAIN)
         fe += np.einsum("eji,ejk,ek,e->ei", B, D, eps_th, det * w)
     f = np.zeros(mesh.n_nodes * 3)
     np.add.at(f, element_dofs(mesh.tets).ravel(), fe.ravel())
-    return f, eps_th
+    return f
 
 
 def recover_stress(
-    mesh: FEMesh, materials: dict[int, Material], u: np.ndarray, eps_th: np.ndarray | None = None
+    mesh: FEMesh, materials: dict[int, Material], u: np.ndarray, dT: np.ndarray | None = None
 ) -> np.ndarray:
     """Nodal stresses: evaluated at each element's nodes, averaged over elements."""
     X = mesh.nodes[mesh.tets]
     ue = u[element_dofs(mesh.tets)]
     D = d_matrices(mesh, materials, slice(None))
+    alpha = part_property(mesh, materials, "thermal_expansion")
     acc = np.zeros((mesh.n_nodes, 6))
     count = np.zeros(mesh.n_nodes)
     for k, p in enumerate(tet10.NODE_POINTS):
         dNdx, _ = tet10.gradients(X, p)
         eps = np.einsum("eij,ej->ei", tet10.strain_matrix(dNdx), ue)
-        if eps_th is not None:
-            eps = eps - eps_th
+        if dT is not None:
+            eps = eps - np.outer(alpha * dT[mesh.tets[:, k]], THERMAL_STRAIN)
         sig = np.einsum("eij,ej->ei", D, eps)
         np.add.at(acc, mesh.tets[:, k], sig)
         np.add.at(count, mesh.tets[:, k], 1)
@@ -156,10 +170,14 @@ def solve_static(
 
     report(0.1, "강성행렬 조립 중")
     K = stiffness_matrix(mesh, materials)
-    f = _load_vector(project, mesh, materials)
-    f_th, eps_th = _thermal(project, mesh, materials)
-    if f_th is not None:
-        f = f + f_th
+    f_mech = _load_vector(project, mesh, materials)
+    thermal = None
+    if has_thermal_loads(project):
+        thermal = solve_thermal(
+            project, mesh, materials, lambda frac, msg: report(0.1 + 0.2 * frac, f"열전달: {msg}")
+        )
+    dT = temperature_change(project, mesh, thermal)
+    f = f_mech if dT is None else f_mech + _thermal_load(mesh, materials, dT)
     if not np.any(f):
         raise SolverError("하중이 없습니다. 힘, 압력, 중력 또는 온도 하중을 추가하세요.")
 
@@ -176,7 +194,7 @@ def solve_static(
         raise SolverError("unstable")
 
     report(0.85, "응력 계산 중")
-    stress = recover_stress(mesh, materials, u, eps_th)
+    stress = recover_stress(mesh, materials, u, dT)
 
     residual = K @ u - f
     reactions = []
@@ -184,7 +202,7 @@ def solve_static(
         r = np.zeros(3)
         np.add.at(r, dofs % 3, residual[dofs])
         reactions.append(r + c.penalty_forces(u, equations, scale))
-    applied = f.reshape(-1, 3).sum(axis=0) if f_th is None else (f - f_th).reshape(-1, 3).sum(0)
+    applied = f_mech.reshape(-1, 3).sum(axis=0)
 
     report(1.0, "완료")
     return StaticResult(
@@ -194,4 +212,5 @@ def solve_static(
         stress=stress,
         reactions=reactions,
         applied_load=applied,
+        thermal=thermal,
     )

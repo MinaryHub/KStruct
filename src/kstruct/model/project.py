@@ -40,6 +40,7 @@ class Material:
     thermal_conductivity: float = 0.0  # W/(m·K) == mW/(mm·K) in the internal unit system
     specific_heat: float = 0.0  # J/(kg·K)
     fatigue_limit: float | None = None  # MPa, fully reversed, polished specimen
+    max_service_temperature: float | None = None  # °C, approximate continuous-use limit
     ductile: bool = True
     designations: dict[str, str] = field(default_factory=dict, hash=False, compare=False)
 
@@ -61,6 +62,13 @@ class LoadKind(Enum):
     PRESSURE = "pressure"  # MPa, positive pushes into the surface
     GRAVITY = "gravity"  # acceleration vector (mm/s²) on all parts
     TEMPERATURE = "temperature"  # uniform temperature change (K) for thermal stress
+    # thermal boundary conditions (steady-state heat transfer)
+    FACE_TEMPERATURE = "face_temperature"  # faces held at magnitude °C
+    HEAT_FLOW = "heat_flow"  # magnitude W entering through the faces
+    CONVECTION = "convection"  # magnitude = h in W/(m²·K), to air at `ambient` °C
+
+
+THERMAL_LOADS = (LoadKind.FACE_TEMPERATURE, LoadKind.HEAT_FLOW, LoadKind.CONVECTION)
 
 
 @dataclass
@@ -69,6 +77,7 @@ class Load:
     faces: list[FaceRef] = field(default_factory=list)
     vector: tuple[float, float, float] = (0.0, 0.0, 0.0)
     magnitude: float = 0.0
+    ambient: float = 20.0  # °C, convection only
 
 
 class ConnectionKind(Enum):
@@ -94,6 +103,12 @@ class Part:
     visible: bool = True
 
 
+class AnalysisKind(Enum):
+    STATIC = "static"  # strength (with thermal stress if thermal loads are present)
+    MODAL = "modal"  # natural frequencies
+    THERMAL = "thermal"  # steady-state temperature only
+
+
 @dataclass
 class Project:
     source_path: Path | None = None
@@ -103,6 +118,10 @@ class Project:
     loads: list[Load] = field(default_factory=list)
     mesh_quality: str = "normal"  # key of fem.mesh.MESH_PRESETS
     standard: str = "iso"  # standards pack id
+    analysis: AnalysisKind = AnalysisKind.STATIC
+    reference_temperature: float = 20.0  # °C, stress-free temperature for thermal stress
+    operating_frequency: float = 0.0  # Hz, excitation to compare natural frequencies with
+    n_modes: int = 6
 
     def part(self, part_id: int) -> Part:
         return next(p for p in self.parts if p.id == part_id)

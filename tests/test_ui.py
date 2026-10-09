@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from kstruct.geometry.face_info import face_info
@@ -9,7 +10,7 @@ from kstruct.geometry.tessellate import faces_of
 from kstruct.ui import help as kshelp
 
 UI_SRC = Path(__file__).parents[1] / "src" / "kstruct" / "ui"  # help keys live in UI code
-PREFIXES = "step|view|file|help|project|connection|material|fixture|load|mesh|result"
+PREFIXES = "step|view|file|help|project|connection|material|fixture|load|mesh|result|analysis|modal"
 HELP_KEY = rf'"((?:{PREFIXES})\.[a-z_]+)"'
 
 
@@ -101,3 +102,65 @@ def test_full_workflow(qtbot, tmp_path):
         build_html(window.project, window.result, window.summary, images), tmp_path / "r.pdf"
     )
     assert pdf.stat().st_size > 10_000
+
+
+def _bracket_with_material(qtbot):
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    for part in window.project.parts:
+        part.material_id = "al6061t6"
+    window._go(mw.STEP_SOLVE)
+    return window
+
+
+def _run(qtbot, window, tmp_path):
+    from kstruct.report.pdf import build_html, write_pdf
+    from kstruct.ui import main_window as mw
+
+    assert all(ok for ok, _ in window.readiness()), window.readiness()
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    assert window.nav.currentRow() == mw.STEP_RESULT
+    images = window.capture_result_images()
+    html = build_html(window.project, window.result, window.summary, images, window.materials)
+    assert write_pdf(html, tmp_path / "r.pdf").stat().st_size > 10_000
+    return window.result
+
+
+def test_modal_workflow(qtbot, tmp_path):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import AnalysisKind, FaceRef, Fixture, FixtureKind
+
+    window = _bracket_with_material(qtbot)
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    window.project.analysis = AnalysisKind.MODAL
+    window.project.operating_frequency = 50.0
+    window.panels[5].refresh()
+    result = _run(qtbot, window, tmp_path)
+    assert len(result.frequencies) == 6
+    assert np.all(np.diff(result.frequencies) >= 0)
+    panel = window.panels[6]
+    assert panel.mode.count() == 6
+    panel.mode.setCurrentIndex(2)
+    window.viewer._anim_step()  # animation advances without error
+
+
+def test_thermal_workflow(qtbot, tmp_path):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import AnalysisKind, FaceRef, Load, LoadKind
+
+    window = _bracket_with_material(qtbot)
+    shape = window.project.parts[0].shape
+    window.project.loads = [
+        Load(LoadKind.HEAT_FLOW, [FaceRef(0, face_at(shape, (90, 30, 8)))], magnitude=5.0),
+        Load(LoadKind.CONVECTION, [FaceRef(0, face_at(shape, (0, 30, 40)))], magnitude=50.0),
+    ]
+    window.project.analysis = AnalysisKind.THERMAL
+    result = _run(qtbot, window, tmp_path)
+    assert result.temperature.min() > 20.0
+    assert result.heat_out == pytest.approx(5.0, rel=0.02)
