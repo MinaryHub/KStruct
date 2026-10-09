@@ -287,3 +287,47 @@ def summarize_thermal(project: Project, result, materials: dict) -> ThermalSumma
         )
     title = VERDICT_STYLE[verdict][0]
     return ThermalSummary(verdict, f"{title} — {headline}", limit_text, notes)
+
+
+# --- buckling -------------------------------------------------------------------------
+
+
+@dataclass
+class BucklingSummary:
+    verdict: Verdict
+    headline: str
+    explanation: str
+    notes: list[str]
+
+
+def summarize_buckling(project: Project, result, pack: StandardPack) -> BucklingSummary:
+    lam = float(result.factors[0])
+    target = pack.target_buckling
+    v = verdict(lam, target)
+    if v == Verdict.OK:
+        text = (
+            f"지금 하중의 {lam:,.1f}배가 되어야 좌굴(갑자기 옆으로 휘며 무너짐)이 일어납니다. "
+            f"권장 여유 {target:.1f}배 이상을 만족합니다."
+        )
+    elif v == Verdict.WARN:
+        text = (
+            f"지금 하중의 {lam:,.2f}배에서 좌굴이 일어납니다. 견디기는 하지만 권장 여유 "
+            f"{target:.1f}배에 못 미칩니다. 두께를 늘리거나 리브·지지를 추가하세요."
+        )
+    else:
+        text = (
+            f"지금 하중의 {lam:,.2f}배, 즉 이 하중에 도달하기 전에 좌굴로 무너집니다. "
+            "단면을 키우거나 길이를 줄이거나 중간 지지를 추가해야 합니다."
+        )
+    notes = [
+        "선형 좌굴 해석은 완벽한 형상을 가정하므로 실제 좌굴 하중은 이보다 낮을 수 있습니다"
+        "(제작 오차·편심). 그래서 일반 강도보다 큰 여유(보통 3배 이상)를 권장합니다."
+    ]
+    static_fos = float(result.static.safety_factor.min())
+    if static_fos < lam:
+        notes.append(
+            f"참고: 이 하중에서 강도 안전율은 {static_fos:.2f}입니다. 좌굴보다 재료 항복이 먼저 "
+            "일어날 수 있으니 '강도' 해석도 확인하세요."
+        )
+    title = VERDICT_STYLE[v][0]
+    return BucklingSummary(v, f"{title} — 좌굴 하중 배수 {lam:,.2f}", text, notes)

@@ -172,7 +172,9 @@ def test_fatigue_workflow(qtbot, tmp_path):
 
     window = _bracket_with_material(qtbot)
     shape = window.project.parts[0].shape
-    window.project.fixtures = [Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])]
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
     window.project.loads = [
         Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (90, 30, 8)))], vector=(0, 0, -1500.0))
     ]
@@ -183,3 +185,22 @@ def test_fatigue_workflow(qtbot, tmp_path):
     assert part.fatigue_fos < part.min_fos
     keys = [window.panels[6].field.itemData(i) for i in range(window.panels[6].field.count())]
     assert "ffos" in keys and "life" in keys
+
+
+def test_buckling_workflow(qtbot, tmp_path):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import AnalysisKind, FaceRef, Fixture, FixtureKind, Load, LoadKind
+
+    window = _bracket_with_material(qtbot)
+    shape = window.project.parts[0].shape
+    # stand the bracket on its base and push down on the top edge of the wall
+    window.project.fixtures = [Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (50, 30, 0)))])]
+    window.project.loads = [
+        Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (4, 30, 80)))], vector=(0, 0, -5000.0))
+    ]
+    window.project.analysis = AnalysisKind.BUCKLING
+    window.project.n_modes = 3
+    result = _run(qtbot, window, tmp_path)
+    assert result.factors[0] > 0
+    assert window.panels[6].mode.count() == 3
+    assert "좌굴" in window.summary.headline

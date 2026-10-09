@@ -33,6 +33,7 @@ class StandardPack:
     units: str  # "SI" or "US"
     target_ductile: float
     target_brittle: float
+    target_buckling: float
     fatigue: str
     references: tuple[str, ...]
 
@@ -81,6 +82,7 @@ def packs() -> dict[str, StandardPack]:
             units=p["units"],
             target_ductile=p["targets"]["ductile"],
             target_brittle=p["targets"]["brittle"],
+            target_buckling=p["targets"].get("buckling", 3.0),
             fatigue=p["fatigue"],
             references=tuple(p["references"]),
         )

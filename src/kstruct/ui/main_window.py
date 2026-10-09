@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from kstruct import standards
 from kstruct.fem import ConstraintError, MeshingError, SolverError, generate_mesh, solve_static
+from kstruct.fem.buckling import BucklingResult, solve_buckling
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.modal import ModalResult, solve_modal
 from kstruct.fem.static import StaticResult
@@ -38,6 +39,7 @@ from kstruct.report.summary import (
     VERDICT_STYLE,
     Summary,
     summarize,
+    summarize_buckling,
     summarize_modal,
     summarize_thermal,
 )
@@ -357,7 +359,7 @@ class MainWindow(QMainWindow):
             ),
         ]
         thermal_bcs = [ld for ld in p.loads if ld.kind in THERMAL_LOADS]
-        if p.analysis == AnalysisKind.STATIC:
+        if p.analysis in (AnalysisKind.STATIC, AnalysisKind.BUCKLING):
             mech = [ld for ld in p.loads if ld.kind not in THERMAL_LOADS]
             checks += [
                 (
@@ -439,6 +441,8 @@ class MainWindow(QMainWindow):
                 return m, solve_modal(project, m, materials, project.n_modes, progress)
             if kind == AnalysisKind.THERMAL:
                 return m, solve_thermal(project, m, materials, progress)
+            if kind == AnalysisKind.BUCKLING:
+                return m, solve_buckling(project, m, materials, project.n_modes, progress)
             return m, solve_static(project, m, materials, progress)
 
         def done(value):
@@ -449,6 +453,9 @@ class MainWindow(QMainWindow):
                 self.summary = summarize_modal(project, self.result)
             elif isinstance(self.result, ThermalResult):
                 self.summary = summarize_thermal(project, self.result, materials)
+            elif isinstance(self.result, BucklingResult):
+                pack = standards.pack(project.standard)
+                self.summary = summarize_buckling(project, self.result, pack)
             else:
                 self.summary = summarize(project, self.result, standards.pack(project.standard))
             panel.set_progress(None, "")
@@ -476,6 +483,12 @@ class MainWindow(QMainWindow):
             panel.set_fields(THERMAL_FIELDS)
             panel.set_modes(None)
             panel.animate.setChecked(False)
+        elif isinstance(r, BucklingResult):
+            panel.set_fields([("mode", "좌굴 모양 (상대 크기)")])
+            panel.set_modes(
+                r.factors, [f"{i + 1}차: 하중 ×{f:,.2f}" for i, f in enumerate(r.factors)]
+            )
+            panel.animate.setChecked(True)
         else:
             fields = list(steps.FIELD_LABELS)
             if r.thermal is not None:
@@ -491,7 +504,7 @@ class MainWindow(QMainWindow):
 
     def _displacement(self) -> np.ndarray:
         r = self.result
-        if isinstance(r, ModalResult):
+        if isinstance(r, (ModalResult, BucklingResult)):
             return r.shapes[max(0, self.panels[STEP_RESULT].mode.currentIndex())]
         if isinstance(r, ThermalResult):
             return np.zeros_like(r.mesh.nodes)
@@ -501,7 +514,8 @@ class MainWindow(QMainWindow):
         r = self.result
         if key == "mode":
             mag = np.linalg.norm(self._displacement(), axis=1)
-            return ResultField(mag / (mag.max() or 1.0), "진동 모양 (상대값)", clim=(0, 1))
+            title = "좌굴 모양 (상대값)" if isinstance(r, BucklingResult) else "진동 모양 (상대값)"
+            return ResultField(mag / (mag.max() or 1.0), title, clim=(0, 1))
         if key in ("temp", "flux"):
             thermal = r if isinstance(r, ThermalResult) else r.thermal
             if key == "temp":
@@ -541,11 +555,12 @@ class MainWindow(QMainWindow):
     def deformation_scale(self, key: str) -> float:
         if isinstance(self.result, ThermalResult) or key == "none":
             return 0.0
-        if key == "true" and not isinstance(self.result, ModalResult):
+        shape_only = isinstance(self.result, (ModalResult, BucklingResult))
+        if key == "true" and not shape_only:
             return 1.0  # mode shapes have no physical size
         size = float(np.ptp(self.mesh.nodes, axis=0).max())
         peak = float(np.linalg.norm(self._displacement(), axis=1).max())
-        fraction = 0.1 if isinstance(self.result, ModalResult) else 0.05
+        fraction = 0.1 if shape_only else 0.05
         return fraction * size / peak if peak > 0 else 0.0
 
     def show_result(self) -> None:
@@ -554,7 +569,7 @@ class MainWindow(QMainWindow):
         panel: steps.ResultStep = self.panels[STEP_RESULT]
         field = self.result_field(panel.field_key())
         scale = self.deformation_scale(panel.scale_key())
-        if isinstance(self.result, ModalResult) or scale == 0.0:
+        if isinstance(self.result, (ModalResult, BucklingResult)) or scale == 0.0:
             panel.scale_note.setText("")
         elif scale == 1.0:
             panel.scale_note.setText("변형을 실제 크기로 보여줍니다.")
@@ -567,7 +582,7 @@ class MainWindow(QMainWindow):
             self._displacement(),
             field,
             scale,
-            symmetric=isinstance(self.result, ModalResult),
+            symmetric=isinstance(self.result, (ModalResult, BucklingResult)),
         )
         self._fill_summary(panel)
 
@@ -594,6 +609,14 @@ class MainWindow(QMainWindow):
                     f"{i + 1}차 <b>{f:,.1f} Hz</b> ({f * 60:,.0f} rpm)"
                     f" · 주 방향 질량 X {px:.0f}% Y {py:.0f}% Z {pz:.0f}%"
                 )
+            lines.append("<br>".join(rows))
+        elif isinstance(r, BucklingResult):
+            applied = np.linalg.norm(r.static.applied_load)
+            rows = [
+                f"{i + 1}차 하중 배수 <b>{f:,.2f}</b>"
+                + (f" (약 {f * applied:,.0f} N에서 좌굴)" if applied > 0 else "")
+                for i, f in enumerate(r.factors)
+            ]
             lines.append("<br>".join(rows))
         elif isinstance(r, ThermalResult):
             for pid, m in self.materials.items():
@@ -658,6 +681,11 @@ class MainWindow(QMainWindow):
             shots = [
                 ("mode", f"{i + 1}차 진동 모양 ({f:,.1f} Hz)", i)
                 for i, f in enumerate(r.frequencies[:4])
+            ]
+        elif isinstance(r, BucklingResult):
+            shots = [
+                ("mode", f"{i + 1}차 좌굴 모양 (하중 ×{f:,.2f})", i)
+                for i, f in enumerate(r.factors[:3])
             ]
         elif isinstance(r, ThermalResult):
             shots = [("temp", "온도 분포", None), ("flux", "열 흐름", None)]

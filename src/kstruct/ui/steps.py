@@ -637,6 +637,7 @@ ANALYSIS_LABELS = [
     (AnalysisKind.STATIC, "강도 — 부러지거나 휘지 않을까?", "analysis.static"),
     (AnalysisKind.MODAL, "진동 — 어떤 진동수에서 흔들릴까? (공진)", "analysis.modal"),
     (AnalysisKind.THERMAL, "열 — 온도가 몇 도까지 오를까?", "analysis.thermal"),
+    (AnalysisKind.BUCKLING, "좌굴 — 눌리면 옆으로 휘며 무너지지 않을까?", "analysis.buckling"),
 ]
 
 
@@ -665,9 +666,9 @@ class SolveStep(StepPanel):
         self.speed_unit.addItems(["rpm", "Hz"])
         self.speed.valueChanged.connect(self._modal_changed)
         self.speed_unit.currentIndexChanged.connect(self._modal_changed)
-        form.addRow(
-            "운전 속도 (0=없음)", with_help(_row(self.speed, self.speed_unit), "modal.operating")
-        )
+        self.speed_row = with_help(_row(self.speed, self.speed_unit), "modal.operating")
+        self.speed_label = QLabel("운전 속도 (0=없음)")
+        form.addRow(self.speed_label, self.speed_row)
         self.add(self.modal_box)
 
         self.static_box = QGroupBox("강도 해석 설정")
@@ -701,6 +702,12 @@ class SolveStep(StepPanel):
             b.setChecked(b.property("kind") == project.analysis)
         self.modal_box.setVisible(project.analysis == AnalysisKind.MODAL)
         self.static_box.setVisible(project.analysis == AnalysisKind.STATIC)
+        self.modal_box.setTitle(
+            "좌굴 해석 설정" if project.analysis == AnalysisKind.BUCKLING else "진동 해석 설정"
+        )
+        self.modal_box.setVisible(project.analysis in (AnalysisKind.MODAL, AnalysisKind.BUCKLING))
+        self.speed_row.setVisible(project.analysis == AnalysisKind.MODAL)
+        self.speed_label.setVisible(project.analysis == AnalysisKind.MODAL)
         self.cycle.blockSignals(True)
         self.cycle.setCurrentIndex(max(0, self.cycle.findData(project.load_cycle)))
         self.cycle.blockSignals(False)
@@ -833,7 +840,7 @@ class ResultStep(StepPanel):
         self.field.setCurrentIndex(max(0, self.field.findData(current)))
         self.field.blockSignals(False)
 
-    def set_modes(self, frequencies) -> None:
+    def set_modes(self, frequencies, labels: list[str] | None = None) -> None:
         visible = frequencies is not None
         self.mode_box.setVisible(visible)
         self.mode_label.setVisible(visible)
@@ -843,7 +850,8 @@ class ResultStep(StepPanel):
         self.mode.blockSignals(True)
         self.mode.clear()
         for i, f in enumerate(frequencies):
-            self.mode.addItem(f"{i + 1}차: {f:,.1f} Hz ({f * 60:,.0f} rpm)", i)
+            text = labels[i] if labels else f"{i + 1}차: {f:,.1f} Hz ({f * 60:,.0f} rpm)"
+            self.mode.addItem(text, i)
         self.mode.setCurrentIndex(min(current, len(frequencies) - 1))
         self.mode.blockSignals(False)
 

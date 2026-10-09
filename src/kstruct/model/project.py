@@ -107,6 +107,7 @@ class AnalysisKind(Enum):
     STATIC = "static"  # strength (with thermal stress if thermal loads are present)
     MODAL = "modal"  # natural frequencies
     THERMAL = "thermal"  # steady-state temperature only
+    BUCKLING = "buckling"  # load factor at which slender parts collapse sideways
 
 
 @dataclass

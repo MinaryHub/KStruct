@@ -264,10 +264,47 @@ def _thermal_html(project, result, summary, images, materials) -> str:
     )
 
 
+def _buckling_html(project, result, summary, images, materials) -> str:
+    applied = float(np.linalg.norm(result.static.applied_load))
+    rows = "".join(
+        f"<tr><td>{i + 1}차</td><td><b>{f:,.2f}</b></td><td>{f * applied:,.0f} N</td></tr>"
+        for i, f in enumerate(result.factors)
+    )
+    fixtures = "".join(
+        f"<li>{FIXTURE_NAMES[f.kind]}: {html.escape(_faces(project, f.faces))}</li>"
+        for f in project.fixtures
+    )
+    notes = "".join(f"<li>{html.escape(n)}</li>" for n in summary.notes)
+    body = f"""
+{f"<ul>{notes}</ul>" if notes else ""}
+<h2>1. 좌굴 하중</h2>
+<table width="100%" border="1" cellspacing="0" cellpadding="4">
+<tr style="background:#eef1f5;"><th>차수</th><th>하중 배수</th><th>좌굴 시 하중 합계(추정)</th></tr>
+{rows}</table>
+<p>하중 배수 = 좌굴이 일어나는 하중 ÷ 현재 하중. 현재 하중 합계 {applied:,.1f} N.</p>
+<h2>2. 해석 조건</h2>
+<p><b>재료</b></p><ul>{_materials_list(project, materials)}</ul>
+<p><b>고정</b></p><ul>{fixtures}</ul>
+<p><b>메시</b>: 2차 사면체 요소 {len(result.mesh.tets):,}개</p>
+<h2>3. 좌굴 모양</h2>
+<p>변형 크기는 상대값입니다.</p>
+{_pictures(images)}
+<h2>4. 해석 방법과 한계</h2>
+<ul><li>선형 고유치 좌굴 해석 (초기 결함·소성·대변형 미고려)</li>
+<li>권장 하중 배수 {standards.pack(project.standard).target_buckling:.1f} 이상</li></ul>
+"""
+    return _page(
+        "좌굴 해석 보고서", project, summary.headline, summary.explanation, summary.verdict, body
+    )
+
+
 def build_html(project, result, summary, images, materials: dict | None = None) -> str:
+    from kstruct.fem.buckling import BucklingResult
     from kstruct.fem.modal import ModalResult
     from kstruct.fem.thermal import ThermalResult
 
+    if isinstance(result, BucklingResult):
+        return _buckling_html(project, result, summary, images, materials or {})
     if isinstance(result, ModalResult):
         return _modal_html(project, result, summary, images, materials or {})
     if isinstance(result, ThermalResult):
