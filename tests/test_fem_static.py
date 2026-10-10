@@ -191,3 +191,12 @@ def test_pin_allows_rotation_only():
     assert total + r.applied_load == pytest.approx(np.zeros(3), abs=1e-3)
     # the pin carries the whole axial load
     assert r.reactions[0][0] == pytest.approx(-500.0, rel=1e-3)
+
+
+def test_meshing_timeout_is_reported(monkeypatch):
+    from kstruct.fem import MeshingError
+    from kstruct.fem import mesh as mesh_module
+
+    monkeypatch.setattr(mesh_module, "MESH_TIMEOUT", 0.01)  # nothing can mesh this fast
+    with pytest.raises(MeshingError, match="끝나지 않았습니다"):
+        generate_mesh(_project(_box(0, 0, 0, 10, 10, 10)), "coarse")

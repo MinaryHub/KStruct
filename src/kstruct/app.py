@@ -72,6 +72,10 @@ def selftest_gui(screenshot: Path) -> int:
 
 
 def main() -> None:
+    import multiprocessing
+
+    # meshing runs in spawned worker processes; a frozen app must handle their start-up
+    multiprocessing.freeze_support()
     if "--selftest" in sys.argv:
         sys.exit(selftest())
     if "--selftest-gui" in sys.argv:

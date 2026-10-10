@@ -11,6 +11,8 @@ Node orderings (Netgen = VTK conventions):
 
 from __future__ import annotations
 
+import multiprocessing
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +24,7 @@ from kstruct.geometry.tessellate import bounding_diagonal
 from kstruct.model import FaceRef, Project
 
 # model diagonal / element size
+MESH_TIMEOUT = 600  # seconds per part before the meshing process is killed
 MESH_PRESETS = {"coarse": 8.0, "normal": 15.0, "fine": 30.0, "very_fine": 50.0}
 
 
@@ -71,6 +74,53 @@ def _mesh_shape(step_path: Path, maxh: float):
     return nodes, tets, tris, faces
 
 
+def _mesh_all(steps: list[Path], maxh: float, names: list[str]):
+    """Mesh every part in worker processes (in parallel for assemblies).
+
+    Netgen occasionally deadlocks inside its own thread pool; a separate process can be
+    killed after MESH_TIMEOUT seconds and retried once, instead of freezing the app.
+    Set KSTRUCT_INPROCESS_MESH=1 to mesh in this process (debugging).
+    """
+    if os.environ.get("KSTRUCT_INPROCESS_MESH") == "1":
+        return [_mesh_or_raise(step, maxh, name) for step, name in zip(steps, names, strict=True)]
+    workers = max(1, min(len(steps), os.cpu_count() or 1, 4))
+    for attempt in (1, 2):
+        pool = multiprocessing.get_context("spawn").Pool(workers)
+        try:
+            jobs = [pool.apply_async(_mesh_shape, (str(step), maxh)) for step in steps]
+            results = []
+            for job, name in zip(jobs, names, strict=True):
+                try:
+                    results.append(job.get(timeout=MESH_TIMEOUT))
+                except multiprocessing.TimeoutError:
+                    if attempt == 2:
+                        raise MeshingError(
+                            f"'{name}' 부품의 메시 생성이 {MESH_TIMEOUT // 60}분 안에 끝나지 않았습니다. "
+                            "메시 품질을 '거침'이나 '보통'으로 바꿔 보세요."
+                        ) from None
+                    raise _Retry from None
+                except Exception as e:  # netgen raises plain Exception
+                    raise MeshingError(f"'{name}' 부품의 메시 생성에 실패했습니다: {e}") from e
+            return results
+        except _Retry:
+            continue
+        finally:
+            pool.terminate()
+            pool.join()
+    raise AssertionError("unreachable")
+
+
+class _Retry(Exception):
+    pass
+
+
+def _mesh_or_raise(step: Path, maxh: float, name: str):
+    try:
+        return _mesh_shape(step, maxh)
+    except Exception as e:  # netgen raises plain Exception
+        raise MeshingError(f"'{name}' 부품의 메시 생성에 실패했습니다: {e}") from e
+
+
 def generate_mesh(project: Project, quality: str | None = None) -> FEMesh:
     quality = quality or project.mesh_quality
     divisions = MESH_PRESETS[quality]
@@ -83,12 +133,9 @@ def generate_mesh(project: Project, quality: str | None = None) -> FEMesh:
     nodes, tets, tet_part, tris, tri_part, tri_face = [], [], [], [], [], []
     offset = 0
     with tempfile.TemporaryDirectory() as tmp:
-        for part in parts:
-            step = write_step(part.shape, Path(tmp) / f"part{part.id}.step")
-            try:
-                n, t, s, f = _mesh_shape(step, maxh)
-            except Exception as e:  # netgen raises plain Exception
-                raise MeshingError(f"'{part.name}' 부품의 메시 생성에 실패했습니다: {e}") from e
+        steps = [write_step(p.shape, Path(tmp) / f"part{p.id}.step") for p in parts]
+        meshes = _mesh_all(steps, maxh, [p.name for p in parts])
+        for part, (n, t, s, f) in zip(parts, meshes, strict=True):
             if len(t) == 0:
                 raise MeshingError(f"'{part.name}' 부품의 메시 생성에 실패했습니다.")
             nodes.append(n)
