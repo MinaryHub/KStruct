@@ -25,5 +25,7 @@ uv run pytest           # 테스트 (이론해 비교 검증 포함)
 uv run pyinstaller packaging/kstruct.spec --noconfirm
 ```
 
+기능 완성도 검토, 보완 계획, 함께 써야 할 문서 목록은 [docs/ROADMAP.md](docs/ROADMAP.md)에 있습니다.
+
 해석 결과는 설계 검토를 돕는 참고 자료입니다. 실제 제작·사용 여부는 자격을 갖춘 기술자가
 최종 판단해야 합니다. 사용된 오픈소스 목록은 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하세요.
