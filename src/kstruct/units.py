@@ -31,6 +31,8 @@ SI = {
     "temperature": Quantity("°C", 1.0),
     "temperature_change": Quantity("°C", 1.0),
     "power": Quantity("W", 1.0),
+    "torque": Quantity("N·m", 1e-3),  # internal N·mm
+    "speed": Quantity("rpm", 60.0 / (2 * 3.141592653589793)),  # internal rad/s
 }
 US = {
     "length": Quantity("in", 1 / MM_PER_IN),
@@ -39,6 +41,8 @@ US = {
     "temperature": Quantity("°F", 9 / 5, 32.0),
     "temperature_change": Quantity("°F", 9 / 5),
     "power": Quantity("W", 1.0),
+    "torque": Quantity("lbf·in", 1 / (N_PER_LBF * MM_PER_IN)),
+    "speed": Quantity("rpm", 60.0 / (2 * 3.141592653589793)),
 }
 SYSTEMS = {"SI": SI, "US": US}
 

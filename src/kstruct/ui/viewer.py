@@ -195,12 +195,24 @@ class ModelViewer(QWidget):
         if load.kind == LoadKind.GRAVITY:
             center = np.mean([m.center for m in self._meshes.values()], axis=0)
             direction = np.asarray(load.vector, dtype=float)
-        elif load.kind in (LoadKind.FORCE, LoadKind.PRESSURE) and load.faces:
+        elif load.kind in (LoadKind.FORCE, LoadKind.PRESSURE, LoadKind.BEARING) and load.faces:
             center, normal = self._face_center_normal(load.faces)
             if load.kind == LoadKind.PRESSURE:
                 direction = -normal * np.sign(load.magnitude or 1)
             else:
                 direction = np.asarray(load.vector, dtype=float)
+        elif load.kind in (LoadKind.TORQUE, LoadKind.CENTRIFUGAL) and load.point is not None:
+            # the rotation axis, drawn through the stored point
+            center = np.asarray(load.point, dtype=float)
+            direction = np.asarray(load.vector, dtype=float) * np.sign(load.magnitude or 1)
+            norm = np.linalg.norm(direction)
+            if norm == 0:
+                return
+            direction = direction / norm
+            line = pv.Line(center - direction * length, center + direction * length)
+            self._overlay.append(
+                self.plotter.add_mesh(line, color=LOAD_COLOR, line_width=3, pickable=False)
+            )
         else:
             return
         norm = np.linalg.norm(direction)

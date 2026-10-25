@@ -27,6 +27,7 @@ from kstruct.fem.bolts import (
 )
 from kstruct.fem.constraints import Constraints, build_constraints
 from kstruct.fem.contact import build_contact, solve_with_contact
+from kstruct.fem.loads import bearing_forces, centrifugal_forces, torque_forces
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.thermal import ThermalResult, has_thermal_loads, solve_thermal
 from kstruct.model import ConnectionKind, LoadKind, Material, Project
@@ -113,6 +114,12 @@ def _load_vector(project: Project, mesh: FEMesh, materials: dict[int, Material])
             rho = part_property(mesh, materials, "density")
             w = tet10.mass_lumped_volume(X) * rho[:, None]
             np.add.at(f, mesh.tets.ravel(), np.outer(w.ravel(), load.vector))
+        elif load.kind == LoadKind.TORQUE:
+            f += torque_forces(project, mesh, load)
+        elif load.kind == LoadKind.BEARING:
+            f += bearing_forces(project, mesh, load)
+        elif load.kind == LoadKind.CENTRIFUGAL:
+            f += centrifugal_forces(project, mesh, materials, load)
     return f.ravel()
 
 

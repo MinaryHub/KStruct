@@ -363,3 +363,56 @@ def test_load_value_survives_step_changes(qtbot):
     window._go(mw.STEP_FIXTURE)
     window._go(mw.STEP_LOAD)
     assert "psi" in loads.value_label.text()
+
+
+def test_rotating_loads_from_the_panel(qtbot):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    warnings = []
+    window.warn = warnings.append  # never open a modal box in the test
+    shape = window.project.parts[0].shape
+    hole = FaceRef(0, face_at(shape, (75, 15, 4)))  # inside wall of a base hole (x=70, r=5)
+    window._go(mw.STEP_LOAD)
+    loads = window.panels[mw.STEP_LOAD]
+
+    loads.kind.setCurrentIndex(loads.kind.findData(LoadKind.BEARING))
+    assert "N" in loads.value_label.text() and loads.direction.isVisible()
+    window.viewer.set_selection([hole])
+    loads.value.setValue(500)
+    loads.direction.setCurrentIndex(2)  # +X
+    loads._add()
+    assert window.project.loads[-1].kind == LoadKind.BEARING
+    assert window.project.loads[-1].vector == pytest.approx((500, 0, 0))
+    assert "베어링 하중 500.0 N" in loads.items.item(0).text()
+
+    loads.kind.setCurrentIndex(loads.kind.findData(LoadKind.TORQUE))
+    assert "N·m" in loads.value_label.text()
+    window.viewer.set_selection([hole])
+    loads.axis.setCurrentIndex(0)  # the hole's own axis (z)
+    loads.value.setValue(2.5)  # N·m
+    loads._add()
+    torque = window.project.loads[-1]
+    assert torque.kind == LoadKind.TORQUE and torque.magnitude == pytest.approx(2500.0)
+    assert abs(torque.vector[2]) == pytest.approx(1.0) and torque.point is not None
+    assert "토크 2.5 N·m" in loads.items.item(1).text()
+
+    loads.kind.setCurrentIndex(loads.kind.findData(LoadKind.CENTRIFUGAL))
+    assert "rpm" in loads.value_label.text()
+    window.viewer.set_selection([])
+    loads.axis.setCurrentIndex(3)  # Z axis through the model centre
+    loads.value.setValue(1500)
+    loads._add()
+    spin = window.project.loads[-1]
+    assert spin.kind == LoadKind.CENTRIFUGAL and spin.magnitude == pytest.approx(1500 * 2 * np.pi / 60)
+    assert spin.vector == (0.0, 0.0, 1.0) and spin.point is not None
+    assert "원심력 1,500 rpm, Z 축" in loads.items.item(2).text()
+    # a flat face cannot take a bearing load: refused with a message, nothing added
+    loads.kind.setCurrentIndex(loads.kind.findData(LoadKind.BEARING))
+    window.viewer.set_selection([FaceRef(0, face_at(shape, (90, 30, 8)))])
+    loads._add()
+    assert len(window.project.loads) == 3 and len(warnings) == 1
+    window.viewer.annotate(window.project.fixtures, window.project.loads, [])  # axis lines draw

@@ -70,6 +70,17 @@ def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) ->
     if ld.kind == LoadKind.GRAVITY:
         g = (sum(c * c for c in ld.vector) ** 0.5) / GRAVITY
         return f"자중 {g:.2g} g"
+    if ld.kind == LoadKind.TORQUE:
+        return f"토크 {fmt(system, 'torque', ld.magnitude, ',.4g')}{_axis(ld)}: {faces(ld.faces)}"
+    if ld.kind == LoadKind.BEARING:
+        fq = quantity(system, "force")
+        fx, fy, fz = (fq.show(c) for c in ld.vector)
+        mag = (fx**2 + fy**2 + fz**2) ** 0.5
+        return (
+            f"베어링 하중 {mag:,.1f} {fq.unit} ({fx:+.0f}, {fy:+.0f}, {fz:+.0f}): {faces(ld.faces)}"
+        )
+    if ld.kind == LoadKind.CENTRIFUGAL:
+        return f"원심력 {fmt(system, 'speed', ld.magnitude, ',.0f')}{_axis(ld)}"
     if ld.kind == LoadKind.FACE_TEMPERATURE:
         return f"고정 온도 {fmt(system, 'temperature', ld.magnitude, '.1f')}: {faces(ld.faces)}"
     if ld.kind == LoadKind.HEAT_FLOW:
@@ -78,3 +89,13 @@ def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) ->
         air = fmt(system, "temperature", ld.ambient, ".0f")
         return f"대류 h={ld.magnitude:.3g} W/m²K, 공기 {air}: {faces(ld.faces)}"
     return f"온도 변화 {fmt(system, 'temperature_change', ld.magnitude, '+.1f')}"
+
+
+def _axis(ld: Load) -> str:
+    names = {(1, 0, 0): "X", (0, 1, 0): "Y", (0, 0, 1): "Z"}
+    key = tuple(int(round(c)) for c in ld.vector)
+    if key in names:
+        return f", {names[key]} 축"
+    if key in {tuple(-c for c in k) for k in names}:
+        return f", −{names[tuple(-c for c in key)]} 축"
+    return ", 원통면의 축"

@@ -70,6 +70,7 @@ def save_project(project: Project, path: str | Path) -> Path:
                 "vector": list(ld.vector),
                 "magnitude": ld.magnitude,
                 "ambient": ld.ambient,
+                "point": list(ld.point) if ld.point is not None else None,
             }
             for ld in project.loads
         ],
@@ -149,6 +150,7 @@ def load_project(path: str | Path) -> Project:
             tuple(ld["vector"]),
             ld["magnitude"],
             ld.get("ambient", 20.0),
+            tuple(ld["point"]) if ld.get("point") is not None else None,
         )
         for ld in doc["loads"]
     ]

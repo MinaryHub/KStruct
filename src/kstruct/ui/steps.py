@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -32,8 +33,9 @@ from kstruct.fem.bolts import hole_axis, recommended_preload, suggest_size
 from kstruct.fem.bolts import sizes as bolt_sizes
 from kstruct.fem.constraints import ConstraintError
 from kstruct.geometry import faces_of
-from kstruct.geometry.face_info import face_info, outward_normal
+from kstruct.geometry.face_info import common_axis, face_info, faces_centroid, outward_normal
 from kstruct.model import (
+    AXIS_LOADS,
     GRAVITY,
     AnalysisKind,
     Bolt,
@@ -70,6 +72,9 @@ LOAD_QUANTITY = {
     LoadKind.FACE_TEMPERATURE: "temperature",
     LoadKind.HEAT_FLOW: None,
     LoadKind.CONVECTION: None,
+    LoadKind.TORQUE: "torque",
+    LoadKind.BEARING: "force",
+    LoadKind.CENTRIFUGAL: "speed",
 }
 FIXTURE_LABELS = {
     FixtureKind.FIXED: ("완전 고정", "fixture.fixed"),
@@ -84,6 +89,9 @@ LOAD_LABELS = {
     LoadKind.FACE_TEMPERATURE: ("고정 온도 (면)", "load.face_temperature"),
     LoadKind.HEAT_FLOW: ("열 입력 (면)", "load.heat_flow"),
     LoadKind.CONVECTION: ("대류 냉각 (면)", "load.convection"),
+    LoadKind.TORQUE: ("토크 (비틀림)", "load.torque"),
+    LoadKind.BEARING: ("베어링 하중 (구멍에 끼운 축·핀)", "load.bearing"),
+    LoadKind.CENTRIFUGAL: ("원심력 (회전)", "load.centrifugal"),
 }
 FACE_LOADS = (
     LoadKind.FORCE,
@@ -91,7 +99,15 @@ FACE_LOADS = (
     LoadKind.FACE_TEMPERATURE,
     LoadKind.HEAT_FLOW,
     LoadKind.CONVECTION,
+    LoadKind.TORQUE,
+    LoadKind.BEARING,
 )
+AXES = [
+    ("선택한 원통면의 축", None),
+    ("X 축", (1.0, 0.0, 0.0)),
+    ("Y 축", (0.0, 1.0, 0.0)),
+    ("Z 축", (0.0, 0.0, 1.0)),
+]
 DIRECTIONS = [
     ("면을 수직으로 누르기", None, 1.0),
     ("면을 수직으로 당기기", None, -1.0),
@@ -685,6 +701,11 @@ class LoadStep(_FaceListStep):
             self.direction.addItem(label)
         self.direction_label = QLabel("방향")
         form.addRow(self.direction_label, with_help(self.direction, "load.direction"))
+        self.axis = QComboBox()
+        for label, _ in AXES:
+            self.axis.addItem(label)
+        self.axis_label = QLabel("회전축")
+        form.addRow(self.axis_label, with_help(self.axis, "load.axis"))
         self.ambient = QDoubleSpinBox()
         self.ambient.setRange(-100, 2000)
         self.ambient.setValue(20)
@@ -711,8 +732,19 @@ class LoadStep(_FaceListStep):
         self.kind_help.key = LOAD_LABELS[kind][1]
         self.kind_help.setToolTip(topic(self.kind_help.key).short)
         self.selection_label.setVisible(kind in FACE_LOADS)
-        self.direction.setVisible(kind in (LoadKind.FORCE, LoadKind.GRAVITY))
+        self.direction.setVisible(kind in (LoadKind.FORCE, LoadKind.GRAVITY, LoadKind.BEARING))
         self.direction_label.setVisible(self.direction.isVisible())
+        self.axis.setVisible(kind in AXIS_LOADS)
+        self.axis_label.setVisible(kind in AXIS_LOADS)
+        if kind == LoadKind.BEARING:
+            # a pin pushes along a fixed direction: no "normal to the face" choices
+            for i in range(2):
+                self.direction.model().item(i).setEnabled(False)
+            if self.direction.currentIndex() < 2:
+                self.direction.setCurrentIndex(len(DIRECTIONS) - 1)
+        else:
+            for i in range(2):
+                self.direction.model().item(i).setEnabled(True)
         self.ambient.setVisible(kind == LoadKind.CONVECTION)
         self.ambient_label.setVisible(kind == LoadKind.CONVECTION)
         defaults = {  # internal units
@@ -723,6 +755,9 @@ class LoadStep(_FaceListStep):
             LoadKind.FACE_TEMPERATURE: ("온도", 100.0),
             LoadKind.HEAT_FLOW: ("열량 (W)", 10.0),
             LoadKind.CONVECTION: ("열전달계수 h (W/m²·K)", 10.0),
+            LoadKind.TORQUE: ("토크", 10_000.0),  # N·mm = 10 N·m
+            LoadKind.BEARING: ("힘", 1000.0),
+            LoadKind.CENTRIFUGAL: ("회전 속도", 3000 * 2 * 3.141592653589793 / 60),  # rad/s
         }
         label, default = defaults[kind]
         q = self._quantity(kind)
@@ -770,6 +805,14 @@ class LoadStep(_FaceListStep):
             LoadKind.FACE_TEMPERATURE: "선택한 면이 항상 이 온도로 유지됩니다 (예: 히터·냉각수에 닿은 면).",
             LoadKind.HEAT_FLOW: "선택한 면으로 들어오는 열입니다 (예: 모터·전자부품의 발열량).",
             LoadKind.CONVECTION: "자연 공랭 5~10, 선풍기 바람 20~50, 강제 송풍 50~200, 수랭 500 이상",
+            LoadKind.TORQUE: (
+                f"≈ 반지름 100 mm 끝에서 {v / 100 / 9.81:,.2f} kg 무게로 돌리는 힘. "
+                "양수는 회전축 방향으로 오른나사가 나아가는 방향(반시계)입니다."
+            ),
+            LoadKind.BEARING: "구멍 벽의 하중 방향 절반에 코사인 분포로 눌러 줍니다(핀·축이 미는 모양).",
+            LoadKind.CENTRIFUGAL: (
+                f"= {v:,.1f} rad/s. 모든 부품에 회전축에서 바깥쪽으로 ρω²r의 힘이 걸립니다."
+            ),
         }
         self.value_hint.setText(hints[kind])
 
@@ -777,6 +820,29 @@ class LoadStep(_FaceListStep):
         super().update_selection(refs)
         needs_faces = self._current_kind() in FACE_LOADS
         self.add_btn.setEnabled(bool(refs) or not needs_faces)
+
+    def _selected_faces(self, refs: list[FaceRef]) -> list:
+        project = self.app.project
+        return [faces_of(project.part(r.part_id).shape)[r.face_index] for r in refs]
+
+    def _axis_for(self, kind: LoadKind, refs: list[FaceRef]):
+        """(point, direction) for torque / centrifugal loads, or None with a message."""
+        _, chosen = AXES[self.axis.currentIndex()]
+        faces = self._selected_faces(refs)
+        from_faces = common_axis(faces) if faces else None
+        if chosen is None:
+            if from_faces is None:
+                return None
+            point, direction = from_faces
+            return tuple(float(c) for c in point), tuple(float(c) for c in direction)
+        if faces:
+            point = faces_centroid(faces)
+        else:  # centrifugal without faces: the axis passes through the model's centre
+            parts = self.app.project.visible_parts()
+            point = sum(
+                (np.asarray(faces_centroid(faces_of(p.shape))) for p in parts), np.zeros(3)
+            ) / max(len(parts), 1)
+        return tuple(float(c) for c in point), chosen
 
     def entries(self) -> list:
         return self.app.project.loads
@@ -810,6 +876,34 @@ class LoadStep(_FaceListStep):
                 load = Load(LoadKind.FORCE, refs, vector=tuple(v * c + 0.0 for c in axis))
         elif kind == LoadKind.PRESSURE:
             load = Load(LoadKind.PRESSURE, refs, magnitude=v)
+        elif kind == LoadKind.TORQUE:
+            axis = self._axis_for(kind, refs)
+            if axis is None:
+                self.app.warn(
+                    "토크의 회전축을 정할 수 없습니다. 축이나 구멍의 원통면을 고르거나, "
+                    "'회전축'에서 X·Y·Z 축을 지정하세요."
+                )
+                return
+            load = Load(LoadKind.TORQUE, refs, vector=axis[1], magnitude=v, point=axis[0])
+        elif kind == LoadKind.BEARING:
+            if common_axis(self._selected_faces(refs)) is None:
+                self.app.warn(
+                    "베어링 하중은 구멍(원통면)에만 줄 수 있습니다. 구멍 안쪽 면을 선택하세요. "
+                    "여러 면을 고르면 같은 축의 구멍이어야 합니다."
+                )
+                return
+            _, axis, _ = DIRECTIONS[self.direction.currentIndex()]
+            load = Load(LoadKind.BEARING, refs, vector=tuple(v * c + 0.0 for c in axis))
+        elif kind == LoadKind.CENTRIFUGAL:
+            axis = self._axis_for(kind, refs)
+            if axis is None:
+                self.app.warn(
+                    "회전축을 정할 수 없습니다. 축이나 구멍의 원통면을 고르거나 '회전축'에서 "
+                    "X·Y·Z 축을 지정하세요."
+                )
+                return
+            project.loads[:] = [ld for ld in project.loads if ld.kind != LoadKind.CENTRIFUGAL]
+            load = Load(LoadKind.CENTRIFUGAL, vector=axis[1], magnitude=v, point=axis[0])
         elif kind == LoadKind.GRAVITY:
             _, axis, _ = DIRECTIONS[self.direction.currentIndex()]
             axis = axis or (0, 0, -1)

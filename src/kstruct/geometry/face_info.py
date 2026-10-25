@@ -63,3 +63,43 @@ def outward_normal(face: TopoDS_Face) -> tuple[float, float, float] | None:
     x, y, z = surface.Plane().Axis().Direction().Coord()
     sign = -1.0 if face.Orientation() == TopAbs_REVERSED else 1.0
     return (sign * x, sign * y, sign * z)
+
+
+def common_axis(faces: list[TopoDS_Face], tol: float = 1e-3):
+    """(point, unit direction) of the axis shared by cylindrical faces, or None when a face
+    is not a cylinder or the axes differ (used for torque, bearing and centrifugal loads)."""
+    import numpy as np
+
+    axis = None
+    for face in faces:
+        surface = BRepAdaptor_Surface(face)
+        if surface.GetType() != GeomAbs_Cylinder:
+            return None
+        ax = surface.Cylinder().Axis()
+        point = np.array(ax.Location().Coord())
+        direction = np.array(ax.Direction().Coord())
+        direction /= np.linalg.norm(direction)
+        if axis is None:
+            axis = (point, direction)
+            continue
+        p0, d0 = axis
+        if abs(abs(d0 @ direction) - 1) > 1e-6:
+            return None
+        offset = point - p0
+        if np.linalg.norm(offset - (offset @ d0) * d0) > tol * max(1.0, np.linalg.norm(offset)):
+            return None
+    return axis
+
+
+def faces_centroid(faces: list[TopoDS_Face]):
+    """Area-weighted centroid of faces (numpy array)."""
+    import numpy as np
+
+    total, acc = 0.0, np.zeros(3)
+    for face in faces:
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, props)
+        area = props.Mass()
+        acc += area * np.array(props.CentreOfMass().Coord())
+        total += area
+    return acc / total if total > 0 else acc

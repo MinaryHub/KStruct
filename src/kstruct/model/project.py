@@ -66,9 +66,14 @@ class LoadKind(Enum):
     FACE_TEMPERATURE = "face_temperature"  # faces held at magnitude °C
     HEAT_FLOW = "heat_flow"  # magnitude W entering through the faces
     CONVECTION = "convection"  # magnitude = h in W/(m²·K), to air at `ambient` °C
+    # rotating machinery
+    TORQUE = "torque"  # magnitude N·mm about the axis (vector = unit direction, point on axis)
+    BEARING = "bearing"  # force vector (N) on a cylindrical hole, cosine distribution
+    CENTRIFUGAL = "centrifugal"  # magnitude = ω rad/s about the axis (vector, point); all parts
 
 
 THERMAL_LOADS = (LoadKind.FACE_TEMPERATURE, LoadKind.HEAT_FLOW, LoadKind.CONVECTION)
+AXIS_LOADS = (LoadKind.TORQUE, LoadKind.CENTRIFUGAL)  # need an axis (vector + point)
 
 
 @dataclass
@@ -78,6 +83,7 @@ class Load:
     vector: tuple[float, float, float] = (0.0, 0.0, 0.0)
     magnitude: float = 0.0
     ambient: float = 20.0  # °C, convection only
+    point: tuple[float, float, float] | None = None  # a point on the axis (torque, centrifugal)
 
 
 class ConnectionKind(Enum):
