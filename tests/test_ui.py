@@ -407,7 +407,9 @@ def test_rotating_loads_from_the_panel(qtbot):
     loads.value.setValue(1500)
     loads._add()
     spin = window.project.loads[-1]
-    assert spin.kind == LoadKind.CENTRIFUGAL and spin.magnitude == pytest.approx(1500 * 2 * np.pi / 60)
+    assert spin.kind == LoadKind.CENTRIFUGAL and spin.magnitude == pytest.approx(
+        1500 * 2 * np.pi / 60
+    )
     assert spin.vector == (0.0, 0.0, 1.0) and spin.point is not None
     assert "원심력 1,500 rpm, Z 축" in loads.items.item(2).text()
     # a flat face cannot take a bearing load: refused with a message, nothing added
