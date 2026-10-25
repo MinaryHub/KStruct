@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +36,14 @@ from kstruct.fem.thermal import ThermalResult, solve_thermal
 from kstruct.geometry import GeometryImportError, load_cad
 from kstruct.geometry.contacts import find_touching_faces
 from kstruct.geometry.samples import bolted_plates, l_bracket, two_plates, write_step
-from kstruct.model import THERMAL_LOADS, AnalysisKind, LoadKind, Project
+from kstruct.model import (
+    THERMAL_LOADS,
+    AnalysisKind,
+    LoadKind,
+    Project,
+    active_project,
+    excluded_by_hidden_parts,
+)
 from kstruct.project_io import SUFFIX, ProjectFileError, load_project, save_project
 from kstruct.report.summary import (
     VERDICT_STYLE,
@@ -44,6 +54,7 @@ from kstruct.report.summary import (
     summarize_thermal,
 )
 from kstruct.ui import steps
+from kstruct.ui.dialogs import AboutDialog, save_bug_report
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 from kstruct.ui.viewer import ModelViewer, ResultField
 from kstruct.ui.worker import run_job
@@ -58,6 +69,7 @@ CAD_FILTER = (
 PROJECT_FILTER = f"KStruct 프로젝트 (*{SUFFIX})"
 SAMPLES = {"bracket": l_bracket, "two_plates": two_plates, "bolted": bolted_plates}
 
+log = logging.getLogger("kstruct.ui")
 STEP_OPEN, STEP_MATERIAL, STEP_FIXTURE, STEP_LOAD, STEP_MESH, STEP_SOLVE, STEP_RESULT = range(7)
 STEP_NAMES = ["1. 모델 열기", "2. 재료", "3. 고정", "4. 하중", "5. 메시", "6. 해석", "7. 결과"]
 THERMAL_FIELDS = [("temp", "온도"), ("flux", "열 흐름 (열유속)")]
@@ -197,6 +209,44 @@ class MainWindow(QMainWindow):
         bar.addWidget(HelpButton("view.fit"))
         bar.addSeparator()
         action("사용 안내", lambda: HelpDialog("help.mode", self).exec(), "help.mode", "F1")
+        action("문제 보고", self.report_problem, "help.report")
+        action("정보", lambda: AboutDialog(self).exec(), "help.about")
+
+    def install_crash_dialog(self) -> None:
+        """Unhandled exceptions in Qt slots: log (paths.install_excepthook) and tell the user
+        instead of dying silently in a windowed build."""
+        previous = sys.excepthook
+
+        def hook(exc_type, exc, tb):
+            previous(exc_type, exc, tb)
+            detail = "".join(traceback.format_exception(exc_type, exc, tb))[-1500:]
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle("예상하지 못한 오류")
+            box.setText(
+                "프로그램 안에서 오류가 났습니다. 작업 내용은 '프로젝트 저장'으로 보관할 수 "
+                "있습니다.\n\n'문제 보고'를 누르면 로그와 프로젝트를 묶어 저장할 수 있습니다."
+            )
+            box.setDetailedText(detail)
+            report = box.addButton("문제 보고", QMessageBox.ButtonRole.ActionRole)
+            box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is report:
+                self.report_problem(detail)
+
+        sys.excepthook = hook
+
+    def report_problem(self, detail: str = "") -> None:
+        project_file = None
+        if self.project is not None:
+            project_file = Path(tempfile.gettempdir()) / "kstruct_problem.kst"
+            try:
+                save_project(self.project, project_file)
+            except Exception:  # the report must still be produced
+                log.exception("could not save the project for the bug report")
+                project_file = None
+        extra = {"error.txt": detail} if detail else {}
+        save_bug_report(self, project_file, extra)
 
     # --- navigation ------------------------------------------------------------------
 
@@ -284,9 +334,11 @@ class MainWindow(QMainWindow):
         if path.suffix.lower() == SUFFIX:
             self._load_project_file(path)
             return
+        log.info("open %s", path)
         try:
             project = load_cad(path)
         except GeometryImportError as e:
+            log.warning("import failed: %s", e)
             self.warn(str(e))
             return
         self._set_project(project)
@@ -329,7 +381,7 @@ class MainWindow(QMainWindow):
     def detect_connections(self, quiet: bool = False) -> None:
         if self.project is None:
             return
-        found = find_touching_faces(self.project)
+        found = find_touching_faces(active_project(self.project))
         self.project.connections = found
         self.invalidate_mesh()
         self.panels[STEP_OPEN].refresh()
@@ -360,10 +412,12 @@ class MainWindow(QMainWindow):
             panel.update_selection(refs)
 
     def readiness(self) -> list[tuple[bool, str]]:
-        p = self.project
-        if p is None:
+        if self.project is None:
             return [(False, "모델을 여세요")]
-        visible = [x for x in p.parts if x.visible]
+        p = active_project(self.project)
+        visible = p.parts
+        if not visible:
+            return [(False, "모든 부품이 숨겨져 있습니다. 1단계에서 부품을 체크하세요")]
         missing = [x.name for x in visible if x.material_id is None]
         checks = [
             (True, f"모델: 부품 {len(visible)}개"),
@@ -406,6 +460,9 @@ class MainWindow(QMainWindow):
                     else "4단계에서 '고정 온도'나 '대류 냉각'을 하나 이상 지정하세요",
                 )
             )
+        excluded = excluded_by_hidden_parts(self.project)
+        if excluded:
+            checks.append((True, f"숨긴 부품에 지정된 {', '.join(excluded)}는 해석에서 제외합니다"))
         checks.append((True, "메시: 준비됨" if self.mesh else "메시: 해석할 때 자동으로 만듭니다"))
         return checks
 
@@ -417,7 +474,7 @@ class MainWindow(QMainWindow):
         panel: steps.MeshStep = self.panels[STEP_MESH]
         panel.set_busy(True)
         self._busy = True
-        project = self.project
+        project = active_project(self.project)
 
         def done(mesh):
             self._busy = False
@@ -439,11 +496,19 @@ class MainWindow(QMainWindow):
         if self.project is None or self._busy:
             return
         panel: steps.SolveStep = self.panels[STEP_SOLVE]
-        project, mesh = self.project, self.mesh
-        mats = standards.materials()
-        materials = {p.id: mats[p.material_id] for p in project.parts if p.visible}
+        project, mesh = active_project(self.project), self.mesh
+        mats = standards.project_materials(project)
+        materials = {p.id: mats[p.material_id] for p in project.parts}
         kind = project.analysis
         self._busy = True
+        log.info(
+            "solve %s: parts=%d fixtures=%d loads=%d mesh=%s",
+            kind.value,
+            len(project.parts),
+            len(project.fixtures),
+            len(project.loads),
+            project.mesh_quality,
+        )
         panel.set_progress(0.0, "시작")
 
         def job(progress):
@@ -468,10 +533,10 @@ class MainWindow(QMainWindow):
             elif isinstance(self.result, ThermalResult):
                 self.summary = summarize_thermal(project, self.result, materials)
             elif isinstance(self.result, BucklingResult):
-                pack = standards.pack(project.standard)
+                pack = standards.effective_pack(project)
                 self.summary = summarize_buckling(project, self.result, pack)
             else:
-                self.summary = summarize(project, self.result, standards.pack(project.standard))
+                self.summary = summarize(project, self.result, standards.effective_pack(project))
             panel.set_progress(None, "")
             self._configure_result_panel()
             self._update_nav()
@@ -480,6 +545,7 @@ class MainWindow(QMainWindow):
         def failed(e):
             self._busy = False
             panel.set_progress(None, "")
+            log.warning("solve failed: %s: %s", type(e).__name__, e)
             self.warn(friendly_error(e))
 
         run_job(job, done, failed, lambda f, m: panel.set_progress(f, m))
@@ -559,7 +625,7 @@ class MainWindow(QMainWindow):
         if key in ("ffos", "life"):
             fatigue = self.summary.fatigue
             target = max(
-                standards.pack(self.project.standard).target(m) for m in r.materials.values()
+                standards.effective_pack(self.project).target(m) for m in r.materials.values()
             )
             if key == "ffos":
                 values = np.minimum(fatigue.safety_factor, 2 * target)
@@ -574,7 +640,7 @@ class MainWindow(QMainWindow):
             vm = r.von_mises
             return ResultField(vm, "응력 (MPa)", clim=(0.0, float(vm.max())), unit="MPa")
         if key == "fos":
-            pack = standards.pack(self.project.standard)
+            pack = standards.effective_pack(self.project)
             target = max(pack.target(m) for m in r.materials.values())
             # clip before display: quadratic interpolation between a capped 100 and a small
             # neighbour would otherwise undershoot and paint false red spots
@@ -682,6 +748,12 @@ class MainWindow(QMainWindow):
                     f"&nbsp;최소 안전율 <b>{p.min_fos:.2f}</b> (권장 {p.target:.1f})"
                     f" · 최대 변형 {fmt(us, 'length', p.max_disp)}"
                 )
+                if p.hotspot_fos is not None:
+                    lines[-1] += (
+                        f"<br>&nbsp;특이점({p.singular_kind}) 제외: 응력 "
+                        f"{fmt(us, 'stress', p.hotspot_stress, ',.1f')}, 안전율 "
+                        f"<b>{p.hotspot_fos:.2f}</b>"
+                    )
                 if p.fatigue_fos is not None:
                     life = "무한" if p.fatigue_life >= 1e9 else f"{p.fatigue_life:,.0f}회"
                     lines[-1] += (

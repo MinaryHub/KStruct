@@ -76,6 +76,10 @@ def main() -> None:
 
     # meshing runs in spawned worker processes; a frozen app must handle their start-up
     multiprocessing.freeze_support()
+    from kstruct.paths import install_excepthook, setup_logging
+
+    setup_logging()
+    install_excepthook()
     if "--selftest" in sys.argv:
         sys.exit(selftest())
     if "--selftest-gui" in sys.argv:
@@ -90,6 +94,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("KStruct")
     window = MainWindow()
+    window.install_crash_dialog()
     window.show()
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if args:

@@ -138,6 +138,45 @@ class Project:
     n_modes: int = 6
     load_cycle: str = "none"  # fem.fatigue.LoadCycle value
     units: str | None = None  # "SI" / "US"; None follows the standards pack
+    # recommended safety factors chosen for this project ("ductile" / "brittle" / "buckling");
+    # missing keys follow the standards pack
+    target_overrides: dict[str, float] = field(default_factory=dict)
+    # materials the user defined for this project, by material id (saved in the .kst file)
+    custom_materials: dict[str, Material] = field(default_factory=dict)
 
     def part(self, part_id: int) -> Part:
         return next(p for p in self.parts if p.id == part_id)
+
+    def visible_parts(self) -> list[Part]:
+        return [p for p in self.parts if p.visible]
+
+
+def active_project(project: Project) -> Project:
+    """The project as analysed: hidden parts are left out together with every fixture,
+    load, connection and bolt that refers to them (a shallow copy; parts are shared)."""
+    hidden = {p.id for p in project.parts if not p.visible}
+    if not hidden:
+        return project
+
+    def keep(refs: list[FaceRef]) -> bool:
+        return not any(r.part_id in hidden for r in refs)
+
+    out = Project(**{k: getattr(project, k) for k in project.__dataclass_fields__})
+    out.parts = project.visible_parts()
+    out.fixtures = [f for f in project.fixtures if keep(f.faces)]
+    out.loads = [ld for ld in project.loads if keep(ld.faces)]
+    out.connections = [c for c in project.connections if keep(c.faces_a) and keep(c.faces_b)]
+    out.bolts = [b for b in project.bolts if keep([b.hole_a, b.hole_b])]
+    return out
+
+
+def excluded_by_hidden_parts(project: Project) -> list[str]:
+    """Short Korean descriptions of what active_project() drops, for the checklist."""
+    active = active_project(project)
+    counts = {
+        "고정": len(project.fixtures) - len(active.fixtures),
+        "하중": len(project.loads) - len(active.loads),
+        "연결": len(project.connections) - len(active.connections),
+        "볼트": len(project.bolts) - len(active.bolts),
+    }
+    return [f"{name} {n}개" for name, n in counts.items() if n]

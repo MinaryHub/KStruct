@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import traceback
+import logging
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
@@ -24,7 +24,7 @@ class _Job(QRunnable):
         try:
             result = self.fn(lambda frac, msg: self.signals.progress.emit(frac, msg))
         except Exception as e:  # report everything to the UI; never kill the worker silently
-            traceback.print_exc()
+            logging.getLogger("kstruct.worker").exception("background job failed")
             self.signals.failed.emit(e)
         else:
             self.signals.done.emit(result)

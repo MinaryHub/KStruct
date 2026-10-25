@@ -13,6 +13,8 @@ from kstruct.model.project import (
     Material,
     Part,
     Project,
+    active_project,
+    excluded_by_hidden_parts,
 )
 
 __all__ = [
@@ -30,4 +32,6 @@ __all__ = [
     "Material",
     "Part",
     "Project",
+    "active_project",
+    "excluded_by_hidden_parts",
 ]

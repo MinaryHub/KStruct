@@ -41,6 +41,11 @@ CI(`.github/workflows/build.yml`)가 Windows/macOS/Linux에서 테스트 → PyI
 - **UI**: `ui/main_window.py`가 Project·mesh·result를 소유하고, `ui/steps.py`의 7개 패널이 이를 편집해 `changed`를 보낸다. 메싱·해석은 `ui/worker.run_job`으로 백그라운드 실행. 결과 종류(Static/Modal/Thermal)에 따라 결과 패널 필드가 바뀐다.
 - **3D 텍스트 한글**: VTK 기본 글꼴에 한글이 없어 색 막대에 번들 Noto Sans KR(OFL)을 지정한다(`viewer._use_korean_font`).
 - **결과 표시 주의**: 2차 요소 보간이 범위를 벗어나 거짓 색을 만들 수 있어 안전율 같은 잘린 값은 표시 전에 clim으로 자른다.
+- **응력 특이점**(`fem/singularity.py`): 필렛 없는 오목 모서리(경계 삼각형 쌍의 이면각으로 판정)와 완전 고정면 가장자리 절점을 표시하고, 그 주변(요소 1.5개 또는 부품 대각선 3% 중 큰 값)을 제외한 "특이점 제외(핫스팟)" 응력·안전율을 `report.summary`가 함께 보고한다. 연성재 판정은 핫스팟 값(`PartSummary.governing_fos`), 취성재는 최대값 기준. 예제 브래킷의 판정이 메시 등급과 무관하게 같아야 한다(`tests/test_improvements.py`).
+- **숨긴 부품**: 해석·메시·자동 접합은 항상 `model.active_project(project)`(보이는 부품 + 그 부품만 참조하는 고정·하중·연결·볼트)를 쓴다. 숨긴 부품에 걸린 조건은 6단계 체크리스트에 "제외" 표시.
+- **권장 안전율·사용자 재료**: 판정 기준은 `standards.effective_pack(project)`(`Project.target_overrides` 반영), 재료 조회는 `standards.project_materials(project)`(내장 + `Project.custom_materials`). `standards.pack()`/`materials()`를 UI·요약·보고서에서 직접 쓰지 말 것. 사용자 재료는 .kst에 저장되고 `paths.user_materials_path()` 라이브러리에도 복사된다.
+- **조건 문구**: 고정·하중·연결 설명은 `report/describe.py` 한 곳에서 만들어 패널과 PDF가 같은 문장을 쓴다. 보고서 수치는 모두 `units.fmt`를 거친다.
+- **로그·진단**(`paths.py`): `setup_logging()`이 사용자 데이터 폴더(`KSTRUCT_DATA_DIR`로 재지정 가능)에 회전 로그를 쓰고, `install_excepthook` + `MainWindow.install_crash_dialog`가 처리되지 않은 예외를 로그·대화상자로 보낸다. "문제 보고"는 로그+환경+.kst를 zip으로 묶는다(`ui/dialogs.py`). 버전은 `kstruct.__version__` 하나이며 pyproject와 일치하는지 테스트가 확인한다.
 
 ## OCP(cadquery-ocp 8.x, OCCT 8) 주의
 

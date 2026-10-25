@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from kstruct import standards
 from kstruct.geometry.face_info import face_info
 from kstruct.geometry.samples import _box
 from kstruct.geometry.tessellate import faces_of
@@ -281,3 +282,84 @@ def test_us_units_input_and_results(qtbot):
     loads._add()
     assert window.project.loads[0].vector[2] == pytest.approx(-444.822, rel=1e-5)
     assert "lbf" in loads.items.item(0).text()
+
+
+def test_hidden_part_is_excluded_from_checklist(qtbot):
+    from kstruct.model import FaceRef, Fixture, FixtureKind, Load, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("two_plates")
+    project = window.project
+    for part in project.parts:
+        part.material_id = "s235"
+    lower, upper = (p.shape for p in project.parts)
+    project.fixtures = [Fixture(FixtureKind.FIXED, [FaceRef(0, 0)])]
+    project.loads = [Load(LoadKind.FORCE, [FaceRef(1, 0)], vector=(0, 0, -10.0))]
+    project.parts[1].visible = False  # hide the loaded plate
+    window._go(mw.STEP_SOLVE)
+    texts = [t for _, t in window.readiness()]
+    assert any("숨긴 부품" in t and "하중 1개" in t for t in texts)
+    assert any(t.startswith("모델: 부품 1개") for t in texts)
+    # with nothing loaded on the visible part the run button stays disabled, with a reason
+    assert any(not ok and "하중" in t for ok, t in window.readiness())
+
+
+def test_custom_material_dialog_and_override_ui(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setenv("KSTRUCT_DATA_DIR", str(tmp_path))
+    from kstruct.ui import main_window as mw
+    from kstruct.ui.dialogs import MaterialDialog, load_user_library
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    window._go(mw.STEP_MATERIAL)
+    panel = window.panels[mw.STEP_MATERIAL]
+    base = window.project.custom_materials  # the user library is merged on refresh
+    assert base == {}
+
+    dialog = MaterialDialog(standards.materials()["s355"], "SI")
+    dialog.name.setText("특수강")
+    dialog.yield_.setValue(420)
+    m = dialog.material()
+    assert m.id.startswith("user_") and m.yield_strength == 420 and m.tensile_strength == 470
+    window.project.custom_materials[m.id] = m
+    panel.refresh()
+    assert panel.material.findData(m.id) >= 0
+    panel.material.setCurrentIndex(panel.material.findData(m.id))
+    panel._material_chosen()
+    assert window.project.parts[0].material_id == m.id
+    assert "사용자 정의 재료" in panel.props.text()
+    # US display units convert the entered stress back to MPa
+    us = MaterialDialog(None, "US")
+    us.yield_.setValue(36_000)  # psi
+    assert us.material().yield_strength == pytest.approx(248.2, abs=0.1)
+    assert load_user_library() == {}  # nothing written until the user saves through the UI
+
+    window._go(mw.STEP_SOLVE)
+    solve = window.panels[mw.STEP_SOLVE]
+    assert solve.target_default.isChecked() and not solve.targets["ductile"].isEnabled()
+    solve.target_default.setChecked(False)
+    solve.targets["ductile"].setValue(2.5)
+    assert window.project.target_overrides["ductile"] == 2.5
+    assert standards.effective_pack(window.project).target_ductile == 2.5
+    solve.target_default.setChecked(True)
+    assert window.project.target_overrides == {}
+
+
+def test_load_value_survives_step_changes(qtbot):
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    window._go(mw.STEP_LOAD)
+    loads = window.panels[mw.STEP_LOAD]
+    loads.value.setValue(2345.0)
+    window._go(mw.STEP_FIXTURE)
+    window._go(mw.STEP_LOAD)
+    assert loads.value.value() == 2345.0
+    loads.kind.setCurrentIndex(1)  # pressure: a new kind gets its default
+    assert loads.value.value() == 1.0
+    window.project.standard = "astm"  # units changed: the number must be reset
+    window._go(mw.STEP_FIXTURE)
+    window._go(mw.STEP_LOAD)
+    assert "psi" in loads.value_label.text()

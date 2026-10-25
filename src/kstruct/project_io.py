@@ -24,6 +24,7 @@ from kstruct.model import (
     Part,
     Project,
 )
+from kstruct.standards import material_from_record, material_record
 
 FORMAT_VERSION = 1
 SUFFIX = ".kst"
@@ -55,6 +56,8 @@ def save_project(project: Project, path: str | Path) -> Path:
         "n_modes": project.n_modes,
         "load_cycle": project.load_cycle,
         "units": project.units,
+        "target_overrides": dict(project.target_overrides),
+        "custom_materials": [material_record(m) for m in project.custom_materials.values()],
         "parts": [
             {"id": p.id, "name": p.name, "material_id": p.material_id, "visible": p.visible}
             for p in project.parts
@@ -123,6 +126,10 @@ def load_project(path: str | Path) -> Project:
             n_modes=doc.get("n_modes", 6),
             load_cycle=doc.get("load_cycle", "none"),
             units=doc.get("units"),
+            target_overrides={k: float(v) for k, v in doc.get("target_overrides", {}).items()},
+            custom_materials={
+                m["id"]: material_from_record(m) for m in doc.get("custom_materials", [])
+            },
         )
         for pd in doc["parts"]:
             brep = Path(z.extract(f"parts/{pd['id']}.brep", tmp))

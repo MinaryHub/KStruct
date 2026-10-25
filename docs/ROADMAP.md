@@ -3,6 +3,26 @@
 > 2026-10-25 기준 코드(`4e967ee`)를 읽고, 테스트·셀프테스트·벤치마크를 실제로 돌려 확인한 결과입니다.
 > 이 문서는 (1) 지금 무엇이 되고 무엇이 안 되는지, (2) 상용 배포 전에 고칠 것, (3) 제품과 함께 **써내야 할 문서**와 각 문서에 들어갈 내용을 정리합니다.
 
+## 0. 진행 상황 (2026-10-25)
+
+P0 중 코드로 해결되는 항목은 구현했습니다. 아래 표의 "상태" 열과 §4 결함 표의 "조치" 열을 참고하세요.
+
+| 항목 | 상태 | 구현 위치 |
+|------|------|-----------|
+| P0-1 결과 신뢰도(특이점 감지 + 핫스팟) | ✅ 구현 | `fem/singularity.py`, `report/summary.py`(`governing_fos`), 결과 카드·보고서 "특이점 제외" 행, 도움말 `result.hotspot` |
+| P0-2 로그·예외 처리·문제 보고 | ✅ 구현 | `paths.py`, `ui/worker.py`, `MainWindow.install_crash_dialog`, 툴바 "문제 보고" |
+| P0-3 정보 창·버전 단일화 | ✅ 구현 | `kstruct.__version__`, `ui/dialogs.AboutDialog`, 보고서 머리글, 번들에 고지 파일 포함 |
+| P0-4 보고서 결함·재현 정보 | ✅ 구현 | `report/describe.py`(패널·PDF 공용 문구), `report/pdf.py` 재작성 |
+| P0-5 숨긴 부품 | ✅ 구현 | `model.active_project`, 체크리스트 "제외" 표시 |
+| P0-6 코드 서명·공증·릴리스 | ⏳ 코드 밖 | 인증서 발급·CI 비밀값 필요 |
+| P0-7 EULA·라이선스 | ⏳ 법률 검토 | — |
+| P0-8 사용자 정의 재료 | ✅ 구현 | `ui/dialogs.MaterialDialog`, `Project.custom_materials`, 사용자 라이브러리(`paths.user_materials_path`) |
+| P0-9 권장 안전율 조정 | ✅ 구현 | `Project.target_overrides`, `standards.effective_pack`, 6단계 "권장 안전율" |
+| P0-10 접촉→접합 고지 | ✅ 구현 | `summary._contact_note` |
+| P0-11 하중 입력값 보존 | ✅ 구현 | `LoadStep._kind_changed(reset=)` |
+
+핫스팟 적용 후 예제 브래킷(§2 B1)의 판정은 네 메시 등급 모두 ✅ 안전이며, 특이점 제외 안전율은 1.94 / 1.87 / 1.82 / 1.89로 6% 안에 모입니다(최대값 기준은 1.92 → 1.47로 계속 떨어졌음).
+
 ## 1. 결론 요약
 
 KStruct는 "**비전문가가 7단계로 부품 하나~수 개의 강도·진동·열·좌굴을 확인하는 도구**"로서 핵심 기능이 모두 동작하고, 이론해 비교 테스트로 검증되어 있습니다. 다만 상용 제품으로 내놓기 전에 **결과 신뢰도 표시(메시에 따라 판정이 바뀌는 문제), 진단·지원 체계(로그·버전·정보 창), 보고서 결함, 서명·배포 자동화, 사용자 재료**가 먼저 필요합니다. 기능 추가(토크 하중, 다중 하중 케이스, 국부 메시)는 그 다음입니다.
@@ -75,18 +95,18 @@ B1에서 읽을 것:
 
 ## 4. 코드 검토에서 찾은 결함
 
-| ID | 내용 | 위치 | 영향 |
-|----|------|------|------|
-| D1 | 정적 보고서가 열 경계조건(고정 온도·열 입력·대류)을 모두 "온도 변화 ±x °C"로 적음 | `report/pdf.py:88` | 열응력 해석 보고서의 조건 목록이 틀림 |
-| D2 | 정적 보고서의 힘(N)·압력(MPa)·반력(N)·최대 변형(mm)이 단위계와 무관하게 SI 고정. 부품 표만 변환됨 | `report/pdf.py:80,84,134` | US 단위 선택 시 보고서 안에 psi와 MPa가 섞임 |
-| D3 | 접촉 연결도 보고서에 "접합"으로 표기 | `report/pdf.py:91` | 조건 오기 |
-| D4 | 고지문이 "선형 정적 유한요소해석 결과"로 고정되어 진동·열·좌굴 보고서에도 그대로 들어감 | `report/pdf.py:26`, `_page` | 문구 불일치 |
-| D5 | 부품을 숨기면(체크 해제) 그 부품의 고정·하중·연결·볼트는 남는데 메시에서 빠져 "고정할 면이 메시에 없습니다. 메시를 다시 만들어 주세요"가 뜸. 자동 접합도 숨긴 부품을 포함 | `fem/constraints.py:98,189`, `geometry/contacts.py:68`, `ui/main_window.py:362` | 안내가 틀려서 사용자가 해결 못 함 |
-| D6 | 백그라운드 작업 예외가 `traceback.print_exc()`로만 나감. 배포본은 콘솔 없음 | `ui/worker.py:27`, `packaging/kstruct.spec:65` | 고객 문의 시 재현 정보 없음 |
-| D7 | `standards.json` 주석은 "권장 안전율을 프로젝트별로 조정 가능"이라 하지만 `Project`에 필드도 UI도 없음 | `resources/standards.json:2`, `model/project.py` | 문서-코드 불일치 |
-| D8 | 버전(`pyproject` 0.1.0)이 앱·보고서 어디에도 표시되지 않고 정보(About) 창이 없음. 오픈소스 고지는 설치 폴더 파일로만 존재 | `ui/main_window.py` | 지원·LGPL 고지 접근성 |
-| D9 | 하중 패널이 단계를 오갈 때마다 입력값을 기본값으로 되돌림(`refresh → _kind_changed → setValue(default)`) | `ui/steps.py:667,689` | 입력 중 값 유실 |
-| D10 | 진동·좌굴·열 해석에서 접촉을 접합으로 바꿔 계산하면서 결과 카드·보고서에 알리지 않음 | `fem/modal.py:47`, `fem/buckling.py:100`, `report/summary.py` | 접촉으로 놓인 부품의 진동수가 과대평가될 수 있음 |
+| ID | 내용 | 위치 | 영향 | 조치 |
+|----|------|------|------|------|
+| D1 | 정적 보고서가 열 경계조건(고정 온도·열 입력·대류)을 모두 "온도 변화 ±x °C"로 적음 | `report/pdf.py:88` | 열응력 해석 보고서의 조건 목록이 틀림 | 수정(describe_load 공용) |
+| D2 | 정적 보고서의 힘(N)·압력(MPa)·반력(N)·최대 변형(mm)이 단위계와 무관하게 SI 고정. 부품 표만 변환됨 | `report/pdf.py:80,84,134` | US 단위 선택 시 보고서 안에 psi와 MPa가 섞임 | 수정(모든 수치 units.fmt) |
+| D3 | 접촉 연결도 보고서에 "접합"으로 표기 | `report/pdf.py:91` | 조건 오기 | 수정 |
+| D4 | 고지문이 "선형 정적 유한요소해석 결과"로 고정되어 진동·열·좌굴 보고서에도 그대로 들어감 | `report/pdf.py:26`, `_page` | 문구 불일치 | 수정(해석별 고지문) |
+| D5 | 부품을 숨기면(체크 해제) 그 부품의 고정·하중·연결·볼트는 남는데 메시에서 빠져 "고정할 면이 메시에 없습니다. 메시를 다시 만들어 주세요"가 뜸. 자동 접합도 숨긴 부품을 포함 | `fem/constraints.py:98,189`, `geometry/contacts.py:68`, `ui/main_window.py:362` | 안내가 틀려서 사용자가 해결 못 함 | 수정(active_project) |
+| D6 | 백그라운드 작업 예외가 `traceback.print_exc()`로만 나감. 배포본은 콘솔 없음 | `ui/worker.py:27`, `packaging/kstruct.spec:65` | 고객 문의 시 재현 정보 없음 | 수정(paths.setup_logging) |
+| D7 | `standards.json` 주석은 "권장 안전율을 프로젝트별로 조정 가능"이라 하지만 `Project`에 필드도 UI도 없음 | `resources/standards.json:2`, `model/project.py` | 문서-코드 불일치 | 수정(target_overrides UI) |
+| D8 | 버전(`pyproject` 0.1.0)이 앱·보고서 어디에도 표시되지 않고 정보(About) 창이 없음. 오픈소스 고지는 설치 폴더 파일로만 존재 | `ui/main_window.py` | 지원·LGPL 고지 접근성 | 수정(About, 보고서 머리글) |
+| D9 | 하중 패널이 단계를 오갈 때마다 입력값을 기본값으로 되돌림(`refresh → _kind_changed → setValue(default)`) | `ui/steps.py:667,689` | 입력 중 값 유실 | 수정 |
+| D10 | 진동·좌굴·열 해석에서 접촉을 접합으로 바꿔 계산하면서 결과 카드·보고서에 알리지 않음 | `fem/modal.py:47`, `fem/buckling.py:100`, `report/summary.py` | 접촉으로 놓인 부품의 진동수가 과대평가될 수 있음 | 수정(_contact_note) |
 
 ## 5. 보완 항목
 
