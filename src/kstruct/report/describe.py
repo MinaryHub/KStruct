@@ -54,7 +54,10 @@ def describe_fixture(project: Project, fx: Fixture, faces: FaceNamer | None = No
 
 def describe_connection(project: Project, c: Connection, faces: FaceNamer | None = None) -> str:
     faces = faces or plain_faces(project)
-    return f"{CONNECTION_NAMES[c.kind]}: {faces(c.faces_a)} ↔ {faces(c.faces_b)}"
+    name = CONNECTION_NAMES[c.kind]
+    if c.kind == ConnectionKind.CONTACT:
+        name += f" (마찰 μ={c.friction:g})" if c.friction > 0 else " (마찰 없음)"
+    return f"{name}: {faces(c.faces_a)} ↔ {faces(c.faces_b)}"
 
 
 def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) -> str:

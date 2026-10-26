@@ -225,6 +225,18 @@ class OpenStep(StepPanel):
         self.conn_kind.activated.connect(self._kind_chosen)
         self.connections.currentRowChanged.connect(self._connection_selected)
         conn.addWidget(with_help(self.conn_kind, "connection.contact"))
+        self.friction = QDoubleSpinBox()
+        self.friction.setRange(0.0, 2.0)
+        self.friction.setSingleStep(0.05)
+        self.friction.setDecimals(2)
+        self.friction.setToolTip(topic("connection.friction").short)
+        self.friction.valueChanged.connect(self._friction_changed)
+        self.friction_row = QWidget()
+        row = QHBoxLayout(self.friction_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel("마찰계수 μ"))
+        row.addWidget(with_help(self.friction, "connection.friction"), 1)
+        conn.addWidget(self.friction_row)
         remove = QPushButton("선택한 연결 삭제")
         remove.clicked.connect(self._remove_connection)
         conn.addWidget(remove)
@@ -255,9 +267,13 @@ class OpenStep(StepPanel):
     def _connection_selected(self) -> None:
         row = self.connections.currentRow()
         self.conn_kind.setEnabled(row >= 0)
-        if row >= 0:
-            kind = self.app.project.connections[row].kind
-            self.conn_kind.setCurrentIndex(self.conn_kind.findData(kind))
+        c = self.app.project.connections[row] if row >= 0 else None
+        if c is not None:
+            self.conn_kind.setCurrentIndex(self.conn_kind.findData(c.kind))
+            self.friction.blockSignals(True)
+            self.friction.setValue(c.friction)
+            self.friction.blockSignals(False)
+        self.friction_row.setVisible(c is not None and c.kind == ConnectionKind.CONTACT)
 
     def _kind_chosen(self) -> None:
         row = self.connections.currentRow()
@@ -266,6 +282,18 @@ class OpenStep(StepPanel):
         self.app.project.connections[row].kind = self.conn_kind.currentData()
         self.changed.emit()
         self.refresh()
+
+    def _friction_changed(self, value: float) -> None:
+        row = self.connections.currentRow()
+        if row < 0:
+            return
+        self.app.project.connections[row].friction = float(value)
+        self.changed.emit()
+        self.connections.item(row).setText(
+            describe_connection(
+                self.app.project, self.app.project.connections[row], self.describe_faces
+            )
+        )
 
     def _toggled(self, item: QListWidgetItem) -> None:
         part = self.app.project.part(item.data(Qt.ItemDataRole.UserRole))

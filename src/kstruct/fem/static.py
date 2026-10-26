@@ -46,7 +46,7 @@ class StaticResult:
     reactions: list[np.ndarray]  # per fixture, (3,) N
     applied_load: np.ndarray  # (3,) N, sum of external forces
     thermal: ThermalResult | None = None  # temperature field used for thermal stress
-    contact: list[tuple[int, int]] | None = None  # per contact: (closed pairs, total pairs)
+    contact: list[tuple[int, int, int]] | None = None  # per contact: (closed, total, slipping)
     bolts: list | None = None  # fem.bolts.BoltResult per bolt
     bolt_nodes: np.ndarray | None = None  # nodes under bolt heads / nuts
 
@@ -283,7 +283,7 @@ def solve_static(
         reactions=reactions,
         applied_load=applied,
         thermal=thermal,
-        contact=[(int(cs.active.sum()), len(cs.active)) for cs in contacts],
+        contact=[(int(cs.active.sum()), len(cs.active), int(cs.slipping.sum())) for cs in contacts],
         bolts=evaluate(connectors, u, pulls),
         bolt_nodes=np.unique(
             np.concatenate([np.r_[b.weights_a[0], b.weights_b[0]] for b in connectors])

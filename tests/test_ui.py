@@ -221,7 +221,14 @@ def test_connection_kind_can_be_switched(qtbot):
     panel.conn_kind.setCurrentIndex(panel.conn_kind.findData(ConnectionKind.CONTACT))
     panel._kind_chosen()
     assert window.project.connections[0].kind == ConnectionKind.CONTACT
-    assert panel.connections.item(0).text().startswith("접촉")
+    assert panel.connections.item(0).text().startswith("접촉 (마찰 없음)")
+    assert panel.friction_row.isVisibleTo(panel)
+    panel.friction.setValue(0.2)
+    assert window.project.connections[0].friction == pytest.approx(0.2)
+    assert "마찰 μ=0.2" in panel.connections.item(0).text()
+    panel.conn_kind.setCurrentIndex(panel.conn_kind.findData(ConnectionKind.BONDED))
+    panel._kind_chosen()
+    assert not panel.friction_row.isVisibleTo(panel)
 
 
 def test_bolt_workflow(qtbot, tmp_path):

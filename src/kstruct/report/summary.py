@@ -237,13 +237,18 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
                 "최대 응력이 볼트 머리·너트가 누르는 자리에 있습니다. 체결력이 좁은 면적에 몰리는 "
                 "국부 응력이므로, 와셔를 쓰거나 체결력을 낮추거나 볼트 자리 두께를 늘리는 것을 검토하세요."
             )
-    for i, (closed, total) in enumerate(result.contact or []):
+    for i, (closed, total, slipping) in enumerate(result.contact or []):
         if closed == 0:
             notes.append(f"접촉 {i + 1}: 맞닿은 면이 모두 떨어졌습니다(힘을 전달하지 않음).")
         elif closed < total:
             notes.append(
                 f"접촉 {i + 1}: 맞닿은 면의 약 {closed / total * 100:.0f}%만 눌려 있고 "
                 "나머지는 살짝 벌어졌습니다."
+            )
+        if slipping:
+            notes.append(
+                f"접촉 {i + 1}: 눌려 있는 면의 약 {slipping / closed * 100:.0f}%가 마찰 한계를 넘어 "
+                "미끄러집니다. 미끄러지면 안 되는 자리라면 체결력을 높이거나 핀·키를 검토하세요."
             )
     size = float(np.ptp(mesh.nodes, axis=0).max())
     max_node = int(np.argmax(disp))
