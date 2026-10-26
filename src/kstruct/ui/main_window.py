@@ -39,9 +39,9 @@ from kstruct.geometry import GeometryImportError, load_cad
 from kstruct.geometry.contacts import find_touching_faces
 from kstruct.geometry.samples import bolted_plates, l_bracket, two_plates, write_step
 from kstruct.model import (
+    TEMPERATURE_REFERENCES,
     THERMAL_LOADS,
     AnalysisKind,
-    LoadKind,
     Project,
     active_project,
     excluded_by_hidden_parts,
@@ -609,15 +609,13 @@ class MainWindow(QMainWindow):
                 )
             )
         else:
-            has_ref = any(
-                ld.kind in (LoadKind.FACE_TEMPERATURE, LoadKind.CONVECTION) for ld in thermal_bcs
-            )
+            has_ref = any(ld.kind in TEMPERATURE_REFERENCES for ld in thermal_bcs)
             checks.append(
                 (
                     has_ref,
                     f"열 조건: {len(thermal_bcs)}개"
                     if has_ref
-                    else "4단계에서 '고정 온도'나 '대류 냉각'을 하나 이상 지정하세요",
+                    else "4단계에서 '고정 온도', '대류 냉각', '복사 냉각' 중 하나 이상을 지정하세요",
                 )
             )
         excluded = excluded_by_hidden_parts(self.project)

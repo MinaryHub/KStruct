@@ -161,11 +161,18 @@ def test_thermal_workflow(qtbot, tmp_path):
     window.project.loads = [
         Load(LoadKind.HEAT_FLOW, [FaceRef(0, face_at(shape, (90, 30, 8)))], magnitude=5.0),
         Load(LoadKind.CONVECTION, [FaceRef(0, face_at(shape, (0, 30, 40)))], magnitude=50.0),
+        Load(
+            LoadKind.RADIATION,
+            [FaceRef(0, face_at(shape, (50, 30, 16)))],
+            magnitude=0.9,
+            ambient=20.0,
+        ),
     ]
     window.project.analysis = AnalysisKind.THERMAL
     result = _run(qtbot, window, tmp_path)
     assert result.temperature.min() > 20.0
     assert result.heat_out == pytest.approx(5.0, rel=0.02)
+    assert result.iterations > 1  # radiation makes the problem nonlinear
 
 
 def test_fatigue_workflow(qtbot, tmp_path):
@@ -208,6 +215,22 @@ def test_buckling_workflow(qtbot, tmp_path):
     assert result.factors[0] > 0
     assert window.panels[6].mode.count() == 3
     assert "좌굴" in window.summary.headline
+
+
+def test_radiation_load_asks_for_emissivity_and_surroundings(qtbot):
+    from kstruct.model import LoadKind
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    panel = window.panels[3]
+    panel.kind.setCurrentIndex(panel.kind.findData(LoadKind.RADIATION))
+    assert panel.value.value() == pytest.approx(0.8)
+    assert "방사율" in panel.value_label.text()
+    assert panel.ambient.isVisibleTo(panel) and panel.ambient_label.text().startswith("주변 온도")
+    panel.kind.setCurrentIndex(panel.kind.findData(LoadKind.CONVECTION))
+    assert panel.ambient_label.text().startswith("주변 공기 온도")
+    panel.kind.setCurrentIndex(panel.kind.findData(LoadKind.FORCE))
+    assert not panel.ambient.isVisibleTo(panel)
 
 
 def test_connection_kind_can_be_switched(qtbot):

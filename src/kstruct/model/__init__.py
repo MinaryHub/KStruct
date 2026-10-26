@@ -1,6 +1,7 @@
 from kstruct.model.project import (
     AXIS_LOADS,
     GRAVITY,
+    TEMPERATURE_REFERENCES,
     THERMAL_LOADS,
     AnalysisKind,
     Bolt,
@@ -24,6 +25,7 @@ from kstruct.model.project import (
 __all__ = [
     "AXIS_LOADS",
     "GRAVITY",
+    "TEMPERATURE_REFERENCES",
     "THERMAL_LOADS",
     "AnalysisKind",
     "Bolt",

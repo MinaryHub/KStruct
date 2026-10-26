@@ -42,3 +42,28 @@ def test_mesh_is_stored_and_reused_only_while_valid(tmp_path):
     # files without a mesh simply give None
     plain = save_project(project, tmp_path / "p.kst")
     assert load_project_mesh(plain, project) is None
+
+
+def test_radiation_load_and_conductivity_table_survive_the_file(tmp_path):
+    from dataclasses import replace
+
+    from kstruct import standards
+    from kstruct.project_io import load_project, save_project
+
+    project = Project(parts=[Part(0, "p", l_bracket())])
+    project.loads = [
+        Load(LoadKind.RADIATION, [FaceRef(0, 0)], magnitude=0.85, ambient=30.0),
+    ]
+    steel = standards.materials()["s235"]
+    custom = replace(
+        steel, id="user_k", name="온도 의존 강", conductivity_table=((0.0, 50.0), (400.0, 40.0))
+    )
+    project.custom_materials = {custom.id: custom}
+    project.parts[0].material_id = custom.id
+    path = save_project(project, tmp_path / "r.kst")
+    loaded = load_project(path)
+    ld = loaded.loads[0]
+    assert ld.kind == LoadKind.RADIATION and ld.magnitude == 0.85 and ld.ambient == 30.0
+    table = loaded.custom_materials["user_k"].conductivity_table
+    assert table == ((0.0, 50.0), (400.0, 40.0))
+    assert loaded.custom_materials["user_k"].thermal_conductivity == steel.thermal_conductivity

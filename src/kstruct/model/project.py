@@ -38,6 +38,9 @@ class Material:
     tensile_strength: float  # MPa
     thermal_expansion: float = 0.0  # 1/K
     thermal_conductivity: float = 0.0  # W/(m·K) == mW/(mm·K) in the internal unit system
+    # optional (°C, W/(m·K)) points; the thermal solver interpolates (and extrapolates
+    # flat) between them instead of using thermal_conductivity
+    conductivity_table: tuple[tuple[float, float], ...] | None = None
     specific_heat: float = 0.0  # J/(kg·K)
     fatigue_limit: float | None = None  # MPa, fully reversed, polished specimen
     max_service_temperature: float | None = None  # °C, approximate continuous-use limit
@@ -66,13 +69,20 @@ class LoadKind(Enum):
     FACE_TEMPERATURE = "face_temperature"  # faces held at magnitude °C
     HEAT_FLOW = "heat_flow"  # magnitude W entering through the faces
     CONVECTION = "convection"  # magnitude = h in W/(m²·K), to air at `ambient` °C
+    RADIATION = "radiation"  # magnitude = emissivity (0..1), to surroundings at `ambient` °C
     # rotating machinery
     TORQUE = "torque"  # magnitude N·mm about the axis (vector = unit direction, point on axis)
     BEARING = "bearing"  # force vector (N) on a cylindrical hole, cosine distribution
     CENTRIFUGAL = "centrifugal"  # magnitude = ω rad/s about the axis (vector, point); all parts
 
 
-THERMAL_LOADS = (LoadKind.FACE_TEMPERATURE, LoadKind.HEAT_FLOW, LoadKind.CONVECTION)
+THERMAL_LOADS = (
+    LoadKind.FACE_TEMPERATURE,
+    LoadKind.HEAT_FLOW,
+    LoadKind.CONVECTION,
+    LoadKind.RADIATION,
+)
+TEMPERATURE_REFERENCES = (LoadKind.FACE_TEMPERATURE, LoadKind.CONVECTION, LoadKind.RADIATION)
 AXIS_LOADS = (LoadKind.TORQUE, LoadKind.CENTRIFUGAL)  # need an axis (vector + point)
 
 
@@ -82,7 +92,7 @@ class Load:
     faces: list[FaceRef] = field(default_factory=list)
     vector: tuple[float, float, float] = (0.0, 0.0, 0.0)
     magnitude: float = 0.0
-    ambient: float = 20.0  # °C, convection only
+    ambient: float = 20.0  # °C, convection and radiation
     point: tuple[float, float, float] | None = None  # a point on the axis (torque, centrifugal)
 
 

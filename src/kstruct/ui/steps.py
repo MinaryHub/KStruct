@@ -77,6 +77,7 @@ LOAD_QUANTITY = {
     LoadKind.FACE_TEMPERATURE: "temperature",
     LoadKind.HEAT_FLOW: None,
     LoadKind.CONVECTION: None,
+    LoadKind.RADIATION: None,
     LoadKind.TORQUE: "torque",
     LoadKind.BEARING: "force",
     LoadKind.CENTRIFUGAL: "speed",
@@ -94,6 +95,7 @@ LOAD_LABELS = {
     LoadKind.FACE_TEMPERATURE: ("고정 온도 (면)", "load.face_temperature"),
     LoadKind.HEAT_FLOW: ("열 입력 (면)", "load.heat_flow"),
     LoadKind.CONVECTION: ("대류 냉각 (면)", "load.convection"),
+    LoadKind.RADIATION: ("복사 냉각 (면)", "load.radiation"),
     LoadKind.TORQUE: ("토크 (비틀림)", "load.torque"),
     LoadKind.BEARING: ("베어링 하중 (구멍에 끼운 축·핀)", "load.bearing"),
     LoadKind.CENTRIFUGAL: ("원심력 (회전)", "load.centrifugal"),
@@ -104,6 +106,7 @@ FACE_LOADS = (
     LoadKind.FACE_TEMPERATURE,
     LoadKind.HEAT_FLOW,
     LoadKind.CONVECTION,
+    LoadKind.RADIATION,
     LoadKind.TORQUE,
     LoadKind.BEARING,
 )
@@ -792,8 +795,8 @@ class LoadStep(_FaceListStep):
         else:
             for i in range(2):
                 self.direction.model().item(i).setEnabled(True)
-        self.ambient.setVisible(kind == LoadKind.CONVECTION)
-        self.ambient_label.setVisible(kind == LoadKind.CONVECTION)
+        self.ambient.setVisible(kind in (LoadKind.CONVECTION, LoadKind.RADIATION))
+        self.ambient_label.setVisible(self.ambient.isVisible())
         defaults = {  # internal units
             LoadKind.FORCE: ("크기", 1000.0),
             LoadKind.PRESSURE: ("압력", 1.0),
@@ -802,6 +805,7 @@ class LoadStep(_FaceListStep):
             LoadKind.FACE_TEMPERATURE: ("온도", 100.0),
             LoadKind.HEAT_FLOW: ("열량 (W)", 10.0),
             LoadKind.CONVECTION: ("열전달계수 h (W/m²·K)", 10.0),
+            LoadKind.RADIATION: ("방사율 ε (0~1)", 0.8),
             LoadKind.TORQUE: ("토크", 10_000.0),  # N·mm = 10 N·m
             LoadKind.BEARING: ("힘", 1000.0),
             LoadKind.CENTRIFUGAL: ("회전 속도", 3000 * 2 * 3.141592653589793 / 60),  # rad/s
@@ -817,7 +821,9 @@ class LoadStep(_FaceListStep):
             reset = True  # the typed number would mean something else in the new units
         self._shown_system = system
         t = quantity(system, "temperature")
-        self.ambient_label.setText(f"주변 공기 온도 ({t.unit})")
+        self.ambient_label.setText(
+            f"{'주변 온도' if kind == LoadKind.RADIATION else '주변 공기 온도'} ({t.unit})"
+        )
         if reset:
             self.value.setValue(default)
             self.ambient.setValue(round(t.show(20.0), 1))
@@ -895,6 +901,7 @@ class LoadStep(_FaceListStep):
             LoadKind.FACE_TEMPERATURE: "선택한 면이 항상 이 온도로 유지됩니다 (예: 히터·냉각수에 닿은 면).",
             LoadKind.HEAT_FLOW: "선택한 면으로 들어오는 열입니다 (예: 모터·전자부품의 발열량).",
             LoadKind.CONVECTION: "자연 공랭 5~10, 선풍기 바람 20~50, 강제 송풍 50~200, 수랭 500 이상",
+            LoadKind.RADIATION: "검은 도장·산화 표면 0.8~0.95, 양극산화 알루미늄 0.8, 거친 강 0.5~0.7, 광택 금속 0.05~0.2",
             LoadKind.TORQUE: (
                 f"≈ 반지름 100 mm 끝에서 {v / 100 / 9.81:,.2f} kg 무게로 돌리는 힘. "
                 "양수는 회전축 방향으로 오른나사가 나아가는 방향(반시계)입니다."

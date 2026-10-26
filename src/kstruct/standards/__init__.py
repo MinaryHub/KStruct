@@ -62,6 +62,9 @@ def material_from_record(m: dict) -> Material:
         tensile_strength=float(m["uts"]),
         thermal_expansion=float(m.get("alpha", 0.0)),
         thermal_conductivity=float(m.get("k", 0.0)),  # W/(m·K) == N/(s·K) in mm-N-s units
+        conductivity_table=tuple((float(t), float(k)) for t, k in m["k_table"])
+        if m.get("k_table")
+        else None,
         specific_heat=float(m.get("cp", 0.0)) * 1e6,  # J/(kg·K) -> mm²/(s²·K)
         fatigue_limit=m.get("fatigue"),
         max_service_temperature=m.get("tmax"),
@@ -83,6 +86,7 @@ def material_record(m: Material) -> dict:
         "uts": m.tensile_strength,
         "alpha": m.thermal_expansion,
         "k": m.thermal_conductivity,
+        "k_table": [list(p) for p in m.conductivity_table] if m.conductivity_table else None,
         "cp": m.specific_heat * 1e-6,
         "fatigue": m.fatigue_limit,
         "tmax": m.max_service_temperature,

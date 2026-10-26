@@ -141,3 +141,53 @@ def test_restrained_bar_thermal_stress():
     r = solve_static(project, generate_mesh(project, "coarse"), {0: STEEL})
     assert r.stress[:, 2] == pytest.approx(-210_000 * 12e-6 * 100, rel=1e-6)
     assert np.abs(r.stress[:, :2]).max() < 1e-6
+
+
+def test_radiation_end_matches_the_stefan_boltzmann_balance():
+    """Bar held at 500 °C at one end, radiating (ε = 0.8) to 20 °C surroundings at the
+    other: k (T1 − T2) / L = ε σ (T2⁴ − T∞⁴) fixes the free end temperature."""
+    from scipy.optimize import brentq
+
+    L, T1, eps, amb = 100.0, 500.0, 0.8, 20.0
+    project = _bar(L)
+    project.loads = [
+        Load(LoadKind.FACE_TEMPERATURE, [_face(project, (0, 5, 5))], magnitude=T1),
+        Load(LoadKind.RADIATION, [_face(project, (L, 5, 5))], magnitude=eps, ambient=amb),
+    ]
+    mesh = generate_mesh(project, "coarse")
+    r = solve_thermal(project, mesh, {0: STEEL})
+    sigma = 5.670374419e-8
+
+    def balance(T2):
+        return 50.0 * (T1 - T2) / (L / 1000) - eps * sigma * (
+            (T2 + 273.15) ** 4 - (amb + 273.15) ** 4
+        )
+
+    T2 = brentq(balance, amb, T1)
+    end = np.isclose(mesh.nodes[:, 0], L)
+    assert r.temperature[end] == pytest.approx(T2, abs=0.05)
+    assert r.iterations > 1
+    q = 50.0 * (T1 - T2) / (L / 1000) * 100e-6  # W through the bar
+    assert r.heat_out == pytest.approx(0.0, abs=1e-3 * q)  # in at the hot end, out by radiation
+
+
+def test_temperature_dependent_conductivity_bends_the_profile():
+    """k = 50 − 0.05 T (W/mK): with 500 °C and 0 °C at the ends the Kirchhoff transform
+    gives 50 T − 0.025 T² linear in x, so the midpoint sits at 209.4 °C, not 250."""
+    from dataclasses import replace
+
+    L = 100.0
+    varying = replace(STEEL, conductivity_table=((0.0, 50.0), (500.0, 25.0)))
+    project = _bar(L)
+    project.loads = [
+        Load(LoadKind.FACE_TEMPERATURE, [_face(project, (0, 5, 5))], magnitude=500.0),
+        Load(LoadKind.FACE_TEMPERATURE, [_face(project, (L, 5, 5))], magnitude=0.0),
+    ]
+    mesh = generate_mesh(project, "coarse")
+    r = solve_thermal(project, mesh, {0: varying})
+    x = mesh.nodes[:, 0]
+    phi = 50.0 * r.temperature - 0.025 * r.temperature**2
+    assert phi == pytest.approx(18750.0 * (1 - x / L), abs=60.0)  # 0.3 % of the range
+    mid = np.isclose(x, L / 2)
+    assert r.temperature[mid] == pytest.approx(209.43, abs=1.0)
+    assert r.iterations > 1

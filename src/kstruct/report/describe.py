@@ -91,6 +91,9 @@ def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) ->
     if ld.kind == LoadKind.CONVECTION:
         air = fmt(system, "temperature", ld.ambient, ".0f")
         return f"대류 h={ld.magnitude:.3g} W/m²K, 공기 {air}: {faces(ld.faces)}"
+    if ld.kind == LoadKind.RADIATION:
+        around = fmt(system, "temperature", ld.ambient, ".0f")
+        return f"복사 ε={ld.magnitude:.2g}, 주변 {around}: {faces(ld.faces)}"
     return f"온도 변화 {fmt(system, 'temperature_change', ld.magnitude, '+.1f')}"
 
 
