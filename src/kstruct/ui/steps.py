@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -44,6 +45,7 @@ from kstruct.model import (
     Fixture,
     FixtureKind,
     Load,
+    LoadCase,
     LoadKind,
 )
 from kstruct.report.describe import describe_connection, describe_fixture, describe_load
@@ -681,6 +683,20 @@ class FixtureStep(_FaceListStep):
 class LoadStep(_FaceListStep):
     def __init__(self, app: MainWindow) -> None:
         super().__init__(app, "4. 하중", "step.load")
+        self.case = QComboBox()
+        self.case.currentIndexChanged.connect(self._case_chosen)
+        case_add = QPushButton("추가")
+        case_add.clicked.connect(self._add_case)
+        case_rename = QPushButton("이름")
+        case_rename.clicked.connect(self._rename_case)
+        self.case_remove = QPushButton("삭제")
+        self.case_remove.clicked.connect(self._remove_case)
+        self.add(
+            with_help(
+                _row(QLabel("하중 케이스"), self.case, case_add, case_rename, self.case_remove),
+                "load.cases",
+            )
+        )
         self.kind = QComboBox()
         for kind, (label, _) in LOAD_LABELS.items():
             self.kind.addItem(label, kind)
@@ -791,8 +807,51 @@ class LoadStep(_FaceListStep):
         return q.parse(v) if q is not None else v
 
     def refresh(self) -> None:
+        project = self.app.project
+        self.case.blockSignals(True)
+        self.case.clear()
+        for c in project.cases:
+            self.case.addItem(f"{c.name} ({len(c.loads)}개)")
+        self.case.setCurrentIndex(project.active_case)
+        self.case.blockSignals(False)
+        self.case_remove.setEnabled(len(project.cases) > 1)
         self._kind_changed(reset=False)
         super().refresh()
+
+    def _case_chosen(self, index: int) -> None:
+        if index >= 0:
+            self.app.project.active_case = index
+            self.changed.emit()  # the viewer shows this case's arrows, results are stale
+            self.refresh()
+
+    def _add_case(self, name: str | None = None) -> None:
+        project = self.app.project
+        name = name or f"하중 케이스 {len(project.cases) + 1}"
+        project.cases.append(LoadCase(name))
+        project.active_case = len(project.cases) - 1
+        self.changed.emit()
+        self.refresh()
+
+    def _rename_case(self) -> None:
+        case = self.app.project.case
+        name, ok = QInputDialog.getText(self.window(), "케이스 이름", "이름", text=case.name)
+        if ok and name.strip():
+            case.name = name.strip()
+            self.changed.emit()
+            self.refresh()
+
+    def _remove_case(self) -> None:
+        project = self.app.project
+        if len(project.cases) < 2:
+            return
+        if project.case.loads and not self.app._confirm(
+            f"'{project.case.name}' 케이스와 그 하중 {len(project.case.loads)}개를 지울까요?"
+        ):
+            return
+        del project.cases[project.active_case]
+        project.active_case = max(0, project.active_case - 1)
+        self.changed.emit()
+        self.refresh()
 
     def _update_hint(self) -> None:
         kind = self._current_kind()
@@ -1193,6 +1252,11 @@ class ResultStep(StepPanel):
         self.add(hotspot)
 
         form = QFormLayout()
+        self.case = QComboBox()
+        self.case.currentIndexChanged.connect(app.select_case)
+        self.case_label = QLabel("하중 케이스")
+        self.case_box = with_help(self.case, "result.case")
+        form.addRow(self.case_label, self.case_box)
         self.field = QComboBox()
         for key, label in FIELD_LABELS:
             self.field.addItem(label, key)
@@ -1246,6 +1310,18 @@ class ResultStep(StepPanel):
             self.field.addItem(label, key)
         self.field.setCurrentIndex(max(0, self.field.findData(current)))
         self.field.blockSignals(False)
+
+    def set_cases(self, labels: list[str] | None, current: int = 0) -> None:
+        visible = bool(labels) and len(labels) > 1
+        self.case_box.setVisible(visible)
+        self.case_label.setVisible(visible)
+        self.case.blockSignals(True)
+        self.case.clear()
+        for text in labels or []:
+            self.case.addItem(text)
+        if labels:
+            self.case.setCurrentIndex(min(current, len(labels) - 1))
+        self.case.blockSignals(False)
 
     def set_modes(self, frequencies, labels: list[str] | None = None) -> None:
         visible = frequencies is not None

@@ -113,6 +113,15 @@ class Bolt:
 
 
 @dataclass
+class LoadCase:
+    """One set of loads that act together. A project has at least one; the strength
+    analysis solves every case and reports the most unfavourable one."""
+
+    name: str
+    loads: list[Load] = field(default_factory=list)
+
+
+@dataclass
 class Part:
     id: int
     name: str
@@ -135,7 +144,8 @@ class Project:
     connections: list[Connection] = field(default_factory=list)
     bolts: list[Bolt] = field(default_factory=list)
     fixtures: list[Fixture] = field(default_factory=list)
-    loads: list[Load] = field(default_factory=list)
+    cases: list[LoadCase] = field(default_factory=lambda: [LoadCase("하중 케이스 1")])
+    active_case: int = 0  # the case shown in the wizard and used by thermal / buckling
     mesh_quality: str = "normal"  # key of fem.mesh.MESH_PRESETS
     standard: str = "iso"  # standards pack id
     analysis: AnalysisKind = AnalysisKind.STATIC
@@ -156,6 +166,33 @@ class Project:
     def visible_parts(self) -> list[Part]:
         return [p for p in self.parts if p.visible]
 
+    @property
+    def case(self) -> LoadCase:
+        if not self.cases:
+            self.cases.append(LoadCase("하중 케이스 1"))
+        self.active_case = min(max(self.active_case, 0), len(self.cases) - 1)
+        return self.cases[self.active_case]
+
+    @property
+    def loads(self) -> list[Load]:
+        """Loads of the active case (what the solvers and the wizard work with)."""
+        return self.case.loads
+
+    @loads.setter
+    def loads(self, value: list[Load]) -> None:
+        self.case.loads = list(value)
+
+    def all_loads(self) -> list[Load]:
+        return [ld for c in self.cases for ld in c.loads]
+
+
+def with_case(project: Project, index: int) -> Project:
+    """A shallow view of the project with another case active (nothing is copied, so it is
+    safe to use from a worker while the UI keeps showing the chosen case)."""
+    from dataclasses import replace
+
+    return replace(project, active_case=index)
+
 
 def active_project(project: Project) -> Project:
     """The project as analysed: hidden parts are left out together with every fixture,
@@ -170,7 +207,7 @@ def active_project(project: Project) -> Project:
     out = Project(**{k: getattr(project, k) for k in project.__dataclass_fields__})
     out.parts = project.visible_parts()
     out.fixtures = [f for f in project.fixtures if keep(f.faces)]
-    out.loads = [ld for ld in project.loads if keep(ld.faces)]
+    out.cases = [LoadCase(c.name, [ld for ld in c.loads if keep(ld.faces)]) for c in project.cases]
     out.connections = [c for c in project.connections if keep(c.faces_a) and keep(c.faces_b)]
     out.bolts = [b for b in project.bolts if keep([b.hole_a, b.hole_b])]
     return out
@@ -181,7 +218,7 @@ def excluded_by_hidden_parts(project: Project) -> list[str]:
     active = active_project(project)
     counts = {
         "고정": len(project.fixtures) - len(active.fixtures),
-        "하중": len(project.loads) - len(active.loads),
+        "하중": len(project.all_loads()) - len(active.all_loads()),
         "연결": len(project.connections) - len(active.connections),
         "볼트": len(project.bolts) - len(active.bolts),
     }

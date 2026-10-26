@@ -418,3 +418,70 @@ def test_rotating_loads_from_the_panel(qtbot):
     loads._add()
     assert len(window.project.loads) == 3 and len(warnings) == 1
     window.viewer.annotate(window.project.fixtures, window.project.loads, [])  # axis lines draw
+
+
+def test_load_cases_in_the_panel(qtbot):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    for part in window.project.parts:
+        part.material_id = "s235"
+    shape = window.project.parts[0].shape
+    window._go(mw.STEP_LOAD)
+    loads = window.panels[mw.STEP_LOAD]
+    assert loads.case.count() == 1 and not loads.case_remove.isEnabled()
+    window.viewer.set_selection([FaceRef(0, face_at(shape, (90, 30, 8)))])
+    loads.value.setValue(1000)
+    loads._add()
+    loads._add_case("충격")
+    assert window.project.active_case == 1 and loads.case.currentIndex() == 1
+    assert loads.items.count() == 0  # the new case starts empty
+    window.viewer.set_selection([FaceRef(0, face_at(shape, (90, 30, 8)))])
+    loads.kind.setCurrentIndex(loads.kind.findData(LoadKind.GRAVITY))
+    loads.value.setValue(3)
+    loads._add()
+    assert [len(c.loads) for c in window.project.cases] == [1, 1]
+    loads.case.setCurrentIndex(0)
+    assert window.project.active_case == 0 and "힘" in loads.items.item(0).text()
+
+    window._go(mw.STEP_SOLVE)
+    assert any("케이스 2개 모두" in t for _, t in window.readiness())
+    window.project.cases[1].loads.clear()
+    assert any(not ok and "하중이 없는 케이스: 충격" in t for ok, t in window.readiness())
+    loads.case.setCurrentIndex(1)
+    loads._remove_case()
+    assert len(window.project.cases) == 1 and window.project.active_case == 0
+
+
+def test_multi_case_strength_run(qtbot):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind, Load, LoadCase, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    top = FaceRef(0, face_at(shape, (90, 30, 8)))
+    window.project.cases = [
+        LoadCase("가벼움", [Load(LoadKind.FORCE, [top], vector=(0, 0, -500.0))]),
+        LoadCase("무거움", [Load(LoadKind.FORCE, [top], vector=(0, 0, -4000.0))]),
+    ]
+    window.panels[mw.STEP_SOLVE].refresh()
+    assert all(ok for ok, _ in window.readiness()), window.readiness()
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    assert len(window.case_results) == 2 and window.overview is not None
+    assert window.overview.worst == 1 and window.project.active_case == 1  # heavy governs
+    panel = window.panels[mw.STEP_RESULT]
+    assert panel.case.count() == 2 and panel.case.currentIndex() == 1
+    assert "가장 불리" in panel.case.itemText(1)
+    assert "2개 케이스 중 가장 불리한 것: 무거움" in panel.summary.text()
+    heavy = window.summary.governing_fos
+    window.select_case(0)
+    assert window.project.active_case == 0 and window.summary.governing_fos > heavy
+    assert "지금 보는 케이스: 가벼움" in panel.summary.text()

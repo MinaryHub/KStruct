@@ -30,7 +30,7 @@ from kstruct.fem.contact import build_contact, solve_with_contact
 from kstruct.fem.loads import bearing_forces, centrifugal_forces, torque_forces
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.thermal import ThermalResult, has_thermal_loads, solve_thermal
-from kstruct.model import ConnectionKind, LoadKind, Material, Project
+from kstruct.model import ConnectionKind, LoadKind, Material, Project, with_case
 
 Progress = Callable[[float, str], None]
 
@@ -284,3 +284,23 @@ def solve_static(
         if connectors
         else np.zeros(0, dtype=int),
     )
+
+
+def solve_cases(
+    project: Project,
+    mesh: FEMesh,
+    materials: dict[int, Material],
+    progress: Progress | None = None,
+) -> list[StaticResult]:
+    """One StaticResult per load case, in project.cases order."""
+    report = progress or (lambda frac, msg: None)
+    n = len(project.cases)
+    results = []
+    for i, case in enumerate(project.cases):
+        prefix = f"[{case.name}] " if n > 1 else ""
+
+        def sub(frac, msg, i=i, prefix=prefix):
+            report((i + frac) / n, prefix + msg)
+
+        results.append(solve_static(with_case(project, i), mesh, materials, sub))
+    return results

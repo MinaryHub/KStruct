@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -69,6 +69,8 @@ class Summary:
     max_disp_at: np.ndarray
     reactions: list[np.ndarray]
     fatigue: object | None = None  # fem.fatigue.FatigueResult
+    bolts: list = field(default_factory=list)  # fem.bolts.BoltResult
+    governing_fos: float = 0.0  # the number in the headline
 
 
 def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Summary:
@@ -251,7 +253,37 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
         max_disp_at=mesh.nodes[max_node],
         reactions=result.reactions,
         fatigue=fatigue,
+        bolts=list(result.bolts or []),
+        governing_fos=float(worst_fos),
     )
+
+
+@dataclass
+class CaseOverview:
+    """Comparison of the load cases of one strength run (which one governs)."""
+
+    names: list[str]
+    summaries: list[Summary]
+    worst: int  # index of the most unfavourable case
+
+    @property
+    def headline(self) -> str:
+        return f"{len(self.names)}개 케이스 중 가장 불리한 것: {self.names[self.worst]}"
+
+
+def compare_cases(names: list[str], summaries: list[Summary]) -> CaseOverview:
+    def fos(s: Summary) -> float:
+        # the headline number: the governing safety factor of the case
+        return min(
+            [p.governing_fos for p in s.parts]
+            + [p.fatigue_fos for p in s.parts if p.fatigue_fos is not None]
+            + [b.safety_factor for b in s.bolts]
+        )
+
+    worst = max(
+        range(len(summaries)), key=lambda i: (_RANK[summaries[i].verdict], -fos(summaries[i]))
+    )
+    return CaseOverview(list(names), list(summaries), worst)
 
 
 def _contact_note(project: Project) -> list[str]:

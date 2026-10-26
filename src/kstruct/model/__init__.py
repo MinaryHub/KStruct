@@ -10,12 +10,14 @@ from kstruct.model.project import (
     Fixture,
     FixtureKind,
     Load,
+    LoadCase,
     LoadKind,
     Material,
     Part,
     Project,
     active_project,
     excluded_by_hidden_parts,
+    with_case,
 )
 
 __all__ = [
@@ -30,10 +32,12 @@ __all__ = [
     "Fixture",
     "FixtureKind",
     "Load",
+    "LoadCase",
     "LoadKind",
     "Material",
     "Part",
     "Project",
     "active_project",
     "excluded_by_hidden_parts",
+    "with_case",
 ]

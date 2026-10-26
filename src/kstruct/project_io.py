@@ -20,13 +20,14 @@ from kstruct.model import (
     Fixture,
     FixtureKind,
     Load,
+    LoadCase,
     LoadKind,
     Part,
     Project,
 )
 from kstruct.standards import material_from_record, material_record
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2  # 2: load cases (older files are read)
 SUFFIX = ".kst"
 
 
@@ -63,16 +64,23 @@ def save_project(project: Project, path: str | Path) -> Path:
             for p in project.parts
         ],
         "fixtures": [{"kind": f.kind.value, "faces": _refs(f.faces)} for f in project.fixtures],
-        "loads": [
+        "active_case": project.active_case,
+        "cases": [
             {
-                "kind": ld.kind.value,
-                "faces": _refs(ld.faces),
-                "vector": list(ld.vector),
-                "magnitude": ld.magnitude,
-                "ambient": ld.ambient,
-                "point": list(ld.point) if ld.point is not None else None,
+                "name": c.name,
+                "loads": [
+                    {
+                        "kind": ld.kind.value,
+                        "faces": _refs(ld.faces),
+                        "vector": list(ld.vector),
+                        "magnitude": ld.magnitude,
+                        "ambient": ld.ambient,
+                        "point": list(ld.point) if ld.point is not None else None,
+                    }
+                    for ld in c.loads
+                ],
             }
-            for ld in project.loads
+            for c in project.cases
         ],
         "bolts": [
             {
@@ -143,8 +151,9 @@ def load_project(path: str | Path) -> Project:
     project.fixtures = [
         Fixture(FixtureKind(f["kind"]), _unrefs(f["faces"])) for f in doc["fixtures"]
     ]
-    project.loads = [
-        Load(
+
+    def load(ld: dict) -> Load:
+        return Load(
             LoadKind(ld["kind"]),
             _unrefs(ld["faces"]),
             tuple(ld["vector"]),
@@ -152,8 +161,12 @@ def load_project(path: str | Path) -> Project:
             ld.get("ambient", 20.0),
             tuple(ld["point"]) if ld.get("point") is not None else None,
         )
-        for ld in doc["loads"]
-    ]
+
+    if "cases" in doc:
+        project.cases = [LoadCase(c["name"], [load(ld) for ld in c["loads"]]) for c in doc["cases"]]
+    else:  # format 1: a single flat list
+        project.cases = [LoadCase("하중 케이스 1", [load(ld) for ld in doc.get("loads", [])])]
+    project.active_case = int(doc.get("active_case", 0))
     project.bolts = [
         Bolt(
             _unrefs([b["hole_a"]])[0],

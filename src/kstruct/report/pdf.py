@@ -111,8 +111,32 @@ def _page(
 # --- static ---------------------------------------------------------------------------
 
 
+def _cases_html(project: Project, overview, us: str) -> str:
+    if overview is None or len(overview.names) < 2:
+        return ""
+    rows = []
+    for i, (name, s) in enumerate(zip(overview.names, overview.summaries, strict=True)):
+        mark = " ◀ 가장 불리" if i == overview.worst else ""
+        rows.append(
+            f"<tr><td>{html.escape(name)}{mark}</td><td><b>{s.governing_fos:.2f}</b></td>"
+            f"<td>{fmt(us, 'length', s.max_disp)}</td><td>{VERDICT_STYLE[s.verdict][0]}</td></tr>"
+        )
+    current = html.escape(project.case.name)
+    return (
+        "<h2>하중 케이스 비교</h2>"
+        "<table width='100%' border='1' cellspacing='0' cellpadding='4'>"
+        "<tr style='background:#eef1f5;'><th>케이스</th><th>안전율</th><th>최대 변형</th>"
+        f"<th>판정</th></tr>{''.join(rows)}</table>"
+        f"<p>아래 상세 결과는 '{current}' 케이스의 것입니다.</p>"
+    )
+
+
 def _static_html(
-    project: Project, result: StaticResult, summary: Summary, images: list[tuple[str, bytes]]
+    project: Project,
+    result: StaticResult,
+    summary: Summary,
+    images: list[tuple[str, bytes]],
+    overview=None,
 ) -> str:
     pack = standards.effective_pack(project)
     us = system_of(project)
@@ -179,6 +203,7 @@ def _static_html(
     at = [fmt(us, "length", float(v), ".1f") for v in summary.max_disp_at]
     body = f"""
 {f"<p><b>참고</b></p><ul>{notes}</ul>" if notes else ""}
+{_cases_html(project, overview, us)}
 <h2>1. 부품별 결과</h2>
 <table width="100%" border="1" cellspacing="0" cellpadding="4">
 <tr style="background:#eef1f5;"><th>부품</th><th>재료</th><th>최대 응력</th><th>재료 강도</th>
@@ -191,7 +216,7 @@ def _static_html(
 
 <h2>2. 해석 조건</h2>
 <p><b>고정</b></p><ul>{fixtures}</ul>
-<p><b>하중</b></p><ul>{load_items}</ul>
+<p><b>하중</b>{f" ({esc(project.case.name)})" if len(project.cases) > 1 else ""}</p><ul>{load_items}</ul>
 {_connections_html(project)}
 <p><b>반력</b> (고정면이 부품을 받치는 힘)</p><ul>{reactions}</ul>
 
@@ -359,7 +384,9 @@ def _buckling_html(project, result, summary, images, materials) -> str:
     )
 
 
-def build_html(project, result, summary, images, materials: dict | None = None) -> str:
+def build_html(
+    project, result, summary, images, materials: dict | None = None, overview=None
+) -> str:
     from kstruct.fem.buckling import BucklingResult
     from kstruct.fem.modal import ModalResult
     from kstruct.fem.thermal import ThermalResult
@@ -370,7 +397,7 @@ def build_html(project, result, summary, images, materials: dict | None = None) 
         return _modal_html(project, result, summary, images, materials or {})
     if isinstance(result, ThermalResult):
         return _thermal_html(project, result, summary, images, materials or {})
-    return _static_html(project, result, summary, images)
+    return _static_html(project, result, summary, images, overview)
 
 
 def write_pdf(html_text: str, path: str | Path) -> Path:

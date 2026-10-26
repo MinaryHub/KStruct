@@ -27,11 +27,11 @@ from PySide6.QtWidgets import (
 )
 
 from kstruct import standards
-from kstruct.fem import ConstraintError, MeshingError, SolverError, generate_mesh, solve_static
+from kstruct.fem import ConstraintError, MeshingError, SolverError, generate_mesh
 from kstruct.fem.buckling import BucklingResult, solve_buckling
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.modal import ModalResult, solve_modal
-from kstruct.fem.static import StaticResult
+from kstruct.fem.static import StaticResult, solve_cases
 from kstruct.fem.thermal import ThermalResult, solve_thermal
 from kstruct.geometry import GeometryImportError, load_cad
 from kstruct.geometry.contacts import find_touching_faces
@@ -43,11 +43,14 @@ from kstruct.model import (
     Project,
     active_project,
     excluded_by_hidden_parts,
+    with_case,
 )
 from kstruct.project_io import SUFFIX, ProjectFileError, load_project, save_project
 from kstruct.report.summary import (
     VERDICT_STYLE,
+    CaseOverview,
     Summary,
+    compare_cases,
     summarize,
     summarize_buckling,
     summarize_modal,
@@ -123,6 +126,10 @@ class MainWindow(QMainWindow):
         self.mesh: FEMesh | None = None
         self.result: StaticResult | ModalResult | ThermalResult | None = None
         self.summary: Summary | None = None
+        # strength runs: one result/summary per load case; result/summary follow the
+        # case chosen in the result panel
+        self.case_results: list[tuple[str, StaticResult, Summary]] | None = None
+        self.overview: CaseOverview | None = None
         self.materials: dict = {}
         self._busy = False
 
@@ -300,6 +307,7 @@ class MainWindow(QMainWindow):
         self.project = project
         self.project_path = path
         self.mesh = self.result = self.summary = None
+        self.case_results = self.overview = None
         self.viewer.load_project(project)
         for part in project.parts:
             if not part.visible:
@@ -315,6 +323,7 @@ class MainWindow(QMainWindow):
             return
         self.project = None
         self.mesh = self.result = self.summary = None
+        self.case_results = self.overview = None
         self.viewer.plotter.clear_actors()
         self.viewer.plotter.render()
         self.panels[STEP_OPEN].parts.clear()
@@ -396,6 +405,7 @@ class MainWindow(QMainWindow):
 
     def _invalidate_result(self) -> None:
         self.result = self.summary = None
+        self.case_results = self.overview = None
         self._update_nav()
 
     def _project_changed(self) -> None:
@@ -428,17 +438,28 @@ class MainWindow(QMainWindow):
         ]
         thermal_bcs = [ld for ld in p.loads if ld.kind in THERMAL_LOADS]
         if p.analysis in (AnalysisKind.STATIC, AnalysisKind.BUCKLING):
-            mech = [ld for ld in p.loads if ld.kind not in THERMAL_LOADS]
-            checks += [
+            checks.append(
                 (
                     bool(p.fixtures),
                     f"고정: {len(p.fixtures)}개" if p.fixtures else "고정이 없습니다",
-                ),
-                (
-                    bool(mech or thermal_bcs),
-                    f"하중: {len(p.loads)}개" if p.loads else "하중이 없습니다",
-                ),
-            ]
+                )
+            )
+            if p.analysis == AnalysisKind.STATIC and len(p.cases) > 1:
+                empty = [c.name for c in p.cases if not c.loads]
+                checks.append(
+                    (
+                        not empty,
+                        f"하중: 케이스 {len(p.cases)}개 모두 계산 ({len(p.all_loads())}개)"
+                        if not empty
+                        else f"하중이 없는 케이스: {', '.join(empty)}",
+                    )
+                )
+            else:
+                mech = [ld for ld in p.loads if ld.kind not in THERMAL_LOADS]
+                text = f"하중: {len(p.loads)}개" if p.loads else "하중이 없습니다"
+                if len(p.cases) > 1:
+                    text += f" ('{p.case.name}' 케이스만 사용)"
+                checks.append((bool(mech or thermal_bcs), text))
         elif p.analysis == AnalysisKind.MODAL:
             checks.append(
                 (
@@ -522,21 +543,31 @@ class MainWindow(QMainWindow):
                 return m, solve_thermal(project, m, materials, progress)
             if kind == AnalysisKind.BUCKLING:
                 return m, solve_buckling(project, m, materials, project.n_modes, progress)
-            return m, solve_static(project, m, materials, progress)
+            return m, solve_cases(project, m, materials, progress)
 
         def done(value):
             self._busy = False
             self.mesh, self.result = value
             self.materials = materials
-            if isinstance(self.result, ModalResult):
+            if isinstance(self.result, list):  # strength: one result per load case
+                pack = standards.effective_pack(project)
+                names = [c.name for c in project.cases]
+                self.case_results = [
+                    (name, r, summarize(with_case(project, i), r, pack))
+                    for i, (name, r) in enumerate(zip(names, self.result, strict=True))
+                ]
+                summaries = [s for _, _, s in self.case_results]
+                self.overview = compare_cases(names, summaries) if len(names) > 1 else None
+                chosen = self.overview.worst if self.overview else 0
+                self.result, self.summary = self.case_results[chosen][1:]
+                self.project.active_case = chosen
+            elif isinstance(self.result, ModalResult):
                 self.summary = summarize_modal(project, self.result)
             elif isinstance(self.result, ThermalResult):
                 self.summary = summarize_thermal(project, self.result, materials)
             elif isinstance(self.result, BucklingResult):
                 pack = standards.effective_pack(project)
                 self.summary = summarize_buckling(project, self.result, pack)
-            else:
-                self.summary = summarize(project, self.result, standards.effective_pack(project))
             panel.set_progress(None, "")
             self._configure_result_panel()
             self._update_nav()
@@ -578,9 +609,27 @@ class MainWindow(QMainWindow):
             panel.set_fields(fields)
             panel.set_modes(None)
             panel.animate.setChecked(False)
+        if self.case_results and len(self.case_results) > 1:
+            labels = [
+                f"{name} — {VERDICT_STYLE[s.verdict][0]} {s.governing_fos:.2f}"
+                + (" ◀ 가장 불리" if self.overview and i == self.overview.worst else "")
+                for i, (name, _, s) in enumerate(self.case_results)
+            ]
+            panel.set_cases(labels, self.project.active_case)
+        else:
+            panel.set_cases(None)
         has_shape = not isinstance(r, ThermalResult)
         panel.scale.setEnabled(has_shape)
         panel.animate.setEnabled(has_shape)
+
+    def select_case(self, index: int) -> None:
+        """Result panel: show another load case of the last strength run."""
+        if not self.case_results or not 0 <= index < len(self.case_results):
+            return
+        _, self.result, self.summary = self.case_results[index]
+        self.project.active_case = index
+        self._configure_result_panel()
+        self.show_result()
 
     def _displacement(self) -> np.ndarray:
         r = self.result
@@ -740,6 +789,12 @@ class MainWindow(QMainWindow):
             if r.heat_in:
                 lines.append(f"들어온 열 {r.heat_in:.3g} W · 빠져나간 열 {r.heat_out:.3g} W")
         else:
+            if self.overview is not None:
+                o = self.overview
+                lines.append(
+                    f"<b>{o.headline}</b> ({o.summaries[o.worst].headline}). "
+                    f"지금 보는 케이스: {self.project.case.name}"
+                )
             for p in s.parts:
                 lines.append(
                     f"<b>{p.name}</b> ({p.material})<br>"
@@ -787,7 +842,10 @@ class MainWindow(QMainWindow):
         if not path:
             return
         images = self.capture_result_images()
-        write_pdf(build_html(self.project, self.result, self.summary, images, self.materials), path)
+        html_text = build_html(
+            self.project, self.result, self.summary, images, self.materials, self.overview
+        )
+        write_pdf(html_text, path)
         self.statusBar().showMessage(f"보고서를 저장했습니다: {path}")
 
     def capture_result_images(self) -> list[tuple[str, bytes]]:
