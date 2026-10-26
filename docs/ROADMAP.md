@@ -20,6 +20,7 @@ P0 중 코드로 해결되는 항목은 구현했습니다. 아래 표의 "상�
 | P0-9 권장 안전율 조정 | ✅ 구현 | `Project.target_overrides`, `standards.effective_pack`, 6단계 "권장 안전율" |
 | P0-10 접촉→접합 고지 | ✅ 구현 | `summary._contact_note` |
 | P0-11 하중 입력값 보존 | ✅ 구현 | `LoadStep._kind_changed(reset=)` |
+| P1-10 STEP 부품 이름·어셈블리 구조 | ✅ 구현 | `geometry.step_import.read_named_solids`(XCAF, 어셈블리 평탄화 + 배치 적용, UTF-8 이름 복원, 중복 이름 번호 부여), 이름 없으면 기존 방식으로 대체 |
 | P1-6 피로 세부 계수 | ✅ 구현 | `fem.fatigue.FatigueSettings`(Marin 표면 계수 a·Su^b 4종, 신뢰도 계수 5단계, 크기 계수), 6단계 표면 상태·신뢰도 선택, 결과 노트에 사용한 계수 표기, 프로젝트 파일 저장 |
 | P1-4 결과 단면 보기·내보내기·이전 해석과 비교 | ✅ 구현 | `viewer.section_surface`(TET10→선형 8분할 후 clip), 결과 패널 "단면 보기"(축·위치, 보고서에 단면 그림 포함), `report/export.py`(CSV·VTU, 표시 단위), `MainWindow._comparison_line`(직전 강도 해석의 안전율·응력·변형과 비교, 10 % 넘게 달라지면 안내) |
 | P1-3 국부 메시 세분화·두께 기반 크기·프리셋 재조정 | ✅ 구현 | `geometry/thickness.py`(면별 벽 두께, 자체 레이 캐스팅), `fem/mesh.py`(`MeshPreset` 분할수·grading·두께 방향 요소 수, `face_sizes`, Netgen 면별 maxh), `MeshRefinement`·5단계 면 선택 UI. 예제 브래킷 요소 수: 거침 3.3k / 보통 6.5k / 세밀 18k / 매우 세밀 ≈40k (이전 3.1k / 3.2k / 4.7k / 17k) |
@@ -76,7 +77,7 @@ B1에서 읽을 것:
 
 | 기능 | 상태 | 근거(모듈 / 테스트) | 한계·메모 |
 |------|------|--------------------|-----------|
-| STEP/IGES 읽기, 솔리드마다 부품 | ✅ | `geometry/step_import.py` / `test_geometry.py` | 어셈블리 계층·부품 이름은 STEP에서 읽지 않음(파일명-번호) |
+| STEP/IGES 읽기, 솔리드마다 부품, STEP 부품 이름(XCAF) | ✅ | `geometry/step_import.py` / `test_geometry.py` | IGES는 이름 없음, 어셈블리 계층은 평탄화 |
 | 메시 포맷 → B-rep 솔리드 | ✅ | `geometry/mesh_import.py`, `fbx.py` / `test_mesh_import.py` | 4만 삼각형 상한, 열린 메시 거부, 곡면은 삼각형 면으로 남음 |
 | 맞닿은 면 자동 접합 | ✅ | `geometry/contacts.py` / `test_geometry.py` | 평면·원통면만(`contacts.py:33,46`) |
 | 재료 22종, 6개 규격 명칭 | ✅ | `resources/materials.json`, `standards/` / `test_standards.py` | 사용자 정의·편집 불가, 온도 의존 물성 없음 |

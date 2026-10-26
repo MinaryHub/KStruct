@@ -34,7 +34,7 @@ CI(`.github/workflows/build.yml`)가 Windows/macOS/Linux에서 테스트 → PyI
 - **볼트**(`fem/bolts.py`): 머리·너트 아래 고리 면(없으면 구멍 벽)의 평균 변위를 잇는 축/전단 스프링. 예압은 "잠금" 방식: 예압만 걸린 상태에서 각 볼트가 정확히 P가 되도록 당김력 T를 `locked_pulls`로 풀고, 축력은 항상 모델 안의 실제 힘 T + k·신장량으로 보고한다(평형 보장). 예압이 있으면 두 부품 사이에 접촉/접합 연결이 필수.
 - **좌굴**(`fem/buckling.py`): ARPACK `mode="buckling"`(K는 SPD, K_G는 부정치). 압축이 거의 없으면 반복 상한에서 끊고 "좌굴 없음"으로 처리.
 - **표시 단위**(`units.py`): 계산은 항상 SI 내부 단위. 입력·목록·결과 필드·보고서만 `system_of(project)`(프로젝트 설정, 없으면 기준 팩의 `units`)로 변환한다.
-- **여러 부품**: 처음부터 `Project.parts` 리스트 + `connections`. STEP의 솔리드마다 Part 하나, 맞닿은 면은 `geometry/contacts.py`가 자동 접합(바깥 법선이 마주보고 실제 겹침 면적이 있어야 함).
+- **여러 부품**: 처음부터 `Project.parts` 리스트 + `connections`. STEP의 솔리드마다 Part 하나(이름은 XCAF `read_named_solids`로 읽고 어셈블리는 배치를 적용해 평탄화; STEP의 UTF-8 이름은 바이트당 한 코드포인트로 돌아오므로 `_decode_name`으로 복원), 맞닿은 면은 `geometry/contacts.py`가 자동 접합(바깥 법선이 마주보고 실제 겹침 면적이 있어야 함).
 - **메시 포맷**(`geometry/mesh_import.py`, `geometry/fbx.py`): 삼각형을 공유 위상 B-rep 솔리드로 만들고 같은 평면 삼각형을 병합. 열린 메시는 자동 보정하지 않고 거부한다(보정이 형상을 몰래 바꾸므로). FBX 리더는 자체 구현.
 - **기준 팩/재료**: `resources/standards.json`, `resources/materials.json`. 국가별 명칭·권장 안전율(좌굴 하중 배수 포함)은 데이터로만 추가한다. 계산 코드에 국가 기준을 하드코딩하지 말 것. 볼트 규격·등급은 `resources/bolts.json`.
 - **도움말**: 모든 UI 요소는 `resources/help/ko.json`의 키를 참조(`HelpButton`, `with_help`, `topic(key).short`). `tests/test_ui.py`가 UI 코드에 쓰인 키가 JSON에 다 있는지 검사하므로 새 접두어를 쓰면 그 테스트의 `PREFIXES`도 갱신.
