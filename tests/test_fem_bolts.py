@@ -107,7 +107,7 @@ def test_preloaded_contact_joint():
     assert abs(change) < 0.5 * 3000.0
 
     big = _solve(_joint(force=(0, 0, 60_000.0), preload=P, interface=ConnectionKind.CONTACT))
-    closed, total = big.contact[0]
+    closed, total, _ = big.contact[0]
     assert closed < 0.2 * total
     # once separated the bolts carry the whole pull; prying at the plate edges (the few
     # pairs still pressed) can only add to it

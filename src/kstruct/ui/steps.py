@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -15,12 +16,14 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -31,9 +34,11 @@ from kstruct.fem.bolts import grades as bolt_grades
 from kstruct.fem.bolts import hole_axis, recommended_preload, suggest_size
 from kstruct.fem.bolts import sizes as bolt_sizes
 from kstruct.fem.constraints import ConstraintError
+from kstruct.fem.fatigue import RELIABILITY_FACTORS, SURFACE_FACTORS
 from kstruct.geometry import faces_of
-from kstruct.geometry.face_info import face_info, outward_normal
+from kstruct.geometry.face_info import common_axis, face_info, faces_centroid, outward_normal
 from kstruct.model import (
+    AXIS_LOADS,
     GRAVITY,
     AnalysisKind,
     Bolt,
@@ -42,10 +47,14 @@ from kstruct.model import (
     Fixture,
     FixtureKind,
     Load,
+    LoadCase,
     LoadKind,
+    MeshRefinement,
 )
+from kstruct.report.describe import describe_connection, describe_fixture, describe_load
+from kstruct.ui.dialogs import MaterialDialog, load_user_library, save_user_library
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
-from kstruct.units import fmt, quantity, system_of
+from kstruct.units import quantity, system_of
 
 if TYPE_CHECKING:
     from kstruct.ui.main_window import MainWindow
@@ -68,6 +77,10 @@ LOAD_QUANTITY = {
     LoadKind.FACE_TEMPERATURE: "temperature",
     LoadKind.HEAT_FLOW: None,
     LoadKind.CONVECTION: None,
+    LoadKind.RADIATION: None,
+    LoadKind.TORQUE: "torque",
+    LoadKind.BEARING: "force",
+    LoadKind.CENTRIFUGAL: "speed",
 }
 FIXTURE_LABELS = {
     FixtureKind.FIXED: ("완전 고정", "fixture.fixed"),
@@ -82,6 +95,10 @@ LOAD_LABELS = {
     LoadKind.FACE_TEMPERATURE: ("고정 온도 (면)", "load.face_temperature"),
     LoadKind.HEAT_FLOW: ("열 입력 (면)", "load.heat_flow"),
     LoadKind.CONVECTION: ("대류 냉각 (면)", "load.convection"),
+    LoadKind.RADIATION: ("복사 냉각 (면)", "load.radiation"),
+    LoadKind.TORQUE: ("토크 (비틀림)", "load.torque"),
+    LoadKind.BEARING: ("베어링 하중 (구멍에 끼운 축·핀)", "load.bearing"),
+    LoadKind.CENTRIFUGAL: ("원심력 (회전)", "load.centrifugal"),
 }
 FACE_LOADS = (
     LoadKind.FORCE,
@@ -89,7 +106,16 @@ FACE_LOADS = (
     LoadKind.FACE_TEMPERATURE,
     LoadKind.HEAT_FLOW,
     LoadKind.CONVECTION,
+    LoadKind.RADIATION,
+    LoadKind.TORQUE,
+    LoadKind.BEARING,
 )
+AXES = [
+    ("선택한 원통면의 축", None),
+    ("X 축", (1.0, 0.0, 0.0)),
+    ("Y 축", (0.0, 1.0, 0.0)),
+    ("Z 축", (0.0, 0.0, 1.0)),
+]
 DIRECTIONS = [
     ("면을 수직으로 누르기", None, 1.0),
     ("면을 수직으로 당기기", None, -1.0),
@@ -202,6 +228,18 @@ class OpenStep(StepPanel):
         self.conn_kind.activated.connect(self._kind_chosen)
         self.connections.currentRowChanged.connect(self._connection_selected)
         conn.addWidget(with_help(self.conn_kind, "connection.contact"))
+        self.friction = QDoubleSpinBox()
+        self.friction.setRange(0.0, 2.0)
+        self.friction.setSingleStep(0.05)
+        self.friction.setDecimals(2)
+        self.friction.setToolTip(topic("connection.friction").short)
+        self.friction.valueChanged.connect(self._friction_changed)
+        self.friction_row = QWidget()
+        row = QHBoxLayout(self.friction_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel("마찰계수 μ"))
+        row.addWidget(with_help(self.friction, "connection.friction"), 1)
+        conn.addWidget(self.friction_row)
         remove = QPushButton("선택한 연결 삭제")
         remove.clicked.connect(self._remove_connection)
         conn.addWidget(remove)
@@ -223,10 +261,7 @@ class OpenStep(StepPanel):
         self.connections.blockSignals(True)
         self.connections.clear()
         for c in project.connections if project else []:
-            label = CONNECTION_LABELS[c.kind].split(" ")[0]
-            self.connections.addItem(
-                f"{label}: {self.describe_faces(c.faces_a)} ↔ {self.describe_faces(c.faces_b)}"
-            )
+            self.connections.addItem(describe_connection(project, c, self.describe_faces))
         self.connections.blockSignals(False)
         if project and project.connections:
             self.connections.setCurrentRow(min(max(row, 0), len(project.connections) - 1))
@@ -235,9 +270,13 @@ class OpenStep(StepPanel):
     def _connection_selected(self) -> None:
         row = self.connections.currentRow()
         self.conn_kind.setEnabled(row >= 0)
-        if row >= 0:
-            kind = self.app.project.connections[row].kind
-            self.conn_kind.setCurrentIndex(self.conn_kind.findData(kind))
+        c = self.app.project.connections[row] if row >= 0 else None
+        if c is not None:
+            self.conn_kind.setCurrentIndex(self.conn_kind.findData(c.kind))
+            self.friction.blockSignals(True)
+            self.friction.setValue(c.friction)
+            self.friction.blockSignals(False)
+        self.friction_row.setVisible(c is not None and c.kind == ConnectionKind.CONTACT)
 
     def _kind_chosen(self) -> None:
         row = self.connections.currentRow()
@@ -246,6 +285,18 @@ class OpenStep(StepPanel):
         self.app.project.connections[row].kind = self.conn_kind.currentData()
         self.changed.emit()
         self.refresh()
+
+    def _friction_changed(self, value: float) -> None:
+        row = self.connections.currentRow()
+        if row < 0:
+            return
+        self.app.project.connections[row].friction = float(value)
+        self.changed.emit()
+        self.connections.item(row).setText(
+            describe_connection(
+                self.app.project, self.app.project.connections[row], self.describe_faces
+            )
+        )
 
     def _toggled(self, item: QListWidgetItem) -> None:
         part = self.app.project.part(item.data(Qt.ItemDataRole.UserRole))
@@ -295,6 +346,19 @@ class MaterialStep(StepPanel):
         self.apply_all = QPushButton("모든 부품에 같은 재료 적용")
         self.apply_all.clicked.connect(self._apply_all)
         self.add(self.apply_all)
+        custom = QHBoxLayout()
+        self.custom_add = QPushButton("사용자 재료 추가…")
+        self.custom_add.clicked.connect(lambda: self._edit_custom(new=True))
+        self.custom_edit = QPushButton("편집…")
+        self.custom_edit.clicked.connect(lambda: self._edit_custom(new=False))
+        self.custom_remove = QPushButton("삭제")
+        self.custom_remove.clicked.connect(self._remove_custom)
+        for b in (self.custom_add, self.custom_edit, self.custom_remove):
+            custom.addWidget(b)
+        box = QWidget()
+        box.setLayout(custom)
+        self.add(with_help(box, "material.custom"))
+        self._library_loaded = False
 
         self.props = QLabel()
         self.props.setWordWrap(True)
@@ -303,10 +367,19 @@ class MaterialStep(StepPanel):
         self.layout_.addStretch(1)
 
     def _pack(self):
-        return standards.pack(self.standard.currentData())
+        return standards.effective_pack(self.app.project)
+
+    def _materials(self) -> dict:
+        return standards.project_materials(self.app.project)
 
     def refresh(self) -> None:
         project = self.app.project
+        if not self._library_loaded:
+            # materials the user defined in earlier projects are offered here too; the ones
+            # actually used travel inside the .kst file
+            for mid, m in load_user_library().items():
+                project.custom_materials.setdefault(mid, m)
+            self._library_loaded = True
         self.standard.blockSignals(True)
         self.standard.setCurrentIndex(max(0, self.standard.findData(project.standard)))
         self.standard.blockSignals(False)
@@ -317,7 +390,7 @@ class MaterialStep(StepPanel):
         row = max(0, self.parts.currentRow())
         self.parts.blockSignals(True)
         self.parts.clear()
-        mats = standards.materials()
+        mats = self._materials()
         for part in project.parts:
             m = mats.get(part.material_id)
             status = self._pack().material_name(m) if m else "⚠ 재료 미지정"
@@ -334,12 +407,54 @@ class MaterialStep(StepPanel):
         by_cat: dict[str, list] = {}
         for m in standards.materials().values():
             by_cat.setdefault(m.category, []).append(m)
+        custom = list(self.app.project.custom_materials.values())
+        if custom:
+            by_cat["custom"] = custom
         for cat, mats in by_cat.items():
-            self.material.addItem(f"[{standards.CATEGORY_NAMES[cat]}]", None)
+            label = "사용자 재료" if cat == "custom" else standards.CATEGORY_NAMES[cat]
+            self.material.addItem(f"[{label}]", None)
             idx = self.material.count() - 1
             self.material.model().item(idx).setEnabled(False)
             for m in mats:
                 self.material.addItem(f"   {pack.material_name(m)} — {m.name}", m.id)
+
+    def _edit_custom(self, new: bool) -> None:
+        project = self.app.project
+        current = self._materials().get(self.material.currentData())
+        if not new and (current is None or current.id not in project.custom_materials):
+            self.app.warn("편집할 사용자 재료를 목록에서 먼저 고르세요.")
+            return
+        dialog = MaterialDialog(current, system_of(project), self.window())
+        if new and current is not None:
+            dialog.name.setText(f"{current.name} (수정)")
+        if dialog.exec() != MaterialDialog.DialogCode.Accepted:
+            return
+        m = dialog.material()
+        project.custom_materials[m.id] = m
+        library = load_user_library()
+        library[m.id] = m
+        save_user_library(library)
+        part = self._current_part()
+        if part is not None:
+            part.material_id = m.id
+        self.changed.emit()
+        self.refresh()
+
+    def _remove_custom(self) -> None:
+        project = self.app.project
+        mid = self.material.currentData()
+        if mid not in project.custom_materials:
+            self.app.warn("삭제할 사용자 재료를 목록에서 먼저 고르세요.")
+            return
+        del project.custom_materials[mid]
+        library = load_user_library()
+        library.pop(mid, None)
+        save_user_library(library)
+        for part in project.parts:
+            if part.material_id == mid:
+                part.material_id = None
+        self.changed.emit()
+        self.refresh()
 
     def _current_part(self):
         row = self.parts.currentRow()
@@ -350,13 +465,15 @@ class MaterialStep(StepPanel):
         if part is None:
             return
         self.material.setCurrentIndex(max(0, self.material.findData(part.material_id)))
-        m = standards.materials().get(part.material_id)
+        m = self._materials().get(part.material_id)
         if m is None:
             self.props.setText("")
             return
         pack = self._pack()
         kind = "연성재 (휘다가 파손)" if m.ductile else "취성재 (갑자기 깨짐)"
         names = " · ".join(f"{k.upper()} {v}" for k, v in m.designations.items() if k != "iso")
+        if m.id in self.app.project.custom_materials:
+            names = "사용자 정의 재료"
         self.props.setText(
             f"<b>{pack.material_name(m)}</b> — {m.name}<br>"
             f"<small>{names}</small><br><br>"
@@ -560,7 +677,7 @@ class FixtureStep(_FaceListStep):
         return self.app.project.fixtures
 
     def describe(self, fx: Fixture) -> str:
-        return f"{FIXTURE_LABELS[fx.kind][0]}: {self.describe_faces(fx.faces)}"
+        return describe_fixture(self.app.project, fx, self.describe_faces)
 
     def update_selection(self, refs: list[FaceRef]) -> None:
         super().update_selection(refs)
@@ -600,10 +717,24 @@ class FixtureStep(_FaceListStep):
 class LoadStep(_FaceListStep):
     def __init__(self, app: MainWindow) -> None:
         super().__init__(app, "4. 하중", "step.load")
+        self.case = QComboBox()
+        self.case.currentIndexChanged.connect(self._case_chosen)
+        case_add = QPushButton("추가")
+        case_add.clicked.connect(self._add_case)
+        case_rename = QPushButton("이름")
+        case_rename.clicked.connect(self._rename_case)
+        self.case_remove = QPushButton("삭제")
+        self.case_remove.clicked.connect(self._remove_case)
+        self.add(
+            with_help(
+                _row(QLabel("하중 케이스"), self.case, case_add, case_rename, self.case_remove),
+                "load.cases",
+            )
+        )
         self.kind = QComboBox()
         for kind, (label, _) in LOAD_LABELS.items():
             self.kind.addItem(label, kind)
-        self.kind.currentIndexChanged.connect(self._kind_changed)
+        self.kind.currentIndexChanged.connect(lambda _index: self._kind_changed())
         self.kind_help = HelpButton("load.force")
         self.add(_row(self.kind, self.kind_help))
 
@@ -620,6 +751,11 @@ class LoadStep(_FaceListStep):
             self.direction.addItem(label)
         self.direction_label = QLabel("방향")
         form.addRow(self.direction_label, with_help(self.direction, "load.direction"))
+        self.axis = QComboBox()
+        for label, _ in AXES:
+            self.axis.addItem(label)
+        self.axis_label = QLabel("회전축")
+        form.addRow(self.axis_label, with_help(self.axis, "load.axis"))
         self.ambient = QDoubleSpinBox()
         self.ambient.setRange(-100, 2000)
         self.ambient.setValue(20)
@@ -635,20 +771,32 @@ class LoadStep(_FaceListStep):
         self.add_btn.clicked.connect(self._add)
         self.add(self.add_btn)
         self.finish_layout()
+        self._shown_system = None
         self._kind_changed()
 
     def _current_kind(self) -> LoadKind:
         return self.kind.currentData()
 
-    def _kind_changed(self) -> None:
+    def _kind_changed(self, reset: bool = True) -> None:
         kind = self._current_kind()
         self.kind_help.key = LOAD_LABELS[kind][1]
         self.kind_help.setToolTip(topic(self.kind_help.key).short)
         self.selection_label.setVisible(kind in FACE_LOADS)
-        self.direction.setVisible(kind in (LoadKind.FORCE, LoadKind.GRAVITY))
+        self.direction.setVisible(kind in (LoadKind.FORCE, LoadKind.GRAVITY, LoadKind.BEARING))
         self.direction_label.setVisible(self.direction.isVisible())
-        self.ambient.setVisible(kind == LoadKind.CONVECTION)
-        self.ambient_label.setVisible(kind == LoadKind.CONVECTION)
+        self.axis.setVisible(kind in AXIS_LOADS)
+        self.axis_label.setVisible(kind in AXIS_LOADS)
+        if kind == LoadKind.BEARING:
+            # a pin pushes along a fixed direction: no "normal to the face" choices
+            for i in range(2):
+                self.direction.model().item(i).setEnabled(False)
+            if self.direction.currentIndex() < 2:
+                self.direction.setCurrentIndex(len(DIRECTIONS) - 1)
+        else:
+            for i in range(2):
+                self.direction.model().item(i).setEnabled(True)
+        self.ambient.setVisible(kind in (LoadKind.CONVECTION, LoadKind.RADIATION))
+        self.ambient_label.setVisible(self.ambient.isVisible())
         defaults = {  # internal units
             LoadKind.FORCE: ("크기", 1000.0),
             LoadKind.PRESSURE: ("압력", 1.0),
@@ -657,6 +805,10 @@ class LoadStep(_FaceListStep):
             LoadKind.FACE_TEMPERATURE: ("온도", 100.0),
             LoadKind.HEAT_FLOW: ("열량 (W)", 10.0),
             LoadKind.CONVECTION: ("열전달계수 h (W/m²·K)", 10.0),
+            LoadKind.RADIATION: ("방사율 ε (0~1)", 0.8),
+            LoadKind.TORQUE: ("토크", 10_000.0),  # N·mm = 10 N·m
+            LoadKind.BEARING: ("힘", 1000.0),
+            LoadKind.CENTRIFUGAL: ("회전 속도", 3000 * 2 * 3.141592653589793 / 60),  # rad/s
         }
         label, default = defaults[kind]
         q = self._quantity(kind)
@@ -664,12 +816,18 @@ class LoadStep(_FaceListStep):
             label += f" ({q.unit})"
             default = round(q.show(default), 3)
         self.value_label.setText(label)
-        self.value.setValue(default)
-        t = quantity(system_of(self.app.project), "temperature") if self.app.project else None
-        if t is not None:
-            self.ambient_label.setText(f"주변 공기 온도 ({t.unit})")
+        system = system_of(self.app.project) if self.app.project else "SI"
+        if system != self._shown_system:
+            reset = True  # the typed number would mean something else in the new units
+        self._shown_system = system
+        t = quantity(system, "temperature")
+        self.ambient_label.setText(
+            f"{'주변 온도' if kind == LoadKind.RADIATION else '주변 공기 온도'} ({t.unit})"
+        )
+        if reset:
+            self.value.setValue(default)
             self.ambient.setValue(round(t.show(20.0), 1))
-        if kind == LoadKind.GRAVITY:
+        if kind == LoadKind.GRAVITY and reset:
             self.direction.setCurrentIndex(len(DIRECTIONS) - 1)
         self._update_hint()
         self.update_selection(self.app.viewer.selection)
@@ -686,8 +844,51 @@ class LoadStep(_FaceListStep):
         return q.parse(v) if q is not None else v
 
     def refresh(self) -> None:
-        self._kind_changed()
+        project = self.app.project
+        self.case.blockSignals(True)
+        self.case.clear()
+        for c in project.cases:
+            self.case.addItem(f"{c.name} ({len(c.loads)}개)")
+        self.case.setCurrentIndex(project.active_case)
+        self.case.blockSignals(False)
+        self.case_remove.setEnabled(len(project.cases) > 1)
+        self._kind_changed(reset=False)
         super().refresh()
+
+    def _case_chosen(self, index: int) -> None:
+        if index >= 0:
+            self.app.project.active_case = index
+            self.changed.emit()  # the viewer shows this case's arrows, results are stale
+            self.refresh()
+
+    def _add_case(self, name: str | None = None) -> None:
+        project = self.app.project
+        name = name or f"하중 케이스 {len(project.cases) + 1}"
+        project.cases.append(LoadCase(name))
+        project.active_case = len(project.cases) - 1
+        self.changed.emit()
+        self.refresh()
+
+    def _rename_case(self) -> None:
+        case = self.app.project.case
+        name, ok = QInputDialog.getText(self.window(), "케이스 이름", "이름", text=case.name)
+        if ok and name.strip():
+            case.name = name.strip()
+            self.changed.emit()
+            self.refresh()
+
+    def _remove_case(self) -> None:
+        project = self.app.project
+        if len(project.cases) < 2:
+            return
+        if project.case.loads and not self.app._confirm(
+            f"'{project.case.name}' 케이스와 그 하중 {len(project.case.loads)}개를 지울까요?"
+        ):
+            return
+        del project.cases[project.active_case]
+        project.active_case = max(0, project.active_case - 1)
+        self.changed.emit()
+        self.refresh()
 
     def _update_hint(self) -> None:
         kind = self._current_kind()
@@ -700,6 +901,15 @@ class LoadStep(_FaceListStep):
             LoadKind.FACE_TEMPERATURE: "선택한 면이 항상 이 온도로 유지됩니다 (예: 히터·냉각수에 닿은 면).",
             LoadKind.HEAT_FLOW: "선택한 면으로 들어오는 열입니다 (예: 모터·전자부품의 발열량).",
             LoadKind.CONVECTION: "자연 공랭 5~10, 선풍기 바람 20~50, 강제 송풍 50~200, 수랭 500 이상",
+            LoadKind.RADIATION: "검은 도장·산화 표면 0.8~0.95, 양극산화 알루미늄 0.8, 거친 강 0.5~0.7, 광택 금속 0.05~0.2",
+            LoadKind.TORQUE: (
+                f"≈ 반지름 100 mm 끝에서 {v / 100 / 9.81:,.2f} kg 무게로 돌리는 힘. "
+                "양수는 회전축 방향으로 오른나사가 나아가는 방향(반시계)입니다."
+            ),
+            LoadKind.BEARING: "구멍 벽의 하중 방향 절반에 코사인 분포로 눌러 줍니다(핀·축이 미는 모양).",
+            LoadKind.CENTRIFUGAL: (
+                f"= {v:,.1f} rad/s. 모든 부품에 회전축에서 바깥쪽으로 ρω²r의 힘이 걸립니다."
+            ),
         }
         self.value_hint.setText(hints[kind])
 
@@ -708,33 +918,34 @@ class LoadStep(_FaceListStep):
         needs_faces = self._current_kind() in FACE_LOADS
         self.add_btn.setEnabled(bool(refs) or not needs_faces)
 
+    def _selected_faces(self, refs: list[FaceRef]) -> list:
+        project = self.app.project
+        return [faces_of(project.part(r.part_id).shape)[r.face_index] for r in refs]
+
+    def _axis_for(self, kind: LoadKind, refs: list[FaceRef]):
+        """(point, direction) for torque / centrifugal loads, or None with a message."""
+        _, chosen = AXES[self.axis.currentIndex()]
+        faces = self._selected_faces(refs)
+        from_faces = common_axis(faces) if faces else None
+        if chosen is None:
+            if from_faces is None:
+                return None
+            point, direction = from_faces
+            return tuple(float(c) for c in point), tuple(float(c) for c in direction)
+        if faces:
+            point = faces_centroid(faces)
+        else:  # centrifugal without faces: the axis passes through the model's centre
+            parts = self.app.project.visible_parts()
+            point = sum(
+                (np.asarray(faces_centroid(faces_of(p.shape))) for p in parts), np.zeros(3)
+            ) / max(len(parts), 1)
+        return tuple(float(c) for c in point), chosen
+
     def entries(self) -> list:
         return self.app.project.loads
 
     def describe(self, ld: Load) -> str:
-        system = system_of(self.app.project)
-        if ld.kind == LoadKind.FORCE:
-            fq = quantity(system, "force")
-            fx, fy, fz = (fq.show(c) for c in ld.vector)
-            mag = (fx**2 + fy**2 + fz**2) ** 0.5
-            return (
-                f"힘 {mag:,.1f} {fq.unit} ({fx:+.0f}, {fy:+.0f}, {fz:+.0f}): "
-                f"{self.describe_faces(ld.faces)}"
-            )
-        if ld.kind == LoadKind.PRESSURE:
-            return f"압력 {fmt(system, 'stress', ld.magnitude)}: {self.describe_faces(ld.faces)}"
-        if ld.kind == LoadKind.GRAVITY:
-            g = (sum(c * c for c in ld.vector) ** 0.5) / GRAVITY
-            return f"자중 {g:.2g} g"
-        faces = self.describe_faces(ld.faces)
-        if ld.kind == LoadKind.FACE_TEMPERATURE:
-            return f"고정 온도 {fmt(system, 'temperature', ld.magnitude, '.1f')}: {faces}"
-        if ld.kind == LoadKind.HEAT_FLOW:
-            return f"열 입력 {ld.magnitude:.3g} W: {faces}"
-        if ld.kind == LoadKind.CONVECTION:
-            air = fmt(system, "temperature", ld.ambient, ".0f")
-            return f"대류 h={ld.magnitude:.3g} W/m²K, 공기 {air}: {faces}"
-        return f"온도 변화 {fmt(system, 'temperature_change', ld.magnitude, '+.1f')}"
+        return describe_load(self.app.project, ld, self.describe_faces)
 
     def _add(self) -> None:
         kind = self._current_kind()
@@ -762,6 +973,34 @@ class LoadStep(_FaceListStep):
                 load = Load(LoadKind.FORCE, refs, vector=tuple(v * c + 0.0 for c in axis))
         elif kind == LoadKind.PRESSURE:
             load = Load(LoadKind.PRESSURE, refs, magnitude=v)
+        elif kind == LoadKind.TORQUE:
+            axis = self._axis_for(kind, refs)
+            if axis is None:
+                self.app.warn(
+                    "토크의 회전축을 정할 수 없습니다. 축이나 구멍의 원통면을 고르거나, "
+                    "'회전축'에서 X·Y·Z 축을 지정하세요."
+                )
+                return
+            load = Load(LoadKind.TORQUE, refs, vector=axis[1], magnitude=v, point=axis[0])
+        elif kind == LoadKind.BEARING:
+            if common_axis(self._selected_faces(refs)) is None:
+                self.app.warn(
+                    "베어링 하중은 구멍(원통면)에만 줄 수 있습니다. 구멍 안쪽 면을 선택하세요. "
+                    "여러 면을 고르면 같은 축의 구멍이어야 합니다."
+                )
+                return
+            _, axis, _ = DIRECTIONS[self.direction.currentIndex()]
+            load = Load(LoadKind.BEARING, refs, vector=tuple(v * c + 0.0 for c in axis))
+        elif kind == LoadKind.CENTRIFUGAL:
+            axis = self._axis_for(kind, refs)
+            if axis is None:
+                self.app.warn(
+                    "회전축을 정할 수 없습니다. 축이나 구멍의 원통면을 고르거나 '회전축'에서 "
+                    "X·Y·Z 축을 지정하세요."
+                )
+                return
+            project.loads[:] = [ld for ld in project.loads if ld.kind != LoadKind.CENTRIFUGAL]
+            load = Load(LoadKind.CENTRIFUGAL, vector=axis[1], magnitude=v, point=axis[0])
         elif kind == LoadKind.GRAVITY:
             _, axis, _ = DIRECTIONS[self.direction.currentIndex()]
             axis = axis or (0, 0, -1)
@@ -783,6 +1022,7 @@ class LoadStep(_FaceListStep):
 # --- 5. mesh --------------------------------------------------------------------------
 
 
+QUALITY_NAMES = {"coarse": "거침", "normal": "보통", "fine": "세밀", "very_fine": "매우 세밀"}
 QUALITY_LABELS = [
     ("coarse", "거침 (빠름, 대략적인 결과)"),
     ("normal", "보통 (권장)"),
@@ -813,25 +1053,88 @@ class MeshStep(StepPanel):
         self.show_mesh.setChecked(True)
         self.show_mesh.toggled.connect(lambda on: app.viewer.show_mesh(app.mesh if on else None))
         self.add(self.show_mesh)
+
+        box = QGroupBox("특정 면만 더 세밀하게")
+        layout = QVBoxLayout(box)
+        layout.addWidget(_hint(topic("mesh.refine").short))
+        self.selection_label = _hint("")
+        layout.addWidget(self.selection_label)
+        form = QFormLayout()
+        self.refine_size = QDoubleSpinBox()
+        self.refine_size.setRange(0.01, 1e4)
+        self.refine_size.setDecimals(2)
+        self.refine_size.setSuffix(" mm")
+        form.addRow("요소 크기", self.refine_size)
+        layout.addLayout(form)
+        self.refine_add = QPushButton("선택한 면 세밀하게")
+        self.refine_add.clicked.connect(self._add_refinement)
+        layout.addWidget(self.refine_add)
+        self.refinements = QListWidget()
+        self.refinements.setMaximumHeight(90)
+        layout.addWidget(self.refinements)
+        remove = QPushButton("선택한 항목 삭제")
+        remove.clicked.connect(self._remove_refinement)
+        layout.addWidget(remove)
+        self.add(with_help(box, "mesh.refine"))
         self.layout_.addStretch(1)
+
+    def _suggested_size(self) -> float:
+        from kstruct.fem.mesh import MESH_PRESETS
+        from kstruct.geometry.tessellate import bounding_diagonal
+
+        project = self.app.project
+        parts = project.visible_parts() or project.parts
+        diag = max(bounding_diagonal(p.shape) for p in parts) if parts else 100.0
+        return diag / MESH_PRESETS[project.mesh_quality].divisions / 3
+
+    def update_selection(self, refs: list[FaceRef]) -> None:
+        if refs:
+            self.selection_label.setText(f"선택한 면: {self.describe_faces(refs)}")
+        else:
+            self.selection_label.setText("3D 화면에서 면을 클릭하세요. Ctrl+클릭으로 여러 면 선택.")
+        self.refine_add.setEnabled(bool(refs))
+
+    def _add_refinement(self) -> None:
+        refs = self.app.viewer.selection
+        if not refs:
+            return
+        self.app.project.mesh_refinements.append(MeshRefinement(refs, self.refine_size.value()))
+        self.app.viewer.set_selection([])
+        self.app.invalidate_mesh()
+        self.refresh()
+
+    def _remove_refinement(self) -> None:
+        row = self.refinements.currentRow()
+        if row >= 0:
+            del self.app.project.mesh_refinements[row]
+            self.app.invalidate_mesh()
+            self.refresh()
 
     def refresh(self) -> None:
         project = self.app.project
         self.quality.blockSignals(True)
         self.quality.setCurrentIndex(max(0, self.quality.findData(project.mesh_quality)))
         self.quality.blockSignals(False)
+        if not self.refine_size.value() or self.refine_size.value() == 0.01:
+            self.refine_size.setValue(round(self._suggested_size(), 2))
+        self.refinements.clear()
+        for r in project.mesh_refinements:
+            self.refinements.addItem(f"{r.size:g} mm: {self.describe_faces(r.faces)}")
+        self.update_selection(self.app.viewer.selection)
         mesh = self.app.mesh
         if mesh is None:
             self.info.setText("아직 메시가 없습니다. '메시 만들기'를 누르세요.")
         else:
-            self.info.setText(
+            lines = [
                 f"✔ 메시 완료: 요소 {len(mesh.tets):,}개, 절점 {mesh.n_nodes:,}개 "
                 f"(계산할 미지수 {mesh.n_nodes * 3:,}개)"
-            )
+            ] + [f"• {n}" for n in mesh.notes]
+            self.info.setText("\n".join(lines))
 
     def _quality_changed(self) -> None:
         self.app.project.mesh_quality = self.quality.currentData()
         self.app.invalidate_mesh()
+        self.refine_size.setValue(round(self._suggested_size(), 2))
         self.refresh()
 
     def set_busy(self, busy: bool) -> None:
@@ -892,7 +1195,42 @@ class SolveStep(StepPanel):
             self.cycle.addItem(label, key)
         self.cycle.currentIndexChanged.connect(self._cycle_changed)
         sform.addRow("하중이 반복되나요?", with_help(self.cycle, "fatigue.cycle"))
+        self.surface = QComboBox()
+        for key, (label, _a, _b) in SURFACE_FACTORS.items():
+            self.surface.addItem(label, key)
+        self.surface.currentIndexChanged.connect(self._fatigue_changed)
+        self.surface_label = QLabel("표면 상태")
+        self.surface_box = with_help(self.surface, "fatigue.surface")
+        sform.addRow(self.surface_label, self.surface_box)
+        self.reliability = QComboBox()
+        for key in RELIABILITY_FACTORS:
+            self.reliability.addItem(f"{key} %", key)
+        self.reliability.currentIndexChanged.connect(self._fatigue_changed)
+        self.reliability_label = QLabel("신뢰도")
+        self.reliability_box = with_help(self.reliability, "fatigue.reliability")
+        sform.addRow(self.reliability_label, self.reliability_box)
         self.add(self.static_box)
+
+        self.target_box = QGroupBox("권장 안전율")
+        tform = QFormLayout(self.target_box)
+        self.target_default = QCheckBox("적용 기준의 값 사용 (권장)")
+        self.target_default.setChecked(True)
+        self.target_default.toggled.connect(self._targets_changed)
+        tform.addRow(with_help(self.target_default, "analysis.target"))
+        self.targets: dict[str, QDoubleSpinBox] = {}
+        for key, label in (
+            ("ductile", "연성재 (강·알루미늄 등)"),
+            ("brittle", "취성재 (주철 등)"),
+            ("buckling", "좌굴 하중 배수"),
+        ):
+            spin = QDoubleSpinBox()
+            spin.setRange(1.0, 20.0)
+            spin.setSingleStep(0.1)
+            spin.setDecimals(2)
+            spin.valueChanged.connect(self._targets_changed)
+            self.targets[key] = spin
+            tform.addRow(label, spin)
+        self.add(self.target_box)
 
         self.checklist = QLabel()
         self.checklist.setTextFormat(Qt.TextFormat.RichText)
@@ -925,6 +1263,21 @@ class SolveStep(StepPanel):
         self.cycle.blockSignals(True)
         self.cycle.setCurrentIndex(max(0, self.cycle.findData(project.load_cycle)))
         self.cycle.blockSignals(False)
+        repeated = project.load_cycle != "none"
+        for w in (
+            self.surface_label,
+            self.surface_box,
+            self.reliability_label,
+            self.reliability_box,
+        ):
+            w.setVisible(repeated)
+        for combo, value in (
+            (self.surface, project.fatigue_surface),
+            (self.reliability, project.fatigue_reliability),
+        ):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(value)))
+            combo.blockSignals(False)
         for w in (self.n_modes, self.speed, self.speed_unit):
             w.blockSignals(True)
         self.n_modes.setValue(project.n_modes)
@@ -932,6 +1285,23 @@ class SolveStep(StepPanel):
         self.speed.setValue(hz * 60 if self.speed_unit.currentText() == "rpm" else hz)
         for w in (self.n_modes, self.speed, self.speed_unit):
             w.blockSignals(False)
+        self.target_box.setVisible(project.analysis in (AnalysisKind.STATIC, AnalysisKind.BUCKLING))
+        pack = standards.effective_pack(project)
+        values = {
+            "ductile": pack.target_ductile,
+            "brittle": pack.target_brittle,
+            "buckling": pack.target_buckling,
+        }
+        self.target_default.blockSignals(True)
+        self.target_default.setChecked(not project.target_overrides)
+        self.target_default.blockSignals(False)
+        for key, spin in self.targets.items():
+            spin.blockSignals(True)
+            spin.setValue(values[key])
+            spin.setEnabled(bool(project.target_overrides))
+            spin.setVisible(key != "buckling" or project.analysis == AnalysisKind.BUCKLING)
+            self.target_box.layout().labelForField(spin).setVisible(spin.isVisible())
+            spin.blockSignals(False)
         problems = self.app.readiness()
         lines = []
         for ok, text in problems:
@@ -952,6 +1322,22 @@ class SolveStep(StepPanel):
     def _cycle_changed(self) -> None:
         self.app.project.load_cycle = self.cycle.currentData()
         self.changed.emit()
+        self.refresh()
+
+    def _fatigue_changed(self) -> None:
+        project = self.app.project
+        project.fatigue_surface = self.surface.currentData()
+        project.fatigue_reliability = self.reliability.currentData()
+        self.changed.emit()
+
+    def _targets_changed(self) -> None:
+        project = self.app.project
+        if self.target_default.isChecked():
+            project.target_overrides = {}
+        else:
+            project.target_overrides = {k: spin.value() for k, spin in self.targets.items()}
+        self.changed.emit()
+        self.refresh()
 
     def _modal_changed(self) -> None:
         project = self.app.project
@@ -998,8 +1384,17 @@ class ResultStep(StepPanel):
         card.addWidget(self.card_title)
         card.addWidget(self.card_body)
         self.add(with_help(self.card, "result.verdict"))
+        hotspot = QPushButton("응력 특이점·'특이점 제외' 값이란?")
+        hotspot.setFlat(True)
+        hotspot.clicked.connect(lambda: HelpDialog("result.hotspot", self.window()).exec())
+        self.add(hotspot)
 
         form = QFormLayout()
+        self.case = QComboBox()
+        self.case.currentIndexChanged.connect(app.select_case)
+        self.case_label = QLabel("하중 케이스")
+        self.case_box = with_help(self.case, "result.case")
+        form.addRow(self.case_label, self.case_box)
         self.field = QComboBox()
         for key, label in FIELD_LABELS:
             self.field.addItem(label, key)
@@ -1020,6 +1415,20 @@ class ResultStep(StepPanel):
         self.animate = QCheckBox("움직임 보기 (애니메이션)")
         self.animate.toggled.connect(app.viewer.set_animated)
         form.addRow("", self.animate)
+        self.clip = QCheckBox("단면 보기 (안쪽 값)")
+        self.clip.toggled.connect(self._clip_changed)
+        self.clip_axis = QComboBox()
+        for label in ("X 방향으로 자르기", "Y 방향으로 자르기", "Z 방향으로 자르기"):
+            self.clip_axis.addItem(label)
+        self.clip_axis.currentIndexChanged.connect(lambda _i: app.show_result())
+        self.clip_pos = QSlider(Qt.Orientation.Horizontal)
+        self.clip_pos.setRange(1, 99)
+        self.clip_pos.setValue(50)
+        self.clip_pos.valueChanged.connect(lambda _v: app.show_result())
+        form.addRow("", with_help(self.clip, "result.clip"))
+        self.clip_row = _row(self.clip_axis, self.clip_pos)
+        form.addRow("", self.clip_row)
+        self.clip_row.setVisible(False)
         box = QWidget()
         box.setLayout(form)
         self.add(box)
@@ -1036,6 +1445,10 @@ class ResultStep(StepPanel):
         report.clicked.connect(app.save_report)
         buttons.addWidget(report)
         buttons.addWidget(HelpButton("result.report"))
+        export = QPushButton("결과 내보내기…")
+        export.clicked.connect(app.export_result)
+        buttons.addWidget(export)
+        buttons.addWidget(HelpButton("result.export"))
         b = QWidget()
         b.setLayout(buttons)
         self.add(b)
@@ -1054,6 +1467,18 @@ class ResultStep(StepPanel):
         self.field.setCurrentIndex(max(0, self.field.findData(current)))
         self.field.blockSignals(False)
 
+    def set_cases(self, labels: list[str] | None, current: int = 0) -> None:
+        visible = bool(labels) and len(labels) > 1
+        self.case_box.setVisible(visible)
+        self.case_label.setVisible(visible)
+        self.case.blockSignals(True)
+        self.case.clear()
+        for text in labels or []:
+            self.case.addItem(text)
+        if labels:
+            self.case.setCurrentIndex(min(current, len(labels) - 1))
+        self.case.blockSignals(False)
+
     def set_modes(self, frequencies, labels: list[str] | None = None) -> None:
         visible = frequencies is not None
         self.mode_box.setVisible(visible)
@@ -1068,6 +1493,19 @@ class ResultStep(StepPanel):
             self.mode.addItem(text, i)
         self.mode.setCurrentIndex(min(current, len(frequencies) - 1))
         self.mode.blockSignals(False)
+
+    def _clip_changed(self, on: bool) -> None:
+        self.clip_row.setVisible(on)
+        self.animate.setEnabled(not on)
+        if on:
+            self.animate.setChecked(False)
+        self.app.show_result()
+
+    def clip_fraction(self) -> tuple[int, float] | None:
+        """(axis index, 0..1 position along it) when the section view is on."""
+        if not self.clip.isChecked():
+            return None
+        return self.clip_axis.currentIndex(), self.clip_pos.value() / 100.0
 
     def field_key(self) -> str:
         return self.field.currentData()

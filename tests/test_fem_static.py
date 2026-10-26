@@ -90,10 +90,12 @@ def test_cantilever_tip_deflection():
     tip_uz = r.displacement[mesh.face_nodes([tip]), 2].mean()
     assert -tip_uz == pytest.approx(expected, rel=0.02)
 
-    # bending stress at mid-span, top fibre: M c / I
-    mid_top = np.flatnonzero(np.isclose(mesh.nodes[:, 0], L / 2) & np.isclose(mesh.nodes[:, 2], b))
+    # bending stress on the top fibre around mid-span: M(x) c / I at each node's own x
+    x, z = mesh.nodes[:, 0], mesh.nodes[:, 2]
+    mid_top = np.flatnonzero((np.abs(x - L / 2) < 0.1 * L) & np.isclose(z, b))
     assert len(mid_top) > 0
-    assert r.stress[mid_top, 0].mean() == pytest.approx(P * L / 2 * (b / 2) / inertia, rel=0.03)
+    expected = P * (L - x[mid_top]) * (b / 2) / inertia
+    assert r.stress[mid_top, 0].mean() == pytest.approx(expected.mean(), rel=0.03)
     assert r.reactions[0] == pytest.approx([0, 0, P], abs=1e-6)
 
 

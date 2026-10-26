@@ -12,30 +12,27 @@ import numpy as np
 from PySide6.QtCore import QMarginsF, QSizeF
 from PySide6.QtGui import QPageLayout, QPageSize, QPdfWriter, QTextDocument
 
-from kstruct import standards
+from kstruct import __version__, standards
+from kstruct.fem.mesh import MESH_PRESETS
 from kstruct.fem.static import StaticResult
-from kstruct.model import FixtureKind, LoadKind, Project
+from kstruct.model import THERMAL_LOADS, Project
+from kstruct.report.describe import describe_connection, describe_fixture, describe_load
 from kstruct.report.summary import VERDICT_STYLE, Summary
 from kstruct.units import fmt, system_of
 
-FIXTURE_NAMES = {
-    FixtureKind.FIXED: "완전 고정",
-    FixtureKind.ROLLER: "미끄럼 지지",
-    FixtureKind.PIN: "핀 지지",
-}
-DISCLAIMER = (
-    "이 보고서는 선형 정적 유한요소해석 결과로, 설계 검토를 돕기 위한 참고 자료입니다. "
-    "실제 제작·사용 여부는 하중 조건, 재료 성적서, 제작 품질, 관련 법규를 고려하여 "
-    "자격을 갖춘 기술자가 최종 판단해야 합니다."
-)
+MESH_LABELS = {"coarse": "거침", "normal": "보통", "fine": "세밀", "very_fine": "매우 세밀"}
+FONT = "font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;"
 
 
-def _faces(project: Project, refs) -> str:
-    multi = len(project.parts) > 1
-    return ", ".join(
-        (f"{project.part(r.part_id).name} " if multi else "") + f"면#{r.face_index + 1}"
-        for r in refs
+def disclaimer(kind: str = "선형 정적 유한요소해석") -> str:
+    return (
+        f"이 보고서는 {kind} 결과로, 설계 검토를 돕기 위한 참고 자료입니다. "
+        "실제 제작·사용 여부는 하중 조건, 재료 성적서, 제작 품질, 관련 법규를 고려하여 "
+        "자격을 갖춘 기술자가 최종 판단해야 합니다."
     )
+
+
+DISCLAIMER = disclaimer()
 
 
 def _img(png: bytes, width: int = 640) -> str:
@@ -43,12 +40,107 @@ def _img(png: bytes, width: int = 640) -> str:
     return f'<img src="data:image/png;base64,{data}" width="{width}">'
 
 
-def _static_html(
-    project: Project, result: StaticResult, summary: Summary, images: list[tuple[str, bytes]]
+def _header(project: Project, mesh) -> str:
+    """Model, date, software version, standards pack, units and mesh: what a reviewer
+    needs to reproduce the run."""
+    esc = html.escape
+    pack = standards.effective_pack(project)
+    source = esc(project.source_path.name) if project.source_path else "-"
+    units = "SI (mm·N·MPa·°C)" if system_of(project) == "SI" else "미국 단위 (in·lbf·psi·°F)"
+    quality = MESH_LABELS.get(project.mesh_quality, project.mesh_quality)
+    preset = MESH_PRESETS.get(project.mesh_quality, MESH_PRESETS["normal"])
+    custom = " (사용자 지정 안전율)" if project.target_overrides else ""
+    return (
+        f"<p>모델: {source} &nbsp;|&nbsp; 작성일: {dt.date.today():%Y-%m-%d} &nbsp;|&nbsp; "
+        f"KStruct {esc(__version__)}<br>"
+        f"적용 기준: {esc(pack.label)}{custom} &nbsp;|&nbsp; 단위: {units} &nbsp;|&nbsp; "
+        f"메시: {quality} (모델 대각선/{preset.divisions:g}, 두께 방향 {preset.layers}개 이상), "
+        f"2차 사면체 요소 {len(mesh.tets):,}개, 절점 {mesh.n_nodes:,}개</p>"
+    )
+
+
+def _list(items) -> str:
+    return "".join(f"<li>{html.escape(x)}</li>" for x in items)
+
+
+def _connections_html(project: Project) -> str:
+    if not project.connections:
+        return ""
+    items = _list(describe_connection(project, c) for c in project.connections)
+    return f"<p><b>부품 연결</b></p><ul>{items}</ul>"
+
+
+def _materials_list(project: Project, materials: dict) -> str:
+    pack = standards.effective_pack(project)
+    return _list(
+        f"{project.part(pid).name}: {pack.material_name(m)}" for pid, m in materials.items()
+    )
+
+
+def _pictures(images) -> str:
+    return "".join(f"<h3>{html.escape(cap)}</h3><p>{_img(png)}</p>" for cap, png in images)
+
+
+def _page(
+    title: str,
+    project: Project,
+    headline: str,
+    explanation: str,
+    verdict,
+    body: str,
+    mesh,
+    method: str,
 ) -> str:
-    pack = standards.pack(project.standard)
+    esc = html.escape
+    if verdict is None:
+        color, bg = "#2b5d8a", "#eaf2fa"
+    else:
+        _, color, bg = VERDICT_STYLE[verdict]
+    return f"""
+<html><body style="{FONT} font-size: 10pt;">
+<h1>{esc(title)}</h1>
+{_header(project, mesh)}
+<table width="100%" cellpadding="10" style="background:{bg}; border: 2px solid {color};">
+<tr><td><span style="font-size:16pt; color:{color};"><b>{esc(headline)}</b></span><br>
+{esc(explanation)}</td></tr></table>
+{body}
+<p style="color:#8a6d3b;"><b>고지</b>: {disclaimer(method)}</p>
+</body></html>
+"""
+
+
+# --- static ---------------------------------------------------------------------------
+
+
+def _cases_html(project: Project, overview, us: str) -> str:
+    if overview is None or len(overview.names) < 2:
+        return ""
+    rows = []
+    for i, (name, s) in enumerate(zip(overview.names, overview.summaries, strict=True)):
+        mark = " ◀ 가장 불리" if i == overview.worst else ""
+        rows.append(
+            f"<tr><td>{html.escape(name)}{mark}</td><td><b>{s.governing_fos:.2f}</b></td>"
+            f"<td>{fmt(us, 'length', s.max_disp)}</td><td>{VERDICT_STYLE[s.verdict][0]}</td></tr>"
+        )
+    current = html.escape(project.case.name)
+    return (
+        "<h2>하중 케이스 비교</h2>"
+        "<table width='100%' border='1' cellspacing='0' cellpadding='4'>"
+        "<tr style='background:#eef1f5;'><th>케이스</th><th>안전율</th><th>최대 변형</th>"
+        f"<th>판정</th></tr>{''.join(rows)}</table>"
+        f"<p>아래 상세 결과는 '{current}' 케이스의 것입니다.</p>"
+    )
+
+
+def _static_html(
+    project: Project,
+    result: StaticResult,
+    summary: Summary,
+    images: list[tuple[str, bytes]],
+    overview=None,
+) -> str:
+    pack = standards.effective_pack(project)
     us = system_of(project)
-    title, color, bg = VERDICT_STYLE[summary.verdict]
     esc = html.escape
     rows = []
     for s in summary.parts:
@@ -61,6 +153,13 @@ def _static_html(
             f"<td><b>{s.min_fos:.2f}</b> / {s.target:.1f}</td><td>{fmt(us, 'length', s.max_disp)}</td>"
             f"<td>{VERDICT_STYLE[s.verdict][0]}</td></tr>"
         )
+        if s.hotspot_fos is not None:
+            rows.append(
+                f"<tr><td colspan='2' align='right'>특이점({esc(s.singular_kind)}) 제외</td>"
+                f"<td>{fmt(us, 'stress', s.hotspot_stress, ',.1f')}</td><td></td>"
+                f"<td><b>{s.hotspot_fos:.2f}</b> / {s.target:.1f}</td><td></td>"
+                f"<td>{VERDICT_STYLE[s.hotspot_verdict][0]}</td></tr>"
+            )
         if s.fatigue_fos is not None:
             life = "무한 수명" if s.fatigue_life >= 1e9 else f"{s.fatigue_life:,.0f}회"
             rows.append(
@@ -69,36 +168,19 @@ def _static_html(
                 f"<td>{VERDICT_STYLE[s.fatigue_verdict][0]}</td></tr>"
             )
 
-    fixtures = "".join(
-        f"<li>{FIXTURE_NAMES[f.kind]}: {esc(_faces(project, f.faces))}</li>"
-        for f in project.fixtures
-    )
-    loads = []
-    for ld in project.loads:
-        if ld.kind == LoadKind.FORCE:
-            loads.append(
-                f"힘 {np.linalg.norm(ld.vector):,.1f} N, 방향 ({', '.join(f'{c:+.0f}' for c in ld.vector)})"
-                f": {esc(_faces(project, ld.faces))}"
-            )
-        elif ld.kind == LoadKind.PRESSURE:
-            loads.append(f"압력 {ld.magnitude:,.4g} MPa: {esc(_faces(project, ld.faces))}")
-        elif ld.kind == LoadKind.GRAVITY:
-            loads.append(f"자중 {np.linalg.norm(ld.vector) / 9810:.2g} g")
-        else:
-            loads.append(f"온도 변화 {ld.magnitude:+.1f} °C")
-    load_items = "".join(f"<li>{x}</li>" for x in loads)
-    connections = "".join(
-        f"<li>접합: {esc(_faces(project, c.faces_a))} ↔ {esc(_faces(project, c.faces_b))}</li>"
-        for c in project.connections
-    )
-    reactions = "".join(
-        f"<li>{FIXTURE_NAMES[f.kind]} ({esc(_faces(project, f.faces))}): "
-        f"X {r[0]:+,.1f} N, Y {r[1]:+,.1f} N, Z {r[2]:+,.1f} N</li>"
+    fixtures = _list(describe_fixture(project, f) for f in project.fixtures)
+    load_items = _list(describe_load(project, ld) for ld in project.loads)
+    reactions = _list(
+        f"{describe_fixture(project, f)}: "
+        f"X {fmt(us, 'force', r[0], '+,.1f')}, Y {fmt(us, 'force', r[1], '+,.1f')}, "
+        f"Z {fmt(us, 'force', r[2], '+,.1f')}"
         for f, r in zip(project.fixtures, summary.reactions, strict=True)
     )
     bolt_rows = "".join(
-        f"<tr><td>{esc(b.name)}</td><td>{b.size} {b.grade}</td><td>{b.preload:,.0f} N</td>"
-        f"<td>{b.axial:,.0f} N</td><td>{b.shear:,.0f} N</td><td>{b.stress:,.0f} / {b.proof:,.0f} MPa</td>"
+        f"<tr><td>{esc(b.name)}</td><td>{b.size} {b.grade}</td>"
+        f"<td>{fmt(us, 'force', b.preload, ',.0f')}</td>"
+        f"<td>{fmt(us, 'force', b.axial, ',.0f')}</td><td>{fmt(us, 'force', b.shear, ',.0f')}</td>"
+        f"<td>{fmt(us, 'stress', b.stress, ',.0f')} / {fmt(us, 'stress', b.proof, ',.0f')}</td>"
         f"<td><b>{b.safety_factor:.2f}</b></td></tr>"
         for b in result.bolts or []
     )
@@ -110,20 +192,19 @@ def _static_html(
         if bolt_rows
         else ""
     )
-    notes = "".join(f"<li>{esc(n)}</li>" for n in summary.notes)
-    pictures = "".join(f"<h3>{esc(cap)}</h3><p>{_img(png)}</p>" for cap, png in images)
-    source = esc(project.source_path.name) if project.source_path else "-"
-    mesh = result.mesh
-
-    return f"""
-<html><body style="font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; font-size: 10pt;">
-<h1>구조 해석 보고서</h1>
-<p>모델: {source} &nbsp;|&nbsp; 작성일: {dt.date.today():%Y-%m-%d} &nbsp;|&nbsp; 적용 기준: {esc(pack.label)}</p>
-<table width="100%" cellpadding="10" style="background:{bg}; border: 2px solid {color};">
-<tr><td><span style="font-size:16pt; color:{color};"><b>{esc(summary.headline)}</b></span><br>
-{esc(summary.explanation)}</td></tr></table>
+    thermal = ""
+    if result.thermal is not None:
+        t = result.thermal.temperature
+        thermal = (
+            f"<p><b>열응력 포함</b>: 온도 {fmt(us, 'temperature', t.min(), '.1f')} ~ "
+            f"{fmt(us, 'temperature', t.max(), '.1f')}, 응력 없는 기준 온도 "
+            f"{fmt(us, 'temperature', project.reference_temperature, '.0f')}</p>"
+        )
+    notes = _list(summary.notes)
+    at = [fmt(us, "length", float(v), ".1f") for v in summary.max_disp_at]
+    body = f"""
 {f"<p><b>참고</b></p><ul>{notes}</ul>" if notes else ""}
-
+{_cases_html(project, overview, us)}
 <h2>1. 부품별 결과</h2>
 <table width="100%" border="1" cellspacing="0" cellpadding="4">
 <tr style="background:#eef1f5;"><th>부품</th><th>재료</th><th>최대 응력</th><th>재료 강도</th>
@@ -131,17 +212,17 @@ def _static_html(
 {"".join(rows)}
 </table>
 {bolts}
-<p>최대 변형량: {summary.max_disp:.4g} mm (위치 X {summary.max_disp_at[0]:.1f}, Y {summary.max_disp_at[1]:.1f}, Z {summary.max_disp_at[2]:.1f} mm)</p>
+{thermal}
+<p>최대 변형량: {fmt(us, "length", summary.max_disp)} (위치 X {at[0]}, Y {at[1]}, Z {at[2]})</p>
 
 <h2>2. 해석 조건</h2>
 <p><b>고정</b></p><ul>{fixtures}</ul>
-<p><b>하중</b></p><ul>{load_items}</ul>
-{f"<p><b>부품 연결</b></p><ul>{connections}</ul>" if connections else ""}
-<p><b>메시</b>: 2차 사면체 요소 {len(mesh.tets):,}개, 절점 {mesh.n_nodes:,}개</p>
+<p><b>하중</b>{f" ({esc(project.case.name)})" if len(project.cases) > 1 else ""}</p><ul>{load_items}</ul>
+{_connections_html(project)}
 <p><b>반력</b> (고정면이 부품을 받치는 힘)</p><ul>{reactions}</ul>
 
 <h2>3. 결과 그림</h2>
-{pictures}
+{_pictures(images)}
 
 <h2>4. 해석 방법과 한계</h2>
 <ul>
@@ -150,44 +231,20 @@ def _static_html(
 <li>권장 안전율은 하중을 잘 아는 정적 조건의 일반적 기계설계 권장값이며, 피로·충격·고온 조건은 별도 검토 필요</li>
 <li>참고 기준: {esc(", ".join(pack.references))}</li>
 </ul>
-<p style="color:#8a6d3b;"><b>고지</b>: {DISCLAIMER}</p>
-</body></html>
 """
-
-
-FONT = "font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;"
-
-
-def _page(title: str, project: Project, headline: str, explanation: str, verdict, body: str) -> str:
-    esc = html.escape
-    if verdict is None:
-        color, bg = "#2b5d8a", "#eaf2fa"
-    else:
-        _, color, bg = VERDICT_STYLE[verdict]
-    source = esc(project.source_path.name) if project.source_path else "-"
-    return f"""
-<html><body style="{FONT} font-size: 10pt;">
-<h1>{esc(title)}</h1>
-<p>모델: {source} &nbsp;|&nbsp; 작성일: {dt.date.today():%Y-%m-%d}</p>
-<table width="100%" cellpadding="10" style="background:{bg}; border: 2px solid {color};">
-<tr><td><span style="font-size:16pt; color:{color};"><b>{esc(headline)}</b></span><br>
-{esc(explanation)}</td></tr></table>
-{body}
-<p style="color:#8a6d3b;"><b>고지</b>: {DISCLAIMER}</p>
-</body></html>
-"""
-
-
-def _materials_list(project: Project, materials: dict) -> str:
-    pack = standards.pack(project.standard)
-    return "".join(
-        f"<li>{html.escape(project.part(pid).name)}: {html.escape(pack.material_name(m))}</li>"
-        for pid, m in materials.items()
+    return _page(
+        "구조 해석 보고서",
+        project,
+        summary.headline,
+        summary.explanation,
+        summary.verdict,
+        body,
+        result.mesh,
+        "선형 정적 유한요소해석",
     )
 
 
-def _pictures(images) -> str:
-    return "".join(f"<h3>{html.escape(cap)}</h3><p>{_img(png)}</p>" for cap, png in images)
+# --- modal / thermal / buckling -------------------------------------------------------
 
 
 def _modal_html(project, result, summary, images, materials) -> str:
@@ -203,13 +260,9 @@ def _modal_html(project, result, summary, images, materials) -> str:
         else "<p>운전 진동수: 입력하지 않음</p>"
     )
     fixtures = (
-        "".join(
-            f"<li>{FIXTURE_NAMES[f.kind]}: {html.escape(_faces(project, f.faces))}</li>"
-            for f in project.fixtures
-        )
-        or "<li>없음 (자유 진동)</li>"
+        _list(describe_fixture(project, f) for f in project.fixtures) or "<li>없음 (자유 진동)</li>"
     )
-    notes = "".join(f"<li>{html.escape(n)}</li>" for n in summary.notes)
+    notes = _list(summary.notes)
     body = f"""
 {f"<ul>{notes}</ul>" if notes else ""}
 <h2>1. 고유진동수</h2>
@@ -221,7 +274,7 @@ def _modal_html(project, result, summary, images, materials) -> str:
 <h2>2. 해석 조건</h2>
 <p><b>재료</b></p><ul>{_materials_list(project, materials)}</ul>
 <p><b>고정</b></p><ul>{fixtures}</ul>
-<p><b>메시</b>: 2차 사면체 요소 {len(result.mesh.tets):,}개</p>
+{_connections_html(project)}
 <h2>3. 진동 모양</h2>
 <p>색과 변형 크기는 상대적인 값입니다(실제 진폭은 가진력의 크기에 따라 달라집니다).</p>
 {_pictures(images)}
@@ -236,29 +289,29 @@ def _modal_html(project, result, summary, images, materials) -> str:
         summary.explanation,
         summary.verdict,
         body,
+        result.mesh,
+        "선형 고유진동수(모달) 유한요소해석",
     )
 
 
 def _thermal_html(project, result, summary, images, materials) -> str:
-    loads = []
-    for ld in project.loads:
-        faces = html.escape(_faces(project, ld.faces))
-        if ld.kind == LoadKind.FACE_TEMPERATURE:
-            loads.append(f"고정 온도 {ld.magnitude:.1f} °C: {faces}")
-        elif ld.kind == LoadKind.HEAT_FLOW:
-            loads.append(f"열 입력 {ld.magnitude:.3g} W: {faces}")
-        elif ld.kind == LoadKind.CONVECTION:
-            loads.append(f"대류 h = {ld.magnitude:.3g} W/m²K, 공기 {ld.ambient:.0f} °C: {faces}")
+    us = system_of(project)
+    loads = _list(describe_load(project, ld) for ld in project.loads if ld.kind in THERMAL_LOADS)
     rows = []
     for pid, m in materials.items():
         nodes = result.mesh.part_nodes(pid)
-        limit = f"{m.max_service_temperature:.0f} °C" if m.max_service_temperature else "-"
+        limit = (
+            fmt(us, "temperature", m.max_service_temperature, ".0f")
+            if m.max_service_temperature
+            else "-"
+        )
         rows.append(
             f"<tr><td>{html.escape(project.part(pid).name)}</td>"
-            f"<td>{result.temperature[nodes].min():.1f} °C</td>"
-            f"<td><b>{result.temperature[nodes].max():.1f} °C</b></td><td>{limit}</td></tr>"
+            f"<td>{fmt(us, 'temperature', result.temperature[nodes].min(), '.1f')}</td>"
+            f"<td><b>{fmt(us, 'temperature', result.temperature[nodes].max(), '.1f')}</b></td>"
+            f"<td>{limit}</td></tr>"
         )
-    notes = "".join(f"<li>{html.escape(n)}</li>" for n in summary.notes)
+    notes = _list(summary.notes)
     body = f"""
 {f"<ul>{notes}</ul>" if notes else ""}
 <h2>1. 부품별 온도</h2>
@@ -268,7 +321,8 @@ def _thermal_html(project, result, summary, images, materials) -> str:
 <p>들어온 열 {result.heat_in:.3g} W · 빠져나간 열 {result.heat_out:.3g} W</p>
 <h2>2. 해석 조건</h2>
 <p><b>재료</b></p><ul>{_materials_list(project, materials)}</ul>
-<p><b>열 조건</b></p><ul>{"".join(f"<li>{x}</li>" for x in loads)}</ul>
+<p><b>열 조건</b></p><ul>{loads}</ul>
+{_connections_html(project)}
 <p>지정하지 않은 면은 열이 드나들지 않는(단열) 것으로 가정합니다.</p>
 <h2>3. 결과 그림</h2>
 {_pictures(images)}
@@ -278,45 +332,62 @@ def _thermal_html(project, result, summary, images, materials) -> str:
 <li>권장 최고 사용온도는 대략적인 값이며 재료 등급에 따라 다름</li></ul>
 """
     return _page(
-        "열전달 해석 보고서", project, summary.headline, summary.explanation, summary.verdict, body
+        "열전달 해석 보고서",
+        project,
+        summary.headline,
+        summary.explanation,
+        summary.verdict,
+        body,
+        result.mesh,
+        "정상상태 열전도 유한요소해석",
     )
 
 
 def _buckling_html(project, result, summary, images, materials) -> str:
+    us = system_of(project)
     applied = float(np.linalg.norm(result.static.applied_load))
     rows = "".join(
-        f"<tr><td>{i + 1}차</td><td><b>{f:,.2f}</b></td><td>{f * applied:,.0f} N</td></tr>"
+        f"<tr><td>{i + 1}차</td><td><b>{f:,.2f}</b></td>"
+        f"<td>{fmt(us, 'force', f * applied, ',.0f')}</td></tr>"
         for i, f in enumerate(result.factors)
     )
-    fixtures = "".join(
-        f"<li>{FIXTURE_NAMES[f.kind]}: {html.escape(_faces(project, f.faces))}</li>"
-        for f in project.fixtures
-    )
-    notes = "".join(f"<li>{html.escape(n)}</li>" for n in summary.notes)
+    fixtures = _list(describe_fixture(project, f) for f in project.fixtures)
+    loads = _list(describe_load(project, ld) for ld in project.loads)
+    notes = _list(summary.notes)
     body = f"""
 {f"<ul>{notes}</ul>" if notes else ""}
 <h2>1. 좌굴 하중</h2>
 <table width="100%" border="1" cellspacing="0" cellpadding="4">
 <tr style="background:#eef1f5;"><th>차수</th><th>하중 배수</th><th>좌굴 시 하중 합계(추정)</th></tr>
 {rows}</table>
-<p>하중 배수 = 좌굴이 일어나는 하중 ÷ 현재 하중. 현재 하중 합계 {applied:,.1f} N.</p>
+<p>하중 배수 = 좌굴이 일어나는 하중 ÷ 현재 하중. 현재 하중 합계 {fmt(us, "force", applied, ",.1f")}.</p>
 <h2>2. 해석 조건</h2>
 <p><b>재료</b></p><ul>{_materials_list(project, materials)}</ul>
 <p><b>고정</b></p><ul>{fixtures}</ul>
-<p><b>메시</b>: 2차 사면체 요소 {len(result.mesh.tets):,}개</p>
+<p><b>하중</b></p><ul>{loads}</ul>
+{_connections_html(project)}
 <h2>3. 좌굴 모양</h2>
 <p>변형 크기는 상대값입니다.</p>
 {_pictures(images)}
 <h2>4. 해석 방법과 한계</h2>
 <ul><li>선형 고유치 좌굴 해석 (초기 결함·소성·대변형 미고려)</li>
-<li>권장 하중 배수 {standards.pack(project.standard).target_buckling:.1f} 이상</li></ul>
+<li>권장 하중 배수 {standards.effective_pack(project).target_buckling:.1f} 이상</li></ul>
 """
     return _page(
-        "좌굴 해석 보고서", project, summary.headline, summary.explanation, summary.verdict, body
+        "좌굴 해석 보고서",
+        project,
+        summary.headline,
+        summary.explanation,
+        summary.verdict,
+        body,
+        result.mesh,
+        "선형 고유치 좌굴 유한요소해석",
     )
 
 
-def build_html(project, result, summary, images, materials: dict | None = None) -> str:
+def build_html(
+    project, result, summary, images, materials: dict | None = None, overview=None
+) -> str:
     from kstruct.fem.buckling import BucklingResult
     from kstruct.fem.modal import ModalResult
     from kstruct.fem.thermal import ThermalResult
@@ -327,7 +398,7 @@ def build_html(project, result, summary, images, materials: dict | None = None) 
         return _modal_html(project, result, summary, images, materials or {})
     if isinstance(result, ThermalResult):
         return _thermal_html(project, result, summary, images, materials or {})
-    return _static_html(project, result, summary, images)
+    return _static_html(project, result, summary, images, overview)
 
 
 def write_pdf(html_text: str, path: str | Path) -> Path:

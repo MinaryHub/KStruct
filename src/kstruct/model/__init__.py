@@ -1,5 +1,7 @@
 from kstruct.model.project import (
+    AXIS_LOADS,
     GRAVITY,
+    TEMPERATURE_REFERENCES,
     THERMAL_LOADS,
     AnalysisKind,
     Bolt,
@@ -9,14 +11,21 @@ from kstruct.model.project import (
     Fixture,
     FixtureKind,
     Load,
+    LoadCase,
     LoadKind,
     Material,
+    MeshRefinement,
     Part,
     Project,
+    active_project,
+    excluded_by_hidden_parts,
+    with_case,
 )
 
 __all__ = [
+    "AXIS_LOADS",
     "GRAVITY",
+    "TEMPERATURE_REFERENCES",
     "THERMAL_LOADS",
     "AnalysisKind",
     "Bolt",
@@ -26,8 +35,13 @@ __all__ = [
     "Fixture",
     "FixtureKind",
     "Load",
+    "LoadCase",
     "LoadKind",
     "Material",
+    "MeshRefinement",
     "Part",
     "Project",
+    "active_project",
+    "excluded_by_hidden_parts",
+    "with_case",
 ]

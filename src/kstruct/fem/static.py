@@ -15,7 +15,6 @@ from kstruct.fem.assembly import (
     make_solver,
     part_property,
     rigid_body_modes,
-    solve_spd,
     stiffness_matrix,
 )
 from kstruct.fem.bolts import (
@@ -26,10 +25,11 @@ from kstruct.fem.bolts import (
     locked_pulls,
 )
 from kstruct.fem.constraints import Constraints, build_constraints
-from kstruct.fem.contact import build_contact, solve_with_contact
+from kstruct.fem.contact import ContactSolver, build_contact
+from kstruct.fem.loads import bearing_forces, centrifugal_forces, torque_forces
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.thermal import ThermalResult, has_thermal_loads, solve_thermal
-from kstruct.model import ConnectionKind, LoadKind, Material, Project
+from kstruct.model import ConnectionKind, LoadKind, Material, Project, with_case
 
 Progress = Callable[[float, str], None]
 
@@ -46,7 +46,7 @@ class StaticResult:
     reactions: list[np.ndarray]  # per fixture, (3,) N
     applied_load: np.ndarray  # (3,) N, sum of external forces
     thermal: ThermalResult | None = None  # temperature field used for thermal stress
-    contact: list[tuple[int, int]] | None = None  # per contact: (closed pairs, total pairs)
+    contact: list[tuple[int, int, int]] | None = None  # per contact: (closed, total, slipping)
     bolts: list | None = None  # fem.bolts.BoltResult per bolt
     bolt_nodes: np.ndarray | None = None  # nodes under bolt heads / nuts
 
@@ -113,6 +113,12 @@ def _load_vector(project: Project, mesh: FEMesh, materials: dict[int, Material])
             rho = part_property(mesh, materials, "density")
             w = tet10.mass_lumped_volume(X) * rho[:, None]
             np.add.at(f, mesh.tets.ravel(), np.outer(w.ravel(), load.vector))
+        elif load.kind == LoadKind.TORQUE:
+            f += torque_forces(project, mesh, load)
+        elif load.kind == LoadKind.BEARING:
+            f += bearing_forces(project, mesh, load)
+        elif load.kind == LoadKind.CENTRIFUGAL:
+            f += centrifugal_forces(project, mesh, materials, load)
     return f.ravel()
 
 
@@ -194,6 +200,7 @@ def solve_static(
     dT = temperature_change(project, mesh, thermal)
     f = f_mech if dT is None else f_mech + _thermal_load(mesh, materials, dT)
     pulls = np.zeros(len(connectors))
+    unit_solver = None
     if connectors:
         K = K + bolt_stiffness_and_preload(connectors, n_dof)[0]
     if not np.any(f) and not any(c.bolt.preload for c in connectors):
@@ -206,11 +213,6 @@ def solve_static(
     near_null = rigid_body_modes(mesh.nodes)[free]
     size = np.ptp(mesh.nodes, axis=0).max()
 
-    def contact_solve(rhs):
-        return solve_with_contact(
-            Kp, rhs, free, contacts, lambda A, b: solve_spd(A, b, near_null), scale
-        )
-
     def linear_solver(matrix):
         """Factorize once; the returned function solves full-size right-hand sides."""
         solve = make_solver(matrix.tocsr(), near_null)
@@ -221,6 +223,12 @@ def solve_static(
             return out
 
         return run
+
+    contact_solver = (
+        ContactSolver(Kp, free, contacts, lambda A: make_solver(A.tocsr(), near_null), scale)
+        if contacts
+        else None
+    )
 
     if any(c.bolt.preload for c in connectors):
         joined = {
@@ -234,16 +242,22 @@ def solve_static(
         # state frozen) solve for the pulls that give exactly P in each bolt
         report(0.35, "볼트 체결 상태 계산 중")
         _, f_nominal = bolt_stiffness_and_preload(connectors, n_dof)
-        reduced = contact_solve(f_nominal)[1] if contacts else Kp[free][:, free]
+        if contact_solver is not None:
+            contact_solver.solve(f_nominal)
+            unit_solver = contact_solver.current_solver()
+        else:
+            unit_solver = linear_solver(Kp[free][:, free])
         axial = axial_vectors(connectors, n_dof)
-        pulls = locked_pulls(connectors, axial, linear_solver(reduced))
+        pulls = locked_pulls(connectors, axial, unit_solver)
         f = f + bolt_stiffness_and_preload(connectors, n_dof, pulls)[1]
-    if contacts:
+    if contact_solver is not None:
         report(0.5, "접촉 상태 계산 중 (반복)")
-        u = contact_solve(f)[0]
+        u = contact_solver.solve(f)[0]
         # only the stabilising springs hold a part that slid or lifted off
         if np.abs(u).max() > 0.2 * size:
             raise SolverError("contact unstable")
+    elif unit_solver is not None:
+        u = unit_solver(f)  # the preload stage already factorized this matrix
     else:
         u = linear_solver(Kp[free][:, free])(f)
     if np.abs(u).max() > 1e3 * size:
@@ -269,7 +283,7 @@ def solve_static(
         reactions=reactions,
         applied_load=applied,
         thermal=thermal,
-        contact=[(int(cs.active.sum()), len(cs.active)) for cs in contacts],
+        contact=[(int(cs.active.sum()), len(cs.active), int(cs.slipping.sum())) for cs in contacts],
         bolts=evaluate(connectors, u, pulls),
         bolt_nodes=np.unique(
             np.concatenate([np.r_[b.weights_a[0], b.weights_b[0]] for b in connectors])
@@ -277,3 +291,23 @@ def solve_static(
         if connectors
         else np.zeros(0, dtype=int),
     )
+
+
+def solve_cases(
+    project: Project,
+    mesh: FEMesh,
+    materials: dict[int, Material],
+    progress: Progress | None = None,
+) -> list[StaticResult]:
+    """One StaticResult per load case, in project.cases order."""
+    report = progress or (lambda frac, msg: None)
+    n = len(project.cases)
+    results = []
+    for i, case in enumerate(project.cases):
+        prefix = f"[{case.name}] " if n > 1 else ""
+
+        def sub(frac, msg, i=i, prefix=prefix):
+            report((i + frac) / n, prefix + msg)
+
+        results.append(solve_static(with_case(project, i), mesh, materials, sub))
+    return results

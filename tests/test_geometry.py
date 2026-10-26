@@ -49,3 +49,40 @@ def test_touching_faces_are_detected(tmp_path):
     c = connections[0]
     # the upper plate's bottom (smaller) is tied onto the lower plate's top
     assert c.faces_a[0].part_id == 0 and c.faces_b[0].part_id == 1
+
+
+def _write_named_step(path, named_shapes):
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.STEPControl import STEPControl_AsIs
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+    doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    for name, shape in named_shapes:
+        label = tool.AddShape(shape, False)
+        TDataStd_Name.Set_s(label, TCollection_ExtendedString(name))
+    writer = STEPCAFControl_Writer()
+    writer.Transfer(doc, STEPControl_AsIs)
+    assert writer.Write(str(path)) == IFSelect_RetDone
+    return path
+
+
+def test_step_part_names_are_read(tmp_path):
+    from kstruct.geometry import load_cad
+    from kstruct.geometry.samples import _box
+
+    path = _write_named_step(
+        tmp_path / "named.step",
+        [
+            ("베이스 플레이트", _box(0, 0, 0, 50, 50, 5)),
+            ("Upper-Block", _box(0, 0, 5, 20, 20, 20)),
+            ("Upper-Block", _box(30, 0, 5, 20, 20, 20)),  # same name twice: numbered
+        ],
+    )
+    project = load_cad(path)
+    assert [p.name for p in project.parts] == ["베이스 플레이트", "Upper-Block", "Upper-Block (2)"]
+    assert len(project.parts) == 3

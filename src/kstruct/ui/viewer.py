@@ -32,6 +32,20 @@ CLICK_TOLERANCE_PX = 4  # press/release further apart than this is a rotate, not
 
 # Netgen TRI6 (mid nodes on edges 12, 02, 01) -> VTK quadratic triangle (01, 12, 20)
 _TRI6_TO_VTK = [0, 1, 2, 5, 3, 4]
+# Netgen TET10 mid nodes 4..9 on edges 01 02 03 12 13 23 -> VTK quadratic tetra 01 12 20 03 13 23
+_TET10_TO_VTK = [0, 1, 2, 3, 4, 7, 5, 6, 8, 9]
+# a TET10 split into 8 linear tets (corners + mid nodes m01=4 m02=5 m03=6 m12=7 m13=8 m23=9):
+# four corner tets and the central octahedron cut along the m02-m13 diagonal
+_TET10_SUBTETS = [
+    (0, 4, 5, 6),
+    (4, 1, 7, 8),
+    (5, 7, 2, 9),
+    (6, 8, 9, 3),
+    (5, 8, 4, 6),
+    (5, 8, 6, 9),
+    (5, 8, 9, 7),
+    (5, 8, 7, 4),
+]
 
 
 @dataclass
@@ -195,12 +209,24 @@ class ModelViewer(QWidget):
         if load.kind == LoadKind.GRAVITY:
             center = np.mean([m.center for m in self._meshes.values()], axis=0)
             direction = np.asarray(load.vector, dtype=float)
-        elif load.kind in (LoadKind.FORCE, LoadKind.PRESSURE) and load.faces:
+        elif load.kind in (LoadKind.FORCE, LoadKind.PRESSURE, LoadKind.BEARING) and load.faces:
             center, normal = self._face_center_normal(load.faces)
             if load.kind == LoadKind.PRESSURE:
                 direction = -normal * np.sign(load.magnitude or 1)
             else:
                 direction = np.asarray(load.vector, dtype=float)
+        elif load.kind in (LoadKind.TORQUE, LoadKind.CENTRIFUGAL) and load.point is not None:
+            # the rotation axis, drawn through the stored point
+            center = np.asarray(load.point, dtype=float)
+            direction = np.asarray(load.vector, dtype=float) * np.sign(load.magnitude or 1)
+            norm = np.linalg.norm(direction)
+            if norm == 0:
+                return
+            direction = direction / norm
+            line = pv.Line(center - direction * length, center + direction * length)
+            self._overlay.append(
+                self.plotter.add_mesh(line, color=LOAD_COLOR, line_width=3, pickable=False)
+            )
         else:
             return
         norm = np.linalg.norm(direction)
@@ -249,20 +275,27 @@ class ModelViewer(QWidget):
         field: ResultField,
         scale: float,
         symmetric: bool = False,
+        clip: tuple | None = None,
     ):
+        """clip: (normal, origin) keeps the half of the model on the normal's side and
+        shows the interior values on the cut face (no deformation animation)."""
         self.clear_result(render=False)
         points = mesh.nodes + scale * displacement
-        grid = _surface_grid(mesh, points)
-        grid.point_data["value"] = field.values
-        surf = grid.extract_surface(algorithm="dataset_surface", nonlinear_subdivision=2)
-        # subdivision is linear in the node coordinates, so the undeformed surface has the
-        # same topology and animation can interpolate point positions directly
-        base = _surface_grid(mesh, mesh.nodes).extract_surface(
-            algorithm="dataset_surface", nonlinear_subdivision=2
-        )
-        self._anim_surface = surf
-        self._anim_base = np.array(base.points)
-        self._anim_delta = np.array(surf.points) - self._anim_base
+        if clip is not None:
+            surf = section_surface(mesh, points, field.values, *clip)
+            self._anim_surface = None
+        else:
+            grid = _surface_grid(mesh, points)
+            grid.point_data["value"] = field.values
+            surf = grid.extract_surface(algorithm="dataset_surface", nonlinear_subdivision=2)
+            # subdivision is linear in the node coordinates, so the undeformed surface has
+            # the same topology and animation can interpolate point positions directly
+            base = _surface_grid(mesh, mesh.nodes).extract_surface(
+                algorithm="dataset_surface", nonlinear_subdivision=2
+            )
+            self._anim_surface = surf
+            self._anim_base = np.array(base.points)
+            self._anim_delta = np.array(surf.points) - self._anim_base
         self._anim_symmetric = symmetric
         self._anim_phase = 0.0
         self._result_actor = self.plotter.add_mesh(
@@ -291,7 +324,7 @@ class ModelViewer(QWidget):
         self._result_extras.append(
             self.plotter.add_mesh(outline, color="#8894a2", line_width=1, pickable=False)
         )
-        boundary = np.unique(mesh.tris)
+        boundary = np.arange(mesh.n_nodes) if clip is not None else np.unique(mesh.tris)
         self._result_points = boundary
         self._result_tree = cKDTree(points[boundary])
         self._result_field = field
@@ -300,13 +333,13 @@ class ModelViewer(QWidget):
                 actor.SetVisibility(False)
         for actor in self._overlay:
             actor.SetVisibility(False)
-        if self._animated:
+        if self._animated and self._anim_surface is not None:
             self._anim_timer.start()
         self.plotter.render()
 
     def set_animated(self, on: bool) -> None:
         self._animated = on
-        if on and self._result_actor is not None:
+        if on and self._result_actor is not None and self._anim_surface is not None:
             self._anim_timer.start()
         else:
             self._anim_timer.stop()
@@ -418,6 +451,49 @@ def _surface_grid(mesh: FEMesh, points: np.ndarray) -> pv.UnstructuredGrid:
     cells = np.hstack([np.full((len(tris), 1), 6), tris]).ravel()
     types = np.full(len(tris), pv.CellType.QUADRATIC_TRIANGLE, dtype=np.uint8)
     return pv.UnstructuredGrid(cells, types, points)
+
+
+def _right_handed(mesh: FEMesh) -> np.ndarray:
+    """TET10 connectivity with a positive Jacobian (VTK's convention); Netgen numbers its
+    corners the other way round. Swapping corners 1 and 2 also swaps mid nodes 01<->02
+    and 13<->23."""
+    tets = mesh.tets
+    X = mesh.nodes[tets[:, :4]]
+    det = np.einsum("ei,ei->e", X[:, 1] - X[:, 0], np.cross(X[:, 2] - X[:, 0], X[:, 3] - X[:, 0]))
+    flipped = tets[:, [0, 2, 1, 3, 5, 4, 6, 7, 9, 8]]
+    return np.where((det < 0)[:, None], flipped, tets)
+
+
+def volume_grid(mesh: FEMesh, points: np.ndarray) -> pv.UnstructuredGrid:
+    """Quadratic tetrahedra in VTK order (for VTU export)."""
+    tets = _right_handed(mesh)[:, _TET10_TO_VTK]
+    cells = np.hstack([np.full((len(tets), 1), 10), tets]).ravel()
+    types = np.full(len(tets), pv.CellType.QUADRATIC_TETRA, dtype=np.uint8)
+    return pv.UnstructuredGrid(cells, types, points)
+
+
+def linear_volume_grid(mesh: FEMesh, points: np.ndarray) -> pv.UnstructuredGrid:
+    """Each TET10 as 8 linear tetrahedra: VTK's clip filters handle linear cells
+    reliably, and the mid-side node values are kept as vertices."""
+    tets = _right_handed(mesh)
+    sub = np.concatenate([tets[:, list(t)] for t in _TET10_SUBTETS])
+    X = points[sub]
+    det = np.einsum("ei,ei->e", X[:, 1] - X[:, 0], np.cross(X[:, 2] - X[:, 0], X[:, 3] - X[:, 0]))
+    sub = np.where((det < 0)[:, None], sub[:, [0, 2, 1, 3]], sub)
+    cells = np.hstack([np.full((len(sub), 1), 4), sub]).ravel()
+    types = np.full(len(sub), pv.CellType.TETRA, dtype=np.uint8)
+    return pv.UnstructuredGrid(cells, types, points)
+
+
+def section_surface(
+    mesh: FEMesh, points: np.ndarray, values: np.ndarray, normal, origin
+) -> pv.PolyData:
+    """Surface of the part cut away at a plane (the kept half's outer skin plus the cut
+    face), with the nodal field interpolated onto it."""
+    grid = linear_volume_grid(mesh, points)
+    grid.point_data["value"] = values
+    clipped = grid.clip(normal=normal, origin=origin, invert=False)
+    return clipped.extract_surface(algorithm="dataset_surface")
 
 
 def _use_korean_font(scalar_bar) -> None:

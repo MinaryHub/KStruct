@@ -15,6 +15,7 @@ for package in ("OCP", "netgen", "pyngcore", "vtkmodules", "pyvista", "pyvistaqt
     binaries += b
     hiddenimports += h
 datas += collect_data_files("kstruct", includes=["resources/**/*"])
+datas.append((str(ROOT / "THIRD_PARTY_NOTICES.md"), "."))  # shown in the About dialog
 hiddenimports += collect_submodules("kstruct")
 hiddenimports += ["scipy.sparse.linalg", "scipy.spatial", "lxml.etree", "networkx"]
 

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -14,36 +17,55 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSplitter,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from kstruct import standards
-from kstruct.fem import ConstraintError, MeshingError, SolverError, generate_mesh, solve_static
+from kstruct.fem import ConstraintError, MeshingError, SolverError, generate_mesh
 from kstruct.fem.buckling import BucklingResult, solve_buckling
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.modal import ModalResult, solve_modal
-from kstruct.fem.static import StaticResult
+from kstruct.fem.static import StaticResult, solve_cases
 from kstruct.fem.thermal import ThermalResult, solve_thermal
 from kstruct.geometry import GeometryImportError, load_cad
 from kstruct.geometry.contacts import find_touching_faces
 from kstruct.geometry.samples import bolted_plates, l_bracket, two_plates, write_step
-from kstruct.model import THERMAL_LOADS, AnalysisKind, LoadKind, Project
-from kstruct.project_io import SUFFIX, ProjectFileError, load_project, save_project
+from kstruct.model import (
+    TEMPERATURE_REFERENCES,
+    THERMAL_LOADS,
+    AnalysisKind,
+    Project,
+    active_project,
+    excluded_by_hidden_parts,
+    with_case,
+)
+from kstruct.project_io import (
+    SUFFIX,
+    ProjectFileError,
+    load_project,
+    load_project_mesh,
+    save_project,
+)
 from kstruct.report.summary import (
     VERDICT_STYLE,
+    CaseOverview,
     Summary,
+    compare_cases,
     summarize,
     summarize_buckling,
     summarize_modal,
     summarize_thermal,
 )
-from kstruct.ui import steps
+from kstruct.ui import prefs, steps
+from kstruct.ui.dialogs import AboutDialog, save_bug_report
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 from kstruct.ui.viewer import ModelViewer, ResultField
 from kstruct.ui.worker import run_job
@@ -58,6 +80,7 @@ CAD_FILTER = (
 PROJECT_FILTER = f"KStruct 프로젝트 (*{SUFFIX})"
 SAMPLES = {"bracket": l_bracket, "two_plates": two_plates, "bolted": bolted_plates}
 
+log = logging.getLogger("kstruct.ui")
 STEP_OPEN, STEP_MATERIAL, STEP_FIXTURE, STEP_LOAD, STEP_MESH, STEP_SOLVE, STEP_RESULT = range(7)
 STEP_NAMES = ["1. 모델 열기", "2. 재료", "3. 고정", "4. 하중", "5. 메시", "6. 해석", "7. 결과"]
 THERMAL_FIELDS = [("temp", "온도"), ("flux", "열 흐름 (열유속)")]
@@ -111,6 +134,16 @@ class MainWindow(QMainWindow):
         self.mesh: FEMesh | None = None
         self.result: StaticResult | ModalResult | ThermalResult | None = None
         self.summary: Summary | None = None
+        # strength runs: one result/summary per load case; result/summary follow the
+        # case chosen in the result panel
+        self.case_results: list[tuple[str, StaticResult, Summary]] | None = None
+        self.overview: CaseOverview | None = None
+        # key numbers of the previous strength run, for the "compared with last time" line
+        self.previous: dict | None = None
+        self._solved_quality: str | None = None  # mesh preset the current result used
+        self._dirty = False  # unsaved changes (drives autosave and the close prompt)
+        self.ask_before_close = True  # tests switch the "save changes?" prompt off
+        self._sample_files: set[Path] = set()
         self.materials: dict = {}
         self._busy = False
 
@@ -137,6 +170,11 @@ class MainWindow(QMainWindow):
         splitter.setSizes([380, 1060])
         self.setCentralWidget(splitter)
         self._build_toolbar()
+        self._restore_window_state(splitter)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(prefs.AUTOSAVE_MINUTES * 60 * 1000)
+        self._autosave_timer.timeout.connect(self._autosave)
+        self._autosave_timer.start()
         self._go(STEP_OPEN)
         self.statusBar().showMessage("'파일 열기'로 STEP 파일을 불러오거나 예제를 눌러 보세요.")
 
@@ -191,12 +229,148 @@ class MainWindow(QMainWindow):
         action("모델 열기", self.open_file, "step.open", QKeySequence.StandardKey.Open)
         action("프로젝트 열기", self.open_project, "project.open")
         action("프로젝트 저장", self.save_project, "project.save", QKeySequence.StandardKey.Save)
+        self.recent_button = QToolButton()
+        self.recent_button.setText("최근 파일")
+        self.recent_button.setToolTip(topic("project.recent").short)
+        self.recent_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.recent_menu = QMenu(self.recent_button)
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        self.recent_button.setMenu(self.recent_menu)
+        bar.addWidget(self.recent_button)
         bar.addWidget(HelpButton("project.save"))
         bar.addSeparator()
         action("화면 맞춤", self.viewer.fit, "view.fit", "F")
         bar.addWidget(HelpButton("view.fit"))
         bar.addSeparator()
         action("사용 안내", lambda: HelpDialog("help.mode", self).exec(), "help.mode", "F1")
+        action("문제 보고", self.report_problem, "help.report")
+        action("정보", lambda: AboutDialog(self).exec(), "help.about")
+
+    def _fill_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        files = prefs.recent_files()
+        if not files:
+            self.recent_menu.addAction("(최근에 연 파일이 없습니다)").setEnabled(False)
+        for path in files:
+            self.recent_menu.addAction(path.name, lambda p=path: self.load(p)).setToolTip(str(path))
+
+    def _restore_window_state(self, splitter: QSplitter) -> None:
+        geometry, sizes = prefs.window_state()
+        if geometry:
+            self.restoreGeometry(geometry)
+        if sizes and len(sizes) == 2:
+            splitter.setSizes(sizes)
+        self._splitter = splitter
+
+    def _save_window_state(self) -> None:
+        prefs.set_window_state(bytes(self.saveGeometry().data()), self._splitter.sizes())
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if self.project is not None and self._dirty and self.ask_before_close:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("저장하지 않은 변경")
+            box.setText("저장하지 않은 변경이 있습니다. 프로젝트를 저장할까요?")
+            save = box.addButton("저장", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("저장 안 함", QMessageBox.ButtonRole.DestructiveRole)
+            cancel = box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is cancel:
+                event.ignore()
+                return
+            if box.clickedButton() is save:
+                self.save_project()
+                if self._dirty:  # the save dialog was cancelled
+                    event.ignore()
+                    return
+        self._autosave_timer.stop()
+        prefs.clear_autosave()
+        self._save_window_state()
+        super().closeEvent(event)
+
+    # --- autosave / recovery ----------------------------------------------------------
+
+    def _autosave(self) -> None:
+        if self.project is None or not self._dirty or self._busy:
+            return
+        try:
+            prefs.write_autosave(self.project, self.project_path or self.project.source_path)
+            log.info("autosaved")
+        except Exception:  # never let the timer kill the app
+            log.exception("autosave failed")
+
+    def offer_recovery(self) -> bool:
+        """At start-up: load the autosave left by an unclean exit if the user wants it."""
+        pending = prefs.pending_autosave()
+        if pending is None:
+            return False
+        source = pending["source"] or "이름 없는 프로젝트"
+        when = pending["time"][:16].replace("T", " ")
+        answer = QMessageBox.question(
+            self,
+            "작업 복구",
+            f"지난번에 저장하지 않은 작업이 있습니다({when}, {source}).\n복구할까요?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            prefs.clear_autosave()
+            return False
+        return self.recover()
+
+    def recover(self) -> bool:
+        pending = prefs.pending_autosave()
+        if pending is None:
+            return False
+        try:
+            project = load_project(pending["path"])
+        except (ProjectFileError, KeyError, ValueError) as e:
+            self.warn(f"복구 파일을 읽을 수 없습니다: {e}")
+            prefs.clear_autosave()
+            return False
+        source = Path(pending["source"]) if pending["source"] else None
+        self._set_project(project, source if source and source.suffix.lower() == SUFFIX else None)
+        if source and source.suffix.lower() != SUFFIX:
+            project.source_path = source
+        self._dirty = True
+        self.statusBar().showMessage(
+            "저장하지 않았던 작업을 복구했습니다. 프로젝트를 저장해 두세요."
+        )
+        return True
+
+    def install_crash_dialog(self) -> None:
+        """Unhandled exceptions in Qt slots: log (paths.install_excepthook) and tell the user
+        instead of dying silently in a windowed build."""
+        previous = sys.excepthook
+
+        def hook(exc_type, exc, tb):
+            previous(exc_type, exc, tb)
+            detail = "".join(traceback.format_exception(exc_type, exc, tb))[-1500:]
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle("예상하지 못한 오류")
+            box.setText(
+                "프로그램 안에서 오류가 났습니다. 작업 내용은 '프로젝트 저장'으로 보관할 수 "
+                "있습니다.\n\n'문제 보고'를 누르면 로그와 프로젝트를 묶어 저장할 수 있습니다."
+            )
+            box.setDetailedText(detail)
+            report = box.addButton("문제 보고", QMessageBox.ButtonRole.ActionRole)
+            box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is report:
+                self.report_problem(detail)
+
+        sys.excepthook = hook
+
+    def report_problem(self, detail: str = "") -> None:
+        project_file = None
+        if self.project is not None:
+            project_file = Path(tempfile.gettempdir()) / "kstruct_problem.kst"
+            try:
+                save_project(self.project, project_file)
+            except Exception:  # the report must still be produced
+                log.exception("could not save the project for the bug report")
+                project_file = None
+        extra = {"error.txt": detail} if detail else {}
+        save_bug_report(self, project_file, extra)
 
     # --- navigation ------------------------------------------------------------------
 
@@ -234,10 +408,10 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(step)
         if self.project is not None:
             self.panels[step].refresh()
-        self.viewer.selection_enabled = step in (STEP_FIXTURE, STEP_LOAD)
+        self.viewer.selection_enabled = step in (STEP_FIXTURE, STEP_LOAD, STEP_MESH)
         if step != STEP_RESULT:
             self.viewer.clear_result()
-        if step in (STEP_FIXTURE, STEP_LOAD):
+        if step in (STEP_FIXTURE, STEP_LOAD, STEP_MESH):
             self.viewer.set_selection([])
         self.viewer.show_mesh(self.mesh if step == STEP_MESH else None)
         if step == STEP_RESULT and self.result is not None:
@@ -250,6 +424,8 @@ class MainWindow(QMainWindow):
         self.project = project
         self.project_path = path
         self.mesh = self.result = self.summary = None
+        self.case_results = self.overview = None
+        self.previous = None
         self.viewer.load_project(project)
         for part in project.parts:
             if not part.visible:
@@ -264,7 +440,11 @@ class MainWindow(QMainWindow):
         if self.project is not None and not self._confirm("지금 작업을 지우고 새로 시작할까요?"):
             return
         self.project = None
+        self.project_path = None
+        self._dirty = False
         self.mesh = self.result = self.summary = None
+        self.case_results = self.overview = None
+        self.previous = None
         self.viewer.plotter.clear_actors()
         self.viewer.plotter.render()
         self.panels[STEP_OPEN].parts.clear()
@@ -272,30 +452,38 @@ class MainWindow(QMainWindow):
         self._update_nav()
 
     def open_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "모델 열기", "", CAD_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, "모델 열기", prefs.last_dir(), CAD_FILTER)
         if path:
             self.load(Path(path))
 
     def open_sample(self, name: str) -> None:
         path = write_step(SAMPLES[name](), Path(tempfile.gettempdir()) / f"kstruct_{name}.step")
+        self._sample_files.add(path)
         self.load(path)
 
     def load(self, path: Path) -> None:
         if path.suffix.lower() == SUFFIX:
             self._load_project_file(path)
             return
+        log.info("open %s", path)
         try:
             project = load_cad(path)
         except GeometryImportError as e:
+            log.warning("import failed: %s", e)
             self.warn(str(e))
             return
         self._set_project(project)
         if len(project.parts) > 1:
             self.detect_connections(quiet=True)
+        self._dirty = True  # a fresh import has no project file yet
+        if path not in self._sample_files:  # built-in samples are not "recent files"
+            prefs.remember_file(path)
         self.statusBar().showMessage(f"{path.name}: 부품 {len(project.parts)}개를 불러왔습니다.")
 
     def open_project(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", "", PROJECT_FILTER)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "프로젝트 열기", prefs.last_dir(), PROJECT_FILTER
+        )
         if path:
             self._load_project_file(Path(path))
 
@@ -309,7 +497,11 @@ class MainWindow(QMainWindow):
             self.warn(f"프로젝트 파일이 손상되었습니다: {e}")
             return
         self._set_project(project, path)
-        self.statusBar().showMessage(f"{path.name} 프로젝트를 열었습니다.")
+        self.mesh = load_project_mesh(path, project)
+        self._dirty = False
+        prefs.remember_file(path)
+        extra = " (저장된 메시 포함)" if self.mesh is not None else ""
+        self.statusBar().showMessage(f"{path.name} 프로젝트를 열었습니다.{extra}")
 
     def save_project(self) -> None:
         if self.project is None:
@@ -318,18 +510,22 @@ class MainWindow(QMainWindow):
         if path is None:
             source = self.project.source_path
             default = source.with_suffix(SUFFIX).name if source else ""
-            chosen, _ = QFileDialog.getSaveFileName(self, "프로젝트 저장", default, PROJECT_FILTER)
+            start = str(Path(prefs.last_dir() or ".") / default) if default else prefs.last_dir()
+            chosen, _ = QFileDialog.getSaveFileName(self, "프로젝트 저장", start, PROJECT_FILTER)
             if not chosen:
                 return
             path = Path(chosen).with_suffix(SUFFIX)
-        save_project(self.project, path)
+        save_project(self.project, path, self.mesh)
         self.project_path = path
+        self._dirty = False
+        prefs.clear_autosave()
+        prefs.remember_file(path)
         self.statusBar().showMessage(f"{path.name}에 저장했습니다.")
 
     def detect_connections(self, quiet: bool = False) -> None:
         if self.project is None:
             return
-        found = find_touching_faces(self.project)
+        found = find_touching_faces(active_project(self.project))
         self.project.connections = found
         self.invalidate_mesh()
         self.panels[STEP_OPEN].refresh()
@@ -339,14 +535,19 @@ class MainWindow(QMainWindow):
     # --- changes ---------------------------------------------------------------------
 
     def invalidate_mesh(self) -> None:
+        self._dirty = True
         self.mesh = None
         self._invalidate_result()
 
     def _invalidate_result(self) -> None:
+        if self.summary is not None:  # remember what the run being discarded came to
+            self.previous = self._key_numbers() or self.previous
         self.result = self.summary = None
+        self.case_results = self.overview = None
         self._update_nav()
 
     def _project_changed(self) -> None:
+        self._dirty = True
         self._invalidate_result()
         self._annotate()
 
@@ -356,14 +557,16 @@ class MainWindow(QMainWindow):
 
     def _selection_changed(self, refs: list) -> None:
         panel = self.panels[self.nav.currentRow()]
-        if isinstance(panel, steps._FaceListStep):
+        if hasattr(panel, "update_selection"):
             panel.update_selection(refs)
 
     def readiness(self) -> list[tuple[bool, str]]:
-        p = self.project
-        if p is None:
+        if self.project is None:
             return [(False, "모델을 여세요")]
-        visible = [x for x in p.parts if x.visible]
+        p = active_project(self.project)
+        visible = p.parts
+        if not visible:
+            return [(False, "모든 부품이 숨겨져 있습니다. 1단계에서 부품을 체크하세요")]
         missing = [x.name for x in visible if x.material_id is None]
         checks = [
             (True, f"모델: 부품 {len(visible)}개"),
@@ -374,17 +577,28 @@ class MainWindow(QMainWindow):
         ]
         thermal_bcs = [ld for ld in p.loads if ld.kind in THERMAL_LOADS]
         if p.analysis in (AnalysisKind.STATIC, AnalysisKind.BUCKLING):
-            mech = [ld for ld in p.loads if ld.kind not in THERMAL_LOADS]
-            checks += [
+            checks.append(
                 (
                     bool(p.fixtures),
                     f"고정: {len(p.fixtures)}개" if p.fixtures else "고정이 없습니다",
-                ),
-                (
-                    bool(mech or thermal_bcs),
-                    f"하중: {len(p.loads)}개" if p.loads else "하중이 없습니다",
-                ),
-            ]
+                )
+            )
+            if p.analysis == AnalysisKind.STATIC and len(p.cases) > 1:
+                empty = [c.name for c in p.cases if not c.loads]
+                checks.append(
+                    (
+                        not empty,
+                        f"하중: 케이스 {len(p.cases)}개 모두 계산 ({len(p.all_loads())}개)"
+                        if not empty
+                        else f"하중이 없는 케이스: {', '.join(empty)}",
+                    )
+                )
+            else:
+                mech = [ld for ld in p.loads if ld.kind not in THERMAL_LOADS]
+                text = f"하중: {len(p.loads)}개" if p.loads else "하중이 없습니다"
+                if len(p.cases) > 1:
+                    text += f" ('{p.case.name}' 케이스만 사용)"
+                checks.append((bool(mech or thermal_bcs), text))
         elif p.analysis == AnalysisKind.MODAL:
             checks.append(
                 (
@@ -395,17 +609,18 @@ class MainWindow(QMainWindow):
                 )
             )
         else:
-            has_ref = any(
-                ld.kind in (LoadKind.FACE_TEMPERATURE, LoadKind.CONVECTION) for ld in thermal_bcs
-            )
+            has_ref = any(ld.kind in TEMPERATURE_REFERENCES for ld in thermal_bcs)
             checks.append(
                 (
                     has_ref,
                     f"열 조건: {len(thermal_bcs)}개"
                     if has_ref
-                    else "4단계에서 '고정 온도'나 '대류 냉각'을 하나 이상 지정하세요",
+                    else "4단계에서 '고정 온도', '대류 냉각', '복사 냉각' 중 하나 이상을 지정하세요",
                 )
             )
+        excluded = excluded_by_hidden_parts(self.project)
+        if excluded:
+            checks.append((True, f"숨긴 부품에 지정된 {', '.join(excluded)}는 해석에서 제외합니다"))
         checks.append((True, "메시: 준비됨" if self.mesh else "메시: 해석할 때 자동으로 만듭니다"))
         return checks
 
@@ -417,7 +632,7 @@ class MainWindow(QMainWindow):
         panel: steps.MeshStep = self.panels[STEP_MESH]
         panel.set_busy(True)
         self._busy = True
-        project = self.project
+        project = active_project(self.project)
 
         def done(mesh):
             self._busy = False
@@ -439,11 +654,19 @@ class MainWindow(QMainWindow):
         if self.project is None or self._busy:
             return
         panel: steps.SolveStep = self.panels[STEP_SOLVE]
-        project, mesh = self.project, self.mesh
-        mats = standards.materials()
-        materials = {p.id: mats[p.material_id] for p in project.parts if p.visible}
+        project, mesh = active_project(self.project), self.mesh
+        mats = standards.project_materials(project)
+        materials = {p.id: mats[p.material_id] for p in project.parts}
         kind = project.analysis
         self._busy = True
+        log.info(
+            "solve %s: parts=%d fixtures=%d loads=%d mesh=%s",
+            kind.value,
+            len(project.parts),
+            len(project.fixtures),
+            len(project.loads),
+            project.mesh_quality,
+        )
         panel.set_progress(0.0, "시작")
 
         def job(progress):
@@ -457,21 +680,33 @@ class MainWindow(QMainWindow):
                 return m, solve_thermal(project, m, materials, progress)
             if kind == AnalysisKind.BUCKLING:
                 return m, solve_buckling(project, m, materials, project.n_modes, progress)
-            return m, solve_static(project, m, materials, progress)
+            return m, solve_cases(project, m, materials, progress)
 
         def done(value):
             self._busy = False
+            self.previous = self._key_numbers() or self.previous  # solved again unchanged
+            self._solved_quality = project.mesh_quality
             self.mesh, self.result = value
             self.materials = materials
-            if isinstance(self.result, ModalResult):
+            if isinstance(self.result, list):  # strength: one result per load case
+                pack = standards.effective_pack(project)
+                names = [c.name for c in project.cases]
+                self.case_results = [
+                    (name, r, summarize(with_case(project, i), r, pack))
+                    for i, (name, r) in enumerate(zip(names, self.result, strict=True))
+                ]
+                summaries = [s for _, _, s in self.case_results]
+                self.overview = compare_cases(names, summaries) if len(names) > 1 else None
+                chosen = self.overview.worst if self.overview else 0
+                self.result, self.summary = self.case_results[chosen][1:]
+                self.project.active_case = chosen
+            elif isinstance(self.result, ModalResult):
                 self.summary = summarize_modal(project, self.result)
             elif isinstance(self.result, ThermalResult):
                 self.summary = summarize_thermal(project, self.result, materials)
             elif isinstance(self.result, BucklingResult):
-                pack = standards.pack(project.standard)
+                pack = standards.effective_pack(project)
                 self.summary = summarize_buckling(project, self.result, pack)
-            else:
-                self.summary = summarize(project, self.result, standards.pack(project.standard))
             panel.set_progress(None, "")
             self._configure_result_panel()
             self._update_nav()
@@ -480,6 +715,7 @@ class MainWindow(QMainWindow):
         def failed(e):
             self._busy = False
             panel.set_progress(None, "")
+            log.warning("solve failed: %s: %s", type(e).__name__, e)
             self.warn(friendly_error(e))
 
         run_job(job, done, failed, lambda f, m: panel.set_progress(f, m))
@@ -512,9 +748,62 @@ class MainWindow(QMainWindow):
             panel.set_fields(fields)
             panel.set_modes(None)
             panel.animate.setChecked(False)
+        if self.case_results and len(self.case_results) > 1:
+            labels = [
+                f"{name} — {VERDICT_STYLE[s.verdict][0]} {s.governing_fos:.2f}"
+                + (" ◀ 가장 불리" if self.overview and i == self.overview.worst else "")
+                for i, (name, _, s) in enumerate(self.case_results)
+            ]
+            panel.set_cases(labels, self.project.active_case)
+        else:
+            panel.set_cases(None)
         has_shape = not isinstance(r, ThermalResult)
         panel.scale.setEnabled(has_shape)
         panel.animate.setEnabled(has_shape)
+
+    def _key_numbers(self) -> dict | None:
+        """What the last strength run came to, kept for the comparison line."""
+        s, p, r = self.summary, self.project, self.result
+        if s is None or not isinstance(s, Summary) or r is None:
+            return None
+        quality = self._solved_quality or p.mesh_quality
+        return {
+            "label": f"{steps.QUALITY_NAMES.get(quality, quality)} 메시, "
+            f"요소 {len(r.mesh.tets):,}개, 케이스 '{p.case.name}'",
+            "fos": s.governing_fos,
+            "disp": s.max_disp,
+            "stress": max(x.max_stress for x in s.parts),
+        }
+
+    def _comparison_line(self) -> str | None:
+        prev, s = self.previous, self.summary
+        if prev is None or not isinstance(s, Summary):
+            return None
+
+        def delta(a, b):
+            return f" ({(b - a) / a * 100:+.1f}%)" if a else ""
+
+        us = system_of(self.project)
+        stress = max(x.max_stress for x in s.parts)
+        text = (
+            f"<b>이전 해석과 비교</b> ({prev['label']}): 안전율 {prev['fos']:.2f} → "
+            f"<b>{s.governing_fos:.2f}</b>{delta(prev['fos'], s.governing_fos)}, 최대 응력 "
+            f"{fmt(us, 'stress', prev['stress'], ',.1f')} → {fmt(us, 'stress', stress, ',.1f')}"
+            f"{delta(prev['stress'], stress)}, 최대 변형 {fmt(us, 'length', prev['disp'])} → "
+            f"{fmt(us, 'length', s.max_disp)}{delta(prev['disp'], s.max_disp)}"
+        )
+        if prev["fos"] and abs(s.governing_fos - prev["fos"]) / prev["fos"] > 0.1:
+            text += ". 10% 넘게 달라졌으니 무엇이 바뀌었는지 확인하세요."
+        return text
+
+    def select_case(self, index: int) -> None:
+        """Result panel: show another load case of the last strength run."""
+        if not self.case_results or not 0 <= index < len(self.case_results):
+            return
+        _, self.result, self.summary = self.case_results[index]
+        self.project.active_case = index
+        self._configure_result_panel()
+        self.show_result()
 
     def _displacement(self) -> np.ndarray:
         r = self.result
@@ -559,7 +848,7 @@ class MainWindow(QMainWindow):
         if key in ("ffos", "life"):
             fatigue = self.summary.fatigue
             target = max(
-                standards.pack(self.project.standard).target(m) for m in r.materials.values()
+                standards.effective_pack(self.project).target(m) for m in r.materials.values()
             )
             if key == "ffos":
                 values = np.minimum(fatigue.safety_factor, 2 * target)
@@ -574,7 +863,7 @@ class MainWindow(QMainWindow):
             vm = r.von_mises
             return ResultField(vm, "응력 (MPa)", clim=(0.0, float(vm.max())), unit="MPa")
         if key == "fos":
-            pack = standards.pack(self.project.standard)
+            pack = standards.effective_pack(self.project)
             target = max(pack.target(m) for m in r.materials.values())
             # clip before display: quadratic interpolation between a capped 100 and a small
             # neighbour would otherwise undershoot and paint false red spots
@@ -616,12 +905,23 @@ class MainWindow(QMainWindow):
             panel.scale_note.setText(
                 f"변형을 {scale:,.0f}배 확대해서 보여줍니다. 회색 선은 변형 전 모양입니다."
             )
+        clip = None
+        section = panel.clip_fraction()
+        if section is not None:
+            axis, frac = section
+            lo, hi = self.mesh.nodes.min(axis=0), self.mesh.nodes.max(axis=0)
+            origin = (lo + hi) / 2
+            origin[axis] = lo[axis] + frac * (hi[axis] - lo[axis])
+            normal = np.zeros(3)
+            normal[axis] = -1.0  # keep the lower side, look at the cut face
+            clip = (normal, origin)
         self.viewer.show_result(
             self.mesh,
             self._displacement(),
             field,
             scale,
             symmetric=isinstance(self.result, (ModalResult, BucklingResult)),
+            clip=clip,
         )
         self._fill_summary(panel)
 
@@ -674,6 +974,15 @@ class MainWindow(QMainWindow):
             if r.heat_in:
                 lines.append(f"들어온 열 {r.heat_in:.3g} W · 빠져나간 열 {r.heat_out:.3g} W")
         else:
+            if self.overview is not None:
+                o = self.overview
+                lines.append(
+                    f"<b>{o.headline}</b> ({o.summaries[o.worst].headline}). "
+                    f"지금 보는 케이스: {self.project.case.name}"
+                )
+            comparison = self._comparison_line()
+            if comparison:
+                lines.append(comparison)
             for p in s.parts:
                 lines.append(
                     f"<b>{p.name}</b> ({p.material})<br>"
@@ -682,6 +991,12 @@ class MainWindow(QMainWindow):
                     f"&nbsp;최소 안전율 <b>{p.min_fos:.2f}</b> (권장 {p.target:.1f})"
                     f" · 최대 변형 {fmt(us, 'length', p.max_disp)}"
                 )
+                if p.hotspot_fos is not None:
+                    lines[-1] += (
+                        f"<br>&nbsp;특이점({p.singular_kind}) 제외: 응력 "
+                        f"{fmt(us, 'stress', p.hotspot_stress, ',.1f')}, 안전율 "
+                        f"<b>{p.hotspot_fos:.2f}</b>"
+                    )
                 if p.fatigue_fos is not None:
                     life = "무한" if p.fatigue_life >= 1e9 else f"{p.fatigue_life:,.0f}회"
                     lines[-1] += (
@@ -715,8 +1030,31 @@ class MainWindow(QMainWindow):
         if not path:
             return
         images = self.capture_result_images()
-        write_pdf(build_html(self.project, self.result, self.summary, images, self.materials), path)
+        html_text = build_html(
+            self.project, self.result, self.summary, images, self.materials, self.overview
+        )
+        write_pdf(html_text, path)
         self.statusBar().showMessage(f"보고서를 저장했습니다: {path}")
+
+    def export_result(self) -> None:
+        if self.result is None:
+            return
+        from kstruct.report.export import export_csv, export_vtu
+
+        stem = self.project.source_path.stem if self.project.source_path else "kstruct"
+        path, chosen = QFileDialog.getSaveFileName(
+            self,
+            "결과 내보내기",
+            f"{stem}_결과.csv",
+            "CSV 표 (*.csv);;VTK 파일, ParaView용 (*.vtu)",
+        )
+        if not path:
+            return
+        if "vtu" in chosen or path.lower().endswith(".vtu"):
+            out = export_vtu(path, self.project, self.result, self.summary)
+        else:
+            out = export_csv(path, self.project, self.result, self.summary)
+        self.statusBar().showMessage(f"결과를 내보냈습니다: {out}")
 
     def capture_result_images(self) -> list[tuple[str, bytes]]:
         """Render the main result fields to PNG for the report, then restore the view."""
@@ -759,6 +1097,16 @@ class MainWindow(QMainWindow):
                 self.mesh, self._displacement(), field, self.deformation_scale("auto")
             )
             images.append((caption, _png(self.viewer.plotter.screenshot(return_img=True))))
+        section = panel.clip_fraction()
+        if section is not None:  # the cut the user is looking at goes into the report too
+            self.show_result()
+            name = "XYZ"[section[0]]
+            images.append(
+                (
+                    f"단면 ({name} 방향 {section[1] * 100:.0f}% 위치)",
+                    _png(self.viewer.plotter.screenshot(return_img=True)),
+                )
+            )
         panel.mode.blockSignals(True)
         panel.mode.setCurrentIndex(current_mode)
         panel.mode.blockSignals(False)
