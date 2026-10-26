@@ -20,6 +20,7 @@ P0 중 코드로 해결되는 항목은 구현했습니다. 아래 표의 "상�
 | P0-9 권장 안전율 조정 | ✅ 구현 | `Project.target_overrides`, `standards.effective_pack`, 6단계 "권장 안전율" |
 | P0-10 접촉→접합 고지 | ✅ 구현 | `summary._contact_note` |
 | P0-11 하중 입력값 보존 | ✅ 구현 | `LoadStep._kind_changed(reset=)` |
+| P1-12 메시를 프로젝트 파일에 저장 | ✅ 구현 | `project_io.save_project(…, mesh)`가 `mesh.npz` + 유효성 키(형상 brep 해시·메시 등급·세분화)를 저장, `load_project_mesh`가 키가 맞을 때만 재사용 |
 | P1-9 최근 파일·자동 저장·창 설정 저장 | ✅ 구현(실행 취소 제외) | `ui/prefs.py`(데이터 폴더의 prefs.json: 최근 파일 8개, 마지막 폴더, 창 위치·분할 크기), 3분 주기 자동 저장 `autosave.kst` + 시작 시 복구 제안, 저장하지 않은 변경이 있으면 닫을 때 확인. 실행 취소는 미구현 |
 | P1-10 STEP 부품 이름·어셈블리 구조 | ✅ 구현 | `geometry.step_import.read_named_solids`(XCAF, 어셈블리 평탄화 + 배치 적용, UTF-8 이름 복원, 중복 이름 번호 부여), 이름 없으면 기존 방식으로 대체 |
 | P1-6 피로 세부 계수 | ✅ 구현 | `fem.fatigue.FatigueSettings`(Marin 표면 계수 a·Su^b 4종, 신뢰도 계수 5단계, 크기 계수), 6단계 표면 상태·신뢰도 선택, 결과 노트에 사용한 계수 표기, 프로젝트 파일 저장 |
@@ -96,7 +97,7 @@ B1에서 읽을 것:
 | 결과 표시(컬러맵·변형·애니메이션·프로브·단면 보기·CSV/VTU 내보내기·이전 해석 비교) | ✅ | `ui/viewer.py`, `report/export.py` / `test_results_tools.py` | 벡터(주응력 방향) 표시, 두 결과의 장별 비교 없음 |
 | 판정 카드·쉬운 설명·주의 문구 | ✅ | `report/summary.py` | 판정은 최대점 1개 기준(특이점 포함) |
 | PDF 보고서 4종 | ✅ | `report/pdf.py` / `test_ui.py` | §4 결함, 소프트웨어 버전·메시 등급·단위계 미기재 |
-| 프로젝트 저장/열기(.kst = zip: json + brep) | ✅ | `project_io.py` / `test_project_io.py` | 메시·결과는 저장 안 함(재해석 필요). 호환성 버전 체크 있음 |
+| 프로젝트 저장/열기(.kst = zip: json + brep + 메시) | ✅ | `project_io.py` / `test_project_io.py` | 결과는 저장 안 함(재해석 필요). 호환성 버전 체크 있음 |
 | 표시 단위 SI/US | ✅ | `units.py` / `test_units.py`, `test_us_units_input_and_results` | 보고서는 일부만 변환(§4 D2) |
 | 도움말(전 요소 `?`) | ✅ | `resources/help/ko.json`, `test_every_help_key_used_in_code_exists` | 한국어만, 언어 전환 구조 없음(`help.py:36`) |
 | 백그라운드 메싱(프로세스, 타임아웃·재시도)·해석(스레드) | ✅ | `fem/mesh.py`, `ui/worker.py` | 취소 버튼 없음, 예상 시간 없음 |

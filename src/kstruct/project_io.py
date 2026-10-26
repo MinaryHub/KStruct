@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import tempfile
 import zipfile
 from pathlib import Path
 
+import numpy as np
 from OCP.BRep import BRep_Builder
 from OCP.BRepTools import BRepTools
 from OCP.TopoDS import TopoDS_Shape
@@ -44,7 +47,23 @@ def _unrefs(data: list[list[int]]) -> list[FaceRef]:
     return [FaceRef(int(p), int(f)) for p, f in data]
 
 
-def save_project(project: Project, path: str | Path) -> Path:
+def mesh_key(project: Project, brep_bytes: dict[int, bytes]) -> str:
+    """Identifies the mesh a project state would produce: visible part geometry, mesh
+    preset and refinements. A stored mesh is only reused when the key still matches."""
+    h = hashlib.sha256()
+    h.update(project.mesh_quality.encode())
+    for r in project.mesh_refinements:
+        h.update(json.dumps([_refs(r.faces), r.size]).encode())
+    for p in project.parts:
+        if p.visible:
+            h.update(f"{p.id}:".encode())
+            h.update(hashlib.sha256(brep_bytes[p.id]).digest())
+    return h.hexdigest()
+
+
+def save_project(project: Project, path: str | Path, mesh=None) -> Path:
+    """Write the .kst file; with `mesh` (fem.mesh.FEMesh) the mesh is stored too so the
+    file reopens without meshing again."""
     path = Path(path)
     doc = {
         "format": "kstruct",
@@ -114,11 +133,57 @@ def save_project(project: Project, path: str | Path) -> Path:
         zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z,
     ):
         z.writestr("project.json", json.dumps(doc, ensure_ascii=False, indent=2))
+        brep_bytes = {}
         for p in project.parts:
             brep = Path(tmp) / f"part{p.id}.brep"
             BRepTools.Write_s(p.shape, str(brep))
-            z.write(brep, f"parts/{p.id}.brep")
+            brep_bytes[p.id] = brep.read_bytes()
+            z.writestr(f"parts/{p.id}.brep", brep_bytes[p.id])
+        if mesh is not None:
+            buffer = io.BytesIO()
+            np.savez_compressed(
+                buffer,
+                nodes=mesh.nodes,
+                tets=mesh.tets,
+                tet_part=mesh.tet_part,
+                tris=mesh.tris,
+                tri_part=mesh.tri_part,
+                tri_face=mesh.tri_face,
+            )
+            z.writestr("mesh.npz", buffer.getvalue())
+            z.writestr(
+                "mesh.json",
+                json.dumps({"key": mesh_key(project, brep_bytes), "notes": list(mesh.notes)}),
+            )
     return path
+
+
+def load_project_mesh(path: str | Path, project: Project):
+    """The mesh stored in the file, or None when there is none or the project's geometry
+    / mesh settings no longer match it."""
+    from kstruct.fem.mesh import FEMesh
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            if "mesh.npz" not in names or "mesh.json" not in names:
+                return None
+            meta = json.loads(z.read("mesh.json"))
+            brep_bytes = {p.id: z.read(f"parts/{p.id}.brep") for p in project.parts if p.visible}
+            if meta.get("key") != mesh_key(project, brep_bytes):
+                return None
+            data = np.load(io.BytesIO(z.read("mesh.npz")))
+            return FEMesh(
+                nodes=data["nodes"],
+                tets=data["tets"],
+                tet_part=data["tet_part"],
+                tris=data["tris"],
+                tri_part=data["tri_part"],
+                tri_face=data["tri_face"],
+                notes=list(meta.get("notes", [])),
+            )
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        return None
 
 
 def load_project(path: str | Path) -> Project:

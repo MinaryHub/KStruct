@@ -47,7 +47,13 @@ from kstruct.model import (
     excluded_by_hidden_parts,
     with_case,
 )
-from kstruct.project_io import SUFFIX, ProjectFileError, load_project, save_project
+from kstruct.project_io import (
+    SUFFIX,
+    ProjectFileError,
+    load_project,
+    load_project_mesh,
+    save_project,
+)
 from kstruct.report.summary import (
     VERDICT_STYLE,
     CaseOverview,
@@ -491,9 +497,11 @@ class MainWindow(QMainWindow):
             self.warn(f"프로젝트 파일이 손상되었습니다: {e}")
             return
         self._set_project(project, path)
+        self.mesh = load_project_mesh(path, project)
         self._dirty = False
         prefs.remember_file(path)
-        self.statusBar().showMessage(f"{path.name} 프로젝트를 열었습니다.")
+        extra = " (저장된 메시 포함)" if self.mesh is not None else ""
+        self.statusBar().showMessage(f"{path.name} 프로젝트를 열었습니다.{extra}")
 
     def save_project(self) -> None:
         if self.project is None:
@@ -507,7 +515,7 @@ class MainWindow(QMainWindow):
             if not chosen:
                 return
             path = Path(chosen).with_suffix(SUFFIX)
-        save_project(self.project, path)
+        save_project(self.project, path, self.mesh)
         self.project_path = path
         self._dirty = False
         prefs.clear_autosave()
