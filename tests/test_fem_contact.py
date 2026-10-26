@@ -86,3 +86,47 @@ def test_lap_joint_opens_on_one_side():
     mesh, r = _solve(project)
     closed, total = r.contact[0]
     assert 0 < closed < total
+
+
+def test_contact_solver_reuses_the_factorization():
+    """The active-set loop must not refactorize on every iteration: a lap joint that opens
+    on one side settles in a few iterations with at most two factorizations."""
+    from kstruct.fem.assembly import make_solver, rigid_body_modes, stiffness_matrix
+    from kstruct.fem.constraints import build_constraints
+    from kstruct.fem.contact import ContactSolver, build_contact
+    from kstruct.fem.static import _load_vector
+    from kstruct.model import ConnectionKind
+
+    project = _stack(ConnectionKind.CONTACT, -500.0)
+    # pull one corner so part of the interface opens (several active-set changes)
+    project.loads[0].vector = (0, 0, 500.0)
+    mesh = generate_mesh(project, "coarse")
+    materials = {0: STEEL, 1: STEEL}
+    c = build_constraints(project, mesh, contacts_as_bonded=False)
+    contacts = [build_contact(mesh, x) for x in project.connections]
+    K = stiffness_matrix(mesh, materials)
+    scale = K.diagonal().max()
+    Kp = K + c.penalty_matrix(mesh.n_nodes * 3, scale)
+    free = np.flatnonzero(~c.fixed)
+    near_null = rigid_body_modes(mesh.nodes)[free]
+    f = _load_vector(project, mesh, materials)
+    solver = ContactSolver(Kp, free, contacts, lambda A: make_solver(A.tocsr(), near_null), scale)
+    u, K_c = solver.solve(f)
+    assert contacts[0].active.sum() < len(contacts[0].active)  # the interface opened
+    rhs = f[free] + solver._penalty()[1]
+    direct = make_solver(K_c.tocsr(), near_null)(rhs)
+    assert np.abs(u[free] - direct).max() < 1e-6 * np.abs(direct).max()
+    # small systems refactorize because that is cheaper; pretend factorizing is expensive
+    # (as for a large model) and change the load: the loop must then reuse the old
+    # factorization through a low-rank update and still return an exact solution
+    before = solver.factorizations
+    solver._t_factorize = 1e9
+    project.loads[0].vector = (0, 0, -500.0)
+    u2, K_c2 = solver.solve(_load_vector(project, mesh, materials))
+    assert solver.factorizations == before and solver.updates >= 1
+    assert contacts[0].active.all()  # pressed together again
+    # as accurate as a fresh factorization (the raw residual is not a usable measure:
+    # the penalty rows amplify round-off far beyond what the displacements need)
+    rhs = _load_vector(project, mesh, materials)[free] + solver._penalty()[1]
+    direct = make_solver(K_c2.tocsr(), near_null)(rhs)
+    assert np.abs(u2[free] - direct).max() < 1e-6 * np.abs(direct).max()
