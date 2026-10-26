@@ -99,6 +99,8 @@ def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if args:
         window.load(Path(args[0]))
+    elif window.offer_recovery():
+        pass
     sys.exit(app.exec())
 
 

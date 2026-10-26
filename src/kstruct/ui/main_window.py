@@ -9,7 +9,7 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -17,11 +17,13 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSplitter,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -56,7 +58,7 @@ from kstruct.report.summary import (
     summarize_modal,
     summarize_thermal,
 )
-from kstruct.ui import steps
+from kstruct.ui import prefs, steps
 from kstruct.ui.dialogs import AboutDialog, save_bug_report
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 from kstruct.ui.viewer import ModelViewer, ResultField
@@ -133,6 +135,9 @@ class MainWindow(QMainWindow):
         # key numbers of the previous strength run, for the "compared with last time" line
         self.previous: dict | None = None
         self._solved_quality: str | None = None  # mesh preset the current result used
+        self._dirty = False  # unsaved changes (drives autosave and the close prompt)
+        self.ask_before_close = True  # tests switch the "save changes?" prompt off
+        self._sample_files: set[Path] = set()
         self.materials: dict = {}
         self._busy = False
 
@@ -159,6 +164,11 @@ class MainWindow(QMainWindow):
         splitter.setSizes([380, 1060])
         self.setCentralWidget(splitter)
         self._build_toolbar()
+        self._restore_window_state(splitter)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(prefs.AUTOSAVE_MINUTES * 60 * 1000)
+        self._autosave_timer.timeout.connect(self._autosave)
+        self._autosave_timer.start()
         self._go(STEP_OPEN)
         self.statusBar().showMessage("'파일 열기'로 STEP 파일을 불러오거나 예제를 눌러 보세요.")
 
@@ -213,6 +223,14 @@ class MainWindow(QMainWindow):
         action("모델 열기", self.open_file, "step.open", QKeySequence.StandardKey.Open)
         action("프로젝트 열기", self.open_project, "project.open")
         action("프로젝트 저장", self.save_project, "project.save", QKeySequence.StandardKey.Save)
+        self.recent_button = QToolButton()
+        self.recent_button.setText("최근 파일")
+        self.recent_button.setToolTip(topic("project.recent").short)
+        self.recent_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.recent_menu = QMenu(self.recent_button)
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        self.recent_button.setMenu(self.recent_menu)
+        bar.addWidget(self.recent_button)
         bar.addWidget(HelpButton("project.save"))
         bar.addSeparator()
         action("화면 맞춤", self.viewer.fit, "view.fit", "F")
@@ -221,6 +239,96 @@ class MainWindow(QMainWindow):
         action("사용 안내", lambda: HelpDialog("help.mode", self).exec(), "help.mode", "F1")
         action("문제 보고", self.report_problem, "help.report")
         action("정보", lambda: AboutDialog(self).exec(), "help.about")
+
+    def _fill_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        files = prefs.recent_files()
+        if not files:
+            self.recent_menu.addAction("(최근에 연 파일이 없습니다)").setEnabled(False)
+        for path in files:
+            self.recent_menu.addAction(path.name, lambda p=path: self.load(p)).setToolTip(str(path))
+
+    def _restore_window_state(self, splitter: QSplitter) -> None:
+        geometry, sizes = prefs.window_state()
+        if geometry:
+            self.restoreGeometry(geometry)
+        if sizes and len(sizes) == 2:
+            splitter.setSizes(sizes)
+        self._splitter = splitter
+
+    def _save_window_state(self) -> None:
+        prefs.set_window_state(bytes(self.saveGeometry().data()), self._splitter.sizes())
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if self.project is not None and self._dirty and self.ask_before_close:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("저장하지 않은 변경")
+            box.setText("저장하지 않은 변경이 있습니다. 프로젝트를 저장할까요?")
+            save = box.addButton("저장", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("저장 안 함", QMessageBox.ButtonRole.DestructiveRole)
+            cancel = box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is cancel:
+                event.ignore()
+                return
+            if box.clickedButton() is save:
+                self.save_project()
+                if self._dirty:  # the save dialog was cancelled
+                    event.ignore()
+                    return
+        self._autosave_timer.stop()
+        prefs.clear_autosave()
+        self._save_window_state()
+        super().closeEvent(event)
+
+    # --- autosave / recovery ----------------------------------------------------------
+
+    def _autosave(self) -> None:
+        if self.project is None or not self._dirty or self._busy:
+            return
+        try:
+            prefs.write_autosave(self.project, self.project_path or self.project.source_path)
+            log.info("autosaved")
+        except Exception:  # never let the timer kill the app
+            log.exception("autosave failed")
+
+    def offer_recovery(self) -> bool:
+        """At start-up: load the autosave left by an unclean exit if the user wants it."""
+        pending = prefs.pending_autosave()
+        if pending is None:
+            return False
+        source = pending["source"] or "이름 없는 프로젝트"
+        when = pending["time"][:16].replace("T", " ")
+        answer = QMessageBox.question(
+            self,
+            "작업 복구",
+            f"지난번에 저장하지 않은 작업이 있습니다({when}, {source}).\n복구할까요?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            prefs.clear_autosave()
+            return False
+        return self.recover()
+
+    def recover(self) -> bool:
+        pending = prefs.pending_autosave()
+        if pending is None:
+            return False
+        try:
+            project = load_project(pending["path"])
+        except (ProjectFileError, KeyError, ValueError) as e:
+            self.warn(f"복구 파일을 읽을 수 없습니다: {e}")
+            prefs.clear_autosave()
+            return False
+        source = Path(pending["source"]) if pending["source"] else None
+        self._set_project(project, source if source and source.suffix.lower() == SUFFIX else None)
+        if source and source.suffix.lower() != SUFFIX:
+            project.source_path = source
+        self._dirty = True
+        self.statusBar().showMessage(
+            "저장하지 않았던 작업을 복구했습니다. 프로젝트를 저장해 두세요."
+        )
+        return True
 
     def install_crash_dialog(self) -> None:
         """Unhandled exceptions in Qt slots: log (paths.install_excepthook) and tell the user
@@ -326,6 +434,8 @@ class MainWindow(QMainWindow):
         if self.project is not None and not self._confirm("지금 작업을 지우고 새로 시작할까요?"):
             return
         self.project = None
+        self.project_path = None
+        self._dirty = False
         self.mesh = self.result = self.summary = None
         self.case_results = self.overview = None
         self.previous = None
@@ -336,12 +446,13 @@ class MainWindow(QMainWindow):
         self._update_nav()
 
     def open_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "모델 열기", "", CAD_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, "모델 열기", prefs.last_dir(), CAD_FILTER)
         if path:
             self.load(Path(path))
 
     def open_sample(self, name: str) -> None:
         path = write_step(SAMPLES[name](), Path(tempfile.gettempdir()) / f"kstruct_{name}.step")
+        self._sample_files.add(path)
         self.load(path)
 
     def load(self, path: Path) -> None:
@@ -358,10 +469,15 @@ class MainWindow(QMainWindow):
         self._set_project(project)
         if len(project.parts) > 1:
             self.detect_connections(quiet=True)
+        self._dirty = True  # a fresh import has no project file yet
+        if path not in self._sample_files:  # built-in samples are not "recent files"
+            prefs.remember_file(path)
         self.statusBar().showMessage(f"{path.name}: 부품 {len(project.parts)}개를 불러왔습니다.")
 
     def open_project(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", "", PROJECT_FILTER)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "프로젝트 열기", prefs.last_dir(), PROJECT_FILTER
+        )
         if path:
             self._load_project_file(Path(path))
 
@@ -375,6 +491,8 @@ class MainWindow(QMainWindow):
             self.warn(f"프로젝트 파일이 손상되었습니다: {e}")
             return
         self._set_project(project, path)
+        self._dirty = False
+        prefs.remember_file(path)
         self.statusBar().showMessage(f"{path.name} 프로젝트를 열었습니다.")
 
     def save_project(self) -> None:
@@ -384,12 +502,16 @@ class MainWindow(QMainWindow):
         if path is None:
             source = self.project.source_path
             default = source.with_suffix(SUFFIX).name if source else ""
-            chosen, _ = QFileDialog.getSaveFileName(self, "프로젝트 저장", default, PROJECT_FILTER)
+            start = str(Path(prefs.last_dir() or ".") / default) if default else prefs.last_dir()
+            chosen, _ = QFileDialog.getSaveFileName(self, "프로젝트 저장", start, PROJECT_FILTER)
             if not chosen:
                 return
             path = Path(chosen).with_suffix(SUFFIX)
         save_project(self.project, path)
         self.project_path = path
+        self._dirty = False
+        prefs.clear_autosave()
+        prefs.remember_file(path)
         self.statusBar().showMessage(f"{path.name}에 저장했습니다.")
 
     def detect_connections(self, quiet: bool = False) -> None:
@@ -405,6 +527,7 @@ class MainWindow(QMainWindow):
     # --- changes ---------------------------------------------------------------------
 
     def invalidate_mesh(self) -> None:
+        self._dirty = True
         self.mesh = None
         self._invalidate_result()
 
@@ -416,6 +539,7 @@ class MainWindow(QMainWindow):
         self._update_nav()
 
     def _project_changed(self) -> None:
+        self._dirty = True
         self._invalidate_result()
         self._annotate()
 

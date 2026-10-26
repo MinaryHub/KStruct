@@ -49,6 +49,7 @@ CI(`.github/workflows/build.yml`)가 Windows/macOS/Linux에서 테스트 → PyI
 - **하중 케이스**: `Project.cases`(`LoadCase`) + `active_case`. `project.loads`는 활성 케이스의 리스트(프로퍼티)라 기존 코드가 그대로 동작하고, 강도 해석은 `solve_cases`가 `with_case(project, i)`(얕은 뷰, 복사 없음)로 모든 케이스를 푼다. UI는 `case_results`에 케이스별 (이름, 결과, 요약)을 들고 `select_case`로 바꿔 보여주며, 열·좌굴은 활성 케이스만 쓴다. 프로젝트 파일 v2는 `cases`를 저장하고 v1의 평면 `loads`도 읽는다.
 - **회전 하중**(`fem/loads.py`): 토크는 선택 면에 반지름에 비례하는 접선 트랙션(합 모멘트 = T 정확), 베어링 하중은 구멍 원통면의 하중 방향 절반에 코사인 분포(합력 = F가 되도록 잔차를 보정), 원심력은 ρω²r 체적력. 축은 `Load.point` + `vector`(토크·원심력, 없으면 선택 원통면의 축), 베어링은 항상 원통면 축. 내부 단위 N·mm, rad/s이며 표시는 `units`의 `torque`(N·m / lbf·in)·`speed`(rpm).
 - **조건 문구**: 고정·하중·연결 설명은 `report/describe.py` 한 곳에서 만들어 패널과 PDF가 같은 문장을 쓴다. 보고서 수치는 모두 `units.fmt`를 거친다.
+- **환경설정·자동 저장**(`ui/prefs.py`): 데이터 폴더의 `prefs.json`(최근 파일, 마지막 폴더, 창 geometry·splitter)과 `autosave.kst`(+`.json` 메타). `MainWindow._dirty`가 변경을 추적해 3분마다 자동 저장하고, 시작 시 `offer_recovery()`가 복구를 묻는다. `closeEvent`는 dirty면 저장 여부를 묻는데 **테스트에서는 `window.ask_before_close = False`**로 꺼야 한다(pytest-qt가 teardown에서 창을 닫을 때 모달이 떠서 멈춤). 예제 파일은 최근 목록에 넣지 않는다.
 - **로그·진단**(`paths.py`): `setup_logging()`이 사용자 데이터 폴더(`KSTRUCT_DATA_DIR`로 재지정 가능)에 회전 로그를 쓰고, `install_excepthook` + `MainWindow.install_crash_dialog`가 처리되지 않은 예외를 로그·대화상자로 보낸다. "문제 보고"는 로그+환경+.kst를 zip으로 묶는다(`ui/dialogs.py`). 버전은 `kstruct.__version__` 하나이며 pyproject와 일치하는지 테스트가 확인한다.
 
 ## OCP(cadquery-ocp 8.x, OCCT 8) 주의

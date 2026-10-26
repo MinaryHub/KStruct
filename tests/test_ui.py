@@ -37,6 +37,7 @@ def _window(qtbot):
     from kstruct.ui.main_window import MainWindow
 
     window = MainWindow()
+    window.ask_before_close = False  # teardown closes the window: no modal prompt
     qtbot.addWidget(window)
     window.show()
     return window
@@ -550,3 +551,38 @@ def test_section_view_and_previous_comparison(qtbot, tmp_path):
     qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
     assert window.previous is not None and window.previous["fos"] == pytest.approx(first)
     assert "이전 해석과 비교" in panel.summary.text() and "거침 메시" in panel.summary.text()
+
+
+def test_recent_files_autosave_and_recovery(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setenv("KSTRUCT_DATA_DIR", str(tmp_path / "data"))
+    from kstruct.geometry.samples import l_bracket, write_step
+    from kstruct.ui import prefs
+
+    assert prefs.recent_files() == [] and prefs.pending_autosave() is None
+    model = write_step(l_bracket(), tmp_path / "my_bracket.step")
+    window = _window(qtbot)
+    window.load(model)
+    assert prefs.recent_files() == [model] and prefs.last_dir() == str(tmp_path)
+    assert window._dirty  # imported, not yet saved anywhere
+    window.project.parts[0].material_id = "s235"
+    window._autosave()
+    pending = prefs.pending_autosave()
+    assert pending is not None and pending["source"] == str(model)
+    # a new window recovers the autosaved work
+    other = _window(qtbot)
+    assert other.recover()
+    assert other.project is not None and other.project.parts[0].material_id == "s235"
+    assert other.project.source_path == model and other._dirty
+    # saving the project clears the autosave and remembers the .kst
+    kst = tmp_path / "saved.kst"
+    other.project_path = kst
+    other.save_project()
+    assert kst.is_file() and not other._dirty and prefs.pending_autosave() is None
+    assert prefs.recent_files()[0] == kst
+    # window layout round trip
+    other._save_window_state()
+    geometry, sizes = prefs.window_state()
+    assert geometry and sizes and len(sizes) == 2
+    # the recent menu lists the files
+    other._fill_recent_menu()
+    assert [a.text() for a in other.recent_menu.actions()] == ["saved.kst", "my_bracket.step"]
