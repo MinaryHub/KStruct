@@ -39,6 +39,7 @@ CI(`.github/workflows/build.yml`)가 Windows/macOS/Linux에서 테스트 → PyI
 - **기준 팩/재료**: `resources/standards.json`, `resources/materials.json`. 국가별 명칭·권장 안전율(좌굴 하중 배수 포함)은 데이터로만 추가한다. 계산 코드에 국가 기준을 하드코딩하지 말 것. 볼트 규격·등급은 `resources/bolts.json`.
 - **도움말**: 모든 UI 요소는 `resources/help/ko.json`의 키를 참조(`HelpButton`, `with_help`, `topic(key).short`). `tests/test_ui.py`가 UI 코드에 쓰인 키가 JSON에 다 있는지 검사하므로 새 접두어를 쓰면 그 테스트의 `PREFIXES`도 갱신.
 - **UI**: `ui/main_window.py`가 Project·mesh·result를 소유하고, `ui/steps.py`의 7개 패널이 이를 편집해 `changed`를 보낸다. 메싱·해석은 `ui/worker.run_job`으로 백그라운드 실행. 결과 종류(Static/Modal/Thermal)에 따라 결과 패널 필드가 바뀐다.
+- **단면·내보내기**: 뷰어는 평소 TRI6 겉면만 그리지만 단면 보기는 `viewer.linear_volume_grid`(TET10을 선형 사면체 8개로 분할; VTK clip은 비선형 셀을 못 다룸)를 잘라 보여준다. VTU 내보내기는 `volume_grid`(VTK 2차 사면체, 중간 절점 순서 `_TET10_TO_VTK`로 재배열 — Netgen과 VTK의 중간 절점 순서가 다르다). 결과 열 정의는 `report/export.py.result_columns` 한 곳.
 - **3D 텍스트 한글**: VTK 기본 글꼴에 한글이 없어 색 막대에 번들 Noto Sans KR(OFL)을 지정한다(`viewer._use_korean_font`).
 - **결과 표시 주의**: 2차 요소 보간이 범위를 벗어나 거짓 색을 만들 수 있어 안전율 같은 잘린 값은 표시 전에 clim으로 자른다.
 - **응력 특이점**(`fem/singularity.py`): 필렛 없는 오목 모서리(경계 삼각형 쌍의 이면각으로 판정)와 완전 고정면 가장자리 절점을 표시하고, 그 주변(요소 1.5개 또는 부품 대각선 3% 중 큰 값)을 제외한 "특이점 제외(핫스팟)" 응력·안전율을 `report.summary`가 함께 보고한다. 연성재 판정은 핫스팟 값(`PartSummary.governing_fos`), 취성재는 최대값 기준. 예제 브래킷의 판정이 메시 등급과 무관하게 같아야 한다(`tests/test_improvements.py`).

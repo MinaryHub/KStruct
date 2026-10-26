@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -985,6 +986,7 @@ class LoadStep(_FaceListStep):
 # --- 5. mesh --------------------------------------------------------------------------
 
 
+QUALITY_NAMES = {"coarse": "거침", "normal": "보통", "fine": "세밀", "very_fine": "매우 세밀"}
 QUALITY_LABELS = [
     ("coarse", "거침 (빠름, 대략적인 결과)"),
     ("normal", "보통 (권장)"),
@@ -1341,6 +1343,20 @@ class ResultStep(StepPanel):
         self.animate = QCheckBox("움직임 보기 (애니메이션)")
         self.animate.toggled.connect(app.viewer.set_animated)
         form.addRow("", self.animate)
+        self.clip = QCheckBox("단면 보기 (안쪽 값)")
+        self.clip.toggled.connect(self._clip_changed)
+        self.clip_axis = QComboBox()
+        for label in ("X 방향으로 자르기", "Y 방향으로 자르기", "Z 방향으로 자르기"):
+            self.clip_axis.addItem(label)
+        self.clip_axis.currentIndexChanged.connect(lambda _i: app.show_result())
+        self.clip_pos = QSlider(Qt.Orientation.Horizontal)
+        self.clip_pos.setRange(1, 99)
+        self.clip_pos.setValue(50)
+        self.clip_pos.valueChanged.connect(lambda _v: app.show_result())
+        form.addRow("", with_help(self.clip, "result.clip"))
+        self.clip_row = _row(self.clip_axis, self.clip_pos)
+        form.addRow("", self.clip_row)
+        self.clip_row.setVisible(False)
         box = QWidget()
         box.setLayout(form)
         self.add(box)
@@ -1357,6 +1373,10 @@ class ResultStep(StepPanel):
         report.clicked.connect(app.save_report)
         buttons.addWidget(report)
         buttons.addWidget(HelpButton("result.report"))
+        export = QPushButton("결과 내보내기…")
+        export.clicked.connect(app.export_result)
+        buttons.addWidget(export)
+        buttons.addWidget(HelpButton("result.export"))
         b = QWidget()
         b.setLayout(buttons)
         self.add(b)
@@ -1401,6 +1421,19 @@ class ResultStep(StepPanel):
             self.mode.addItem(text, i)
         self.mode.setCurrentIndex(min(current, len(frequencies) - 1))
         self.mode.blockSignals(False)
+
+    def _clip_changed(self, on: bool) -> None:
+        self.clip_row.setVisible(on)
+        self.animate.setEnabled(not on)
+        if on:
+            self.animate.setChecked(False)
+        self.app.show_result()
+
+    def clip_fraction(self) -> tuple[int, float] | None:
+        """(axis index, 0..1 position along it) when the section view is on."""
+        if not self.clip.isChecked():
+            return None
+        return self.clip_axis.currentIndex(), self.clip_pos.value() / 100.0
 
     def field_key(self) -> str:
         return self.field.currentData()

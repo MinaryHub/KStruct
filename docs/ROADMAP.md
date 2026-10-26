@@ -20,6 +20,7 @@ P0 중 코드로 해결되는 항목은 구현했습니다. 아래 표의 "상�
 | P0-9 권장 안전율 조정 | ✅ 구현 | `Project.target_overrides`, `standards.effective_pack`, 6단계 "권장 안전율" |
 | P0-10 접촉→접합 고지 | ✅ 구현 | `summary._contact_note` |
 | P0-11 하중 입력값 보존 | ✅ 구현 | `LoadStep._kind_changed(reset=)` |
+| P1-4 결과 단면 보기·내보내기·이전 해석과 비교 | ✅ 구현 | `viewer.section_surface`(TET10→선형 8분할 후 clip), 결과 패널 "단면 보기"(축·위치, 보고서에 단면 그림 포함), `report/export.py`(CSV·VTU, 표시 단위), `MainWindow._comparison_line`(직전 강도 해석의 안전율·응력·변형과 비교, 10 % 넘게 달라지면 안내) |
 | P1-3 국부 메시 세분화·두께 기반 크기·프리셋 재조정 | ✅ 구현 | `geometry/thickness.py`(면별 벽 두께, 자체 레이 캐스팅), `fem/mesh.py`(`MeshPreset` 분할수·grading·두께 방향 요소 수, `face_sizes`, Netgen 면별 maxh), `MeshRefinement`·5단계 면 선택 UI. 예제 브래킷 요소 수: 거침 3.3k / 보통 6.5k / 세밀 18k / 매우 세밀 ≈40k (이전 3.1k / 3.2k / 4.7k / 17k) |
 | P1-2 다중 하중 케이스 | ✅ 구현 | `LoadCase`, `Project.cases/active_case`(`loads`는 활성 케이스), `fem.static.solve_cases`, `summary.compare_cases`, 결과 패널 케이스 선택, 보고서 비교표, 파일 형식 v2(구 파일 호환). 열·좌굴은 활성 케이스만 사용 |
 | P1-1 토크·베어링 하중·원심력 | ✅ 구현 | `fem/loads.py`, `LoadKind.TORQUE/BEARING/CENTRIFUGAL`, `Load.point`, 단위 `torque`/`speed`, 이론해 테스트 `tests/test_fem_loads.py`(원형축 비틀림 응력·비틀림각, 회전 막대 원심 응력·반력, 베어링 하중 합력) |
@@ -89,7 +90,7 @@ B1에서 읽을 것:
 | 피로(Goodman + Basquin) | ✅ | `fem/fatigue.py` / `test_fatigue.py` | 고주기만, 표면·크기 계수 고정 0.7(`fatigue.py:22`), 노치 계수·다축·레인플로 없음 |
 | 모달(고유진동수, 유효질량, 공진 판정) | ✅ | `fem/modal.py` | 예응력·감쇠·조화 응답 없음 |
 | 선형 좌굴 | ✅ | `fem/buckling.py` / Euler 3% | 비선형 좌굴·초기 결함 없음 |
-| 결과 표시(컬러맵·변형·애니메이션·프로브) | ✅ | `ui/viewer.py` | 단면(절단) 보기, 벡터 표시, 결과 내보내기(CSV/VTK), 두 결과 비교 없음 |
+| 결과 표시(컬러맵·변형·애니메이션·프로브·단면 보기·CSV/VTU 내보내기·이전 해석 비교) | ✅ | `ui/viewer.py`, `report/export.py` / `test_results_tools.py` | 벡터(주응력 방향) 표시, 두 결과의 장별 비교 없음 |
 | 판정 카드·쉬운 설명·주의 문구 | ✅ | `report/summary.py` | 판정은 최대점 1개 기준(특이점 포함) |
 | PDF 보고서 4종 | ✅ | `report/pdf.py` / `test_ui.py` | §4 결함, 소프트웨어 버전·메시 등급·단위계 미기재 |
 | 프로젝트 저장/열기(.kst = zip: json + brep) | ✅ | `project_io.py` / `test_project_io.py` | 메시·결과는 저장 안 함(재해석 필요). 호환성 버전 체크 있음 |

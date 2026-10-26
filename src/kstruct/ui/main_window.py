@@ -130,6 +130,9 @@ class MainWindow(QMainWindow):
         # case chosen in the result panel
         self.case_results: list[tuple[str, StaticResult, Summary]] | None = None
         self.overview: CaseOverview | None = None
+        # key numbers of the previous strength run, for the "compared with last time" line
+        self.previous: dict | None = None
+        self._solved_quality: str | None = None  # mesh preset the current result used
         self.materials: dict = {}
         self._busy = False
 
@@ -308,6 +311,7 @@ class MainWindow(QMainWindow):
         self.project_path = path
         self.mesh = self.result = self.summary = None
         self.case_results = self.overview = None
+        self.previous = None
         self.viewer.load_project(project)
         for part in project.parts:
             if not part.visible:
@@ -324,6 +328,7 @@ class MainWindow(QMainWindow):
         self.project = None
         self.mesh = self.result = self.summary = None
         self.case_results = self.overview = None
+        self.previous = None
         self.viewer.plotter.clear_actors()
         self.viewer.plotter.render()
         self.panels[STEP_OPEN].parts.clear()
@@ -404,6 +409,8 @@ class MainWindow(QMainWindow):
         self._invalidate_result()
 
     def _invalidate_result(self) -> None:
+        if self.summary is not None:  # remember what the run being discarded came to
+            self.previous = self._key_numbers() or self.previous
         self.result = self.summary = None
         self.case_results = self.overview = None
         self._update_nav()
@@ -547,6 +554,8 @@ class MainWindow(QMainWindow):
 
         def done(value):
             self._busy = False
+            self.previous = self._key_numbers() or self.previous  # solved again unchanged
+            self._solved_quality = project.mesh_quality
             self.mesh, self.result = value
             self.materials = materials
             if isinstance(self.result, list):  # strength: one result per load case
@@ -621,6 +630,41 @@ class MainWindow(QMainWindow):
         has_shape = not isinstance(r, ThermalResult)
         panel.scale.setEnabled(has_shape)
         panel.animate.setEnabled(has_shape)
+
+    def _key_numbers(self) -> dict | None:
+        """What the last strength run came to, kept for the comparison line."""
+        s, p, r = self.summary, self.project, self.result
+        if s is None or not isinstance(s, Summary) or r is None:
+            return None
+        quality = self._solved_quality or p.mesh_quality
+        return {
+            "label": f"{steps.QUALITY_NAMES.get(quality, quality)} 메시, "
+            f"요소 {len(r.mesh.tets):,}개, 케이스 '{p.case.name}'",
+            "fos": s.governing_fos,
+            "disp": s.max_disp,
+            "stress": max(x.max_stress for x in s.parts),
+        }
+
+    def _comparison_line(self) -> str | None:
+        prev, s = self.previous, self.summary
+        if prev is None or not isinstance(s, Summary):
+            return None
+
+        def delta(a, b):
+            return f" ({(b - a) / a * 100:+.1f}%)" if a else ""
+
+        us = system_of(self.project)
+        stress = max(x.max_stress for x in s.parts)
+        text = (
+            f"<b>이전 해석과 비교</b> ({prev['label']}): 안전율 {prev['fos']:.2f} → "
+            f"<b>{s.governing_fos:.2f}</b>{delta(prev['fos'], s.governing_fos)}, 최대 응력 "
+            f"{fmt(us, 'stress', prev['stress'], ',.1f')} → {fmt(us, 'stress', stress, ',.1f')}"
+            f"{delta(prev['stress'], stress)}, 최대 변형 {fmt(us, 'length', prev['disp'])} → "
+            f"{fmt(us, 'length', s.max_disp)}{delta(prev['disp'], s.max_disp)}"
+        )
+        if prev["fos"] and abs(s.governing_fos - prev["fos"]) / prev["fos"] > 0.1:
+            text += ". 10% 넘게 달라졌으니 무엇이 바뀌었는지 확인하세요."
+        return text
 
     def select_case(self, index: int) -> None:
         """Result panel: show another load case of the last strength run."""
@@ -731,12 +775,23 @@ class MainWindow(QMainWindow):
             panel.scale_note.setText(
                 f"변형을 {scale:,.0f}배 확대해서 보여줍니다. 회색 선은 변형 전 모양입니다."
             )
+        clip = None
+        section = panel.clip_fraction()
+        if section is not None:
+            axis, frac = section
+            lo, hi = self.mesh.nodes.min(axis=0), self.mesh.nodes.max(axis=0)
+            origin = (lo + hi) / 2
+            origin[axis] = lo[axis] + frac * (hi[axis] - lo[axis])
+            normal = np.zeros(3)
+            normal[axis] = -1.0  # keep the lower side, look at the cut face
+            clip = (normal, origin)
         self.viewer.show_result(
             self.mesh,
             self._displacement(),
             field,
             scale,
             symmetric=isinstance(self.result, (ModalResult, BucklingResult)),
+            clip=clip,
         )
         self._fill_summary(panel)
 
@@ -795,6 +850,9 @@ class MainWindow(QMainWindow):
                     f"<b>{o.headline}</b> ({o.summaries[o.worst].headline}). "
                     f"지금 보는 케이스: {self.project.case.name}"
                 )
+            comparison = self._comparison_line()
+            if comparison:
+                lines.append(comparison)
             for p in s.parts:
                 lines.append(
                     f"<b>{p.name}</b> ({p.material})<br>"
@@ -848,6 +906,26 @@ class MainWindow(QMainWindow):
         write_pdf(html_text, path)
         self.statusBar().showMessage(f"보고서를 저장했습니다: {path}")
 
+    def export_result(self) -> None:
+        if self.result is None:
+            return
+        from kstruct.report.export import export_csv, export_vtu
+
+        stem = self.project.source_path.stem if self.project.source_path else "kstruct"
+        path, chosen = QFileDialog.getSaveFileName(
+            self,
+            "결과 내보내기",
+            f"{stem}_결과.csv",
+            "CSV 표 (*.csv);;VTK 파일, ParaView용 (*.vtu)",
+        )
+        if not path:
+            return
+        if "vtu" in chosen or path.lower().endswith(".vtu"):
+            out = export_vtu(path, self.project, self.result, self.summary)
+        else:
+            out = export_csv(path, self.project, self.result, self.summary)
+        self.statusBar().showMessage(f"결과를 내보냈습니다: {out}")
+
     def capture_result_images(self) -> list[tuple[str, bytes]]:
         """Render the main result fields to PNG for the report, then restore the view."""
         r = self.result
@@ -889,6 +967,16 @@ class MainWindow(QMainWindow):
                 self.mesh, self._displacement(), field, self.deformation_scale("auto")
             )
             images.append((caption, _png(self.viewer.plotter.screenshot(return_img=True))))
+        section = panel.clip_fraction()
+        if section is not None:  # the cut the user is looking at goes into the report too
+            self.show_result()
+            name = "XYZ"[section[0]]
+            images.append(
+                (
+                    f"단면 ({name} 방향 {section[1] * 100:.0f}% 위치)",
+                    _png(self.viewer.plotter.screenshot(return_img=True)),
+                )
+            )
         panel.mode.blockSignals(True)
         panel.mode.setCurrentIndex(current_mode)
         panel.mode.blockSignals(False)

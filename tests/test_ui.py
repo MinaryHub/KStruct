@@ -510,3 +510,43 @@ def test_mesh_refinement_from_the_panel(qtbot):
     panel.refinements.setCurrentRow(0)
     panel._remove_refinement()
     assert window.project.mesh_refinements == []
+
+
+def test_section_view_and_previous_comparison(qtbot, tmp_path):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind, Load, LoadKind
+    from kstruct.report.export import export_csv
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    window.project.loads = [
+        Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (90, 30, 8)))], vector=(0, 0, -1000.0))
+    ]
+    window.project.mesh_quality = "coarse"
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    panel = window.panels[mw.STEP_RESULT]
+    assert window.previous is None and "이전 해석과 비교" not in panel.summary.text()
+    first = window.summary.governing_fos
+    # section view: controls appear, animation is off, display updates without error
+    panel.clip.setChecked(True)
+    assert panel.clip_row.isVisible() and not panel.animate.isEnabled()
+    panel.clip_axis.setCurrentIndex(2)
+    panel.clip_pos.setValue(30)
+    assert panel.clip_fraction() == (2, 0.3)
+    panel.clip.setChecked(False)
+    # export from the window's result
+    out = export_csv(tmp_path / "e.csv", window.project, window.result, window.summary)
+    assert out.stat().st_size > 1000
+    # second run: the comparison line names the previous mesh and the change
+    window.project.mesh_quality = "normal"
+    window.invalidate_mesh()
+    window._go(mw.STEP_SOLVE)
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    assert window.previous is not None and window.previous["fos"] == pytest.approx(first)
+    assert "이전 해석과 비교" in panel.summary.text() and "거침 메시" in panel.summary.text()
