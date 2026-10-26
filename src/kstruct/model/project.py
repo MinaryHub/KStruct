@@ -162,6 +162,8 @@ class Project:
     operating_frequency: float = 0.0  # Hz, excitation to compare natural frequencies with
     n_modes: int = 6
     load_cycle: str = "none"  # fem.fatigue.LoadCycle value
+    fatigue_surface: str = "machined"  # fem.fatigue.SURFACE_FACTORS key
+    fatigue_reliability: str = "90"  # fem.fatigue.RELIABILITY_FACTORS key (%)
     units: str | None = None  # "SI" / "US"; None follows the standards pack
     # recommended safety factors chosen for this project ("ductile" / "brittle" / "buckling");
     # missing keys follow the standards pack

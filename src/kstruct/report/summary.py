@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from kstruct.fem.fatigue import INFINITE_LIFE, LoadCycle, fatigue_check
+from kstruct.fem.fatigue import (
+    INFINITE_LIFE,
+    SURFACE_FACTORS,
+    FatigueSettings,
+    LoadCycle,
+    fatigue_check,
+)
 from kstruct.fem.singularity import KIND_NAMES, NONE, find_singularities
 from kstruct.fem.static import StaticResult
 from kstruct.model import ConnectionKind, Project
@@ -120,7 +126,8 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
     fatigue = None
     cycle = LoadCycle(project.load_cycle)
     if cycle != LoadCycle.NONE:
-        fatigue = fatigue_check(result, cycle)
+        settings = FatigueSettings(project.fatigue_surface, project.fatigue_reliability)
+        fatigue = fatigue_check(result, cycle, settings)
         for s in parts:
             nodes = mesh.part_nodes(s.part_id)
             weakest = nodes[int(np.argmin(fatigue.safety_factor[nodes]))]
@@ -183,6 +190,17 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             )
 
     notes = []
+    if fatigue is not None and fatigue.factors:
+        surface = SURFACE_FACTORS[project.fatigue_surface][0]
+        parts_text = ", ".join(
+            f"{project.part(pid).name} {f['total']:.2f}" for pid, f in fatigue.factors.items()
+        )
+        any_f = next(iter(fatigue.factors.values()))
+        notes.append(
+            f"피로 한도 보정: 표면 '{surface}', 크기 계수 {any_f['kb']:.2f}, "
+            f"신뢰도 {project.fatigue_reliability}%(계수 {any_f['kc']:.2f}) → 재료 피로 한도의 "
+            f"{parts_text}배를 사용했습니다. 노치·용접부는 따로 고려하지 않았습니다."
+        )
     for s in parts:
         if s.singular_kind is not None:
             r = singular.radius[s.part_id]

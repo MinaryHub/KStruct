@@ -60,6 +60,8 @@ def save_project(project: Project, path: str | Path) -> Path:
         "operating_frequency": project.operating_frequency,
         "n_modes": project.n_modes,
         "load_cycle": project.load_cycle,
+        "fatigue_surface": project.fatigue_surface,
+        "fatigue_reliability": project.fatigue_reliability,
         "units": project.units,
         "target_overrides": dict(project.target_overrides),
         "custom_materials": [material_record(m) for m in project.custom_materials.values()],
@@ -138,6 +140,8 @@ def load_project(path: str | Path) -> Project:
             operating_frequency=doc.get("operating_frequency", 0.0),
             n_modes=doc.get("n_modes", 6),
             load_cycle=doc.get("load_cycle", "none"),
+            fatigue_surface=doc.get("fatigue_surface", "machined"),
+            fatigue_reliability=str(doc.get("fatigue_reliability", "90")),
             units=doc.get("units"),
             target_overrides={k: float(v) for k, v in doc.get("target_overrides", {}).items()},
             custom_materials={

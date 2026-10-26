@@ -34,6 +34,7 @@ from kstruct.fem.bolts import grades as bolt_grades
 from kstruct.fem.bolts import hole_axis, recommended_preload, suggest_size
 from kstruct.fem.bolts import sizes as bolt_sizes
 from kstruct.fem.constraints import ConstraintError
+from kstruct.fem.fatigue import RELIABILITY_FACTORS, SURFACE_FACTORS
 from kstruct.geometry import faces_of
 from kstruct.geometry.face_info import common_axis, face_info, faces_centroid, outward_normal
 from kstruct.model import (
@@ -1159,6 +1160,20 @@ class SolveStep(StepPanel):
             self.cycle.addItem(label, key)
         self.cycle.currentIndexChanged.connect(self._cycle_changed)
         sform.addRow("하중이 반복되나요?", with_help(self.cycle, "fatigue.cycle"))
+        self.surface = QComboBox()
+        for key, (label, _a, _b) in SURFACE_FACTORS.items():
+            self.surface.addItem(label, key)
+        self.surface.currentIndexChanged.connect(self._fatigue_changed)
+        self.surface_label = QLabel("표면 상태")
+        self.surface_box = with_help(self.surface, "fatigue.surface")
+        sform.addRow(self.surface_label, self.surface_box)
+        self.reliability = QComboBox()
+        for key in RELIABILITY_FACTORS:
+            self.reliability.addItem(f"{key} %", key)
+        self.reliability.currentIndexChanged.connect(self._fatigue_changed)
+        self.reliability_label = QLabel("신뢰도")
+        self.reliability_box = with_help(self.reliability, "fatigue.reliability")
+        sform.addRow(self.reliability_label, self.reliability_box)
         self.add(self.static_box)
 
         self.target_box = QGroupBox("권장 안전율")
@@ -1213,6 +1228,21 @@ class SolveStep(StepPanel):
         self.cycle.blockSignals(True)
         self.cycle.setCurrentIndex(max(0, self.cycle.findData(project.load_cycle)))
         self.cycle.blockSignals(False)
+        repeated = project.load_cycle != "none"
+        for w in (
+            self.surface_label,
+            self.surface_box,
+            self.reliability_label,
+            self.reliability_box,
+        ):
+            w.setVisible(repeated)
+        for combo, value in (
+            (self.surface, project.fatigue_surface),
+            (self.reliability, project.fatigue_reliability),
+        ):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(value)))
+            combo.blockSignals(False)
         for w in (self.n_modes, self.speed, self.speed_unit):
             w.blockSignals(True)
         self.n_modes.setValue(project.n_modes)
@@ -1256,6 +1286,13 @@ class SolveStep(StepPanel):
 
     def _cycle_changed(self) -> None:
         self.app.project.load_cycle = self.cycle.currentData()
+        self.changed.emit()
+        self.refresh()
+
+    def _fatigue_changed(self) -> None:
+        project = self.app.project
+        project.fatigue_surface = self.surface.currentData()
+        project.fatigue_reliability = self.reliability.currentData()
         self.changed.emit()
 
     def _targets_changed(self) -> None:
