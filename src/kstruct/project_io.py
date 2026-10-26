@@ -22,6 +22,7 @@ from kstruct.model import (
     Load,
     LoadCase,
     LoadKind,
+    MeshRefinement,
     Part,
     Project,
 )
@@ -50,6 +51,9 @@ def save_project(project: Project, path: str | Path) -> Path:
         "version": FORMAT_VERSION,
         "source_path": str(project.source_path) if project.source_path else None,
         "mesh_quality": project.mesh_quality,
+        "mesh_refinements": [
+            {"faces": _refs(r.faces), "size": r.size} for r in project.mesh_refinements
+        ],
         "standard": project.standard,
         "analysis": project.analysis.value,
         "reference_temperature": project.reference_temperature,
@@ -167,6 +171,10 @@ def load_project(path: str | Path) -> Project:
     else:  # format 1: a single flat list
         project.cases = [LoadCase("하중 케이스 1", [load(ld) for ld in doc.get("loads", [])])]
     project.active_case = int(doc.get("active_case", 0))
+    project.mesh_refinements = [
+        MeshRefinement(_unrefs(r["faces"]), float(r["size"]))
+        for r in doc.get("mesh_refinements", [])
+    ]
     project.bolts = [
         Bolt(
             _unrefs([b["hole_a"]])[0],

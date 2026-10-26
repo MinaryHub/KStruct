@@ -235,6 +235,7 @@ def test_bolt_workflow(qtbot, tmp_path):
     for part in project.parts:
         part.material_id = "s235"
     project.connections[0].kind = ConnectionKind.CONTACT  # plates only pressed together
+    project.mesh_quality = "coarse"  # contact + preload iterations: keep the test quick
 
     window._go(mw.STEP_FIXTURE)
     panel = window.panels[mw.STEP_FIXTURE]
@@ -485,3 +486,27 @@ def test_multi_case_strength_run(qtbot):
     window.select_case(0)
     assert window.project.active_case == 0 and window.summary.governing_fos > heavy
     assert "지금 보는 케이스: 가벼움" in panel.summary.text()
+
+
+def test_mesh_refinement_from_the_panel(qtbot):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    shape = window.project.parts[0].shape
+    window._go(mw.STEP_MESH)
+    assert window.viewer.selection_enabled
+    panel = window.panels[mw.STEP_MESH]
+    assert not panel.refine_add.isEnabled() and panel.refine_size.value() > 0
+    hole = FaceRef(0, face_at(shape, (75, 15, 4)))
+    window.viewer.set_selection([hole])
+    assert panel.refine_add.isEnabled() and "원통면" in panel.selection_label.text()
+    panel.refine_size.setValue(1.5)
+    panel._add_refinement()
+    assert window.project.mesh_refinements[0].size == 1.5
+    assert panel.refinements.count() == 1 and "1.5 mm" in panel.refinements.item(0).text()
+    panel.refinements.setCurrentRow(0)
+    panel._remove_refinement()
+    assert window.project.mesh_refinements == []

@@ -113,6 +113,14 @@ class Bolt:
 
 
 @dataclass
+class MeshRefinement:
+    """Smaller elements on chosen faces (size in mm)."""
+
+    faces: list[FaceRef]
+    size: float
+
+
+@dataclass
 class LoadCase:
     """One set of loads that act together. A project has at least one; the strength
     analysis solves every case and reports the most unfavourable one."""
@@ -147,6 +155,7 @@ class Project:
     cases: list[LoadCase] = field(default_factory=lambda: [LoadCase("하중 케이스 1")])
     active_case: int = 0  # the case shown in the wizard and used by thermal / buckling
     mesh_quality: str = "normal"  # key of fem.mesh.MESH_PRESETS
+    mesh_refinements: list[MeshRefinement] = field(default_factory=list)
     standard: str = "iso"  # standards pack id
     analysis: AnalysisKind = AnalysisKind.STATIC
     reference_temperature: float = 20.0  # °C, stress-free temperature for thermal stress
@@ -209,6 +218,7 @@ def active_project(project: Project) -> Project:
     out.fixtures = [f for f in project.fixtures if keep(f.faces)]
     out.cases = [LoadCase(c.name, [ld for ld in c.loads if keep(ld.faces)]) for c in project.cases]
     out.connections = [c for c in project.connections if keep(c.faces_a) and keep(c.faces_b)]
+    out.mesh_refinements = [r for r in project.mesh_refinements if keep(r.faces)]
     out.bolts = [b for b in project.bolts if keep([b.hole_a, b.hole_b])]
     return out
 

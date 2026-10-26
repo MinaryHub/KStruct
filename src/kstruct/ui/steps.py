@@ -47,6 +47,7 @@ from kstruct.model import (
     Load,
     LoadCase,
     LoadKind,
+    MeshRefinement,
 )
 from kstruct.report.describe import describe_connection, describe_fixture, describe_load
 from kstruct.ui.dialogs import MaterialDialog, load_user_library, save_user_library
@@ -1014,25 +1015,88 @@ class MeshStep(StepPanel):
         self.show_mesh.setChecked(True)
         self.show_mesh.toggled.connect(lambda on: app.viewer.show_mesh(app.mesh if on else None))
         self.add(self.show_mesh)
+
+        box = QGroupBox("특정 면만 더 세밀하게")
+        layout = QVBoxLayout(box)
+        layout.addWidget(_hint(topic("mesh.refine").short))
+        self.selection_label = _hint("")
+        layout.addWidget(self.selection_label)
+        form = QFormLayout()
+        self.refine_size = QDoubleSpinBox()
+        self.refine_size.setRange(0.01, 1e4)
+        self.refine_size.setDecimals(2)
+        self.refine_size.setSuffix(" mm")
+        form.addRow("요소 크기", self.refine_size)
+        layout.addLayout(form)
+        self.refine_add = QPushButton("선택한 면 세밀하게")
+        self.refine_add.clicked.connect(self._add_refinement)
+        layout.addWidget(self.refine_add)
+        self.refinements = QListWidget()
+        self.refinements.setMaximumHeight(90)
+        layout.addWidget(self.refinements)
+        remove = QPushButton("선택한 항목 삭제")
+        remove.clicked.connect(self._remove_refinement)
+        layout.addWidget(remove)
+        self.add(with_help(box, "mesh.refine"))
         self.layout_.addStretch(1)
+
+    def _suggested_size(self) -> float:
+        from kstruct.fem.mesh import MESH_PRESETS
+        from kstruct.geometry.tessellate import bounding_diagonal
+
+        project = self.app.project
+        parts = project.visible_parts() or project.parts
+        diag = max(bounding_diagonal(p.shape) for p in parts) if parts else 100.0
+        return diag / MESH_PRESETS[project.mesh_quality].divisions / 3
+
+    def update_selection(self, refs: list[FaceRef]) -> None:
+        if refs:
+            self.selection_label.setText(f"선택한 면: {self.describe_faces(refs)}")
+        else:
+            self.selection_label.setText("3D 화면에서 면을 클릭하세요. Ctrl+클릭으로 여러 면 선택.")
+        self.refine_add.setEnabled(bool(refs))
+
+    def _add_refinement(self) -> None:
+        refs = self.app.viewer.selection
+        if not refs:
+            return
+        self.app.project.mesh_refinements.append(MeshRefinement(refs, self.refine_size.value()))
+        self.app.viewer.set_selection([])
+        self.app.invalidate_mesh()
+        self.refresh()
+
+    def _remove_refinement(self) -> None:
+        row = self.refinements.currentRow()
+        if row >= 0:
+            del self.app.project.mesh_refinements[row]
+            self.app.invalidate_mesh()
+            self.refresh()
 
     def refresh(self) -> None:
         project = self.app.project
         self.quality.blockSignals(True)
         self.quality.setCurrentIndex(max(0, self.quality.findData(project.mesh_quality)))
         self.quality.blockSignals(False)
+        if not self.refine_size.value() or self.refine_size.value() == 0.01:
+            self.refine_size.setValue(round(self._suggested_size(), 2))
+        self.refinements.clear()
+        for r in project.mesh_refinements:
+            self.refinements.addItem(f"{r.size:g} mm: {self.describe_faces(r.faces)}")
+        self.update_selection(self.app.viewer.selection)
         mesh = self.app.mesh
         if mesh is None:
             self.info.setText("아직 메시가 없습니다. '메시 만들기'를 누르세요.")
         else:
-            self.info.setText(
+            lines = [
                 f"✔ 메시 완료: 요소 {len(mesh.tets):,}개, 절점 {mesh.n_nodes:,}개 "
                 f"(계산할 미지수 {mesh.n_nodes * 3:,}개)"
-            )
+            ] + [f"• {n}" for n in mesh.notes]
+            self.info.setText("\n".join(lines))
 
     def _quality_changed(self) -> None:
         self.app.project.mesh_quality = self.quality.currentData()
         self.app.invalidate_mesh()
+        self.refine_size.setValue(round(self._suggested_size(), 2))
         self.refresh()
 
     def set_busy(self, busy: bool) -> None:

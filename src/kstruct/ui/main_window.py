@@ -291,10 +291,10 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(step)
         if self.project is not None:
             self.panels[step].refresh()
-        self.viewer.selection_enabled = step in (STEP_FIXTURE, STEP_LOAD)
+        self.viewer.selection_enabled = step in (STEP_FIXTURE, STEP_LOAD, STEP_MESH)
         if step != STEP_RESULT:
             self.viewer.clear_result()
-        if step in (STEP_FIXTURE, STEP_LOAD):
+        if step in (STEP_FIXTURE, STEP_LOAD, STEP_MESH):
             self.viewer.set_selection([])
         self.viewer.show_mesh(self.mesh if step == STEP_MESH else None)
         if step == STEP_RESULT and self.result is not None:
@@ -418,7 +418,7 @@ class MainWindow(QMainWindow):
 
     def _selection_changed(self, refs: list) -> None:
         panel = self.panels[self.nav.currentRow()]
-        if isinstance(panel, steps._FaceListStep):
+        if hasattr(panel, "update_selection"):
             panel.update_selection(refs)
 
     def readiness(self) -> list[tuple[bool, str]]:

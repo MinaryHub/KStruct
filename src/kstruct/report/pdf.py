@@ -48,12 +48,13 @@ def _header(project: Project, mesh) -> str:
     source = esc(project.source_path.name) if project.source_path else "-"
     units = "SI (mm·N·MPa·°C)" if system_of(project) == "SI" else "미국 단위 (in·lbf·psi·°F)"
     quality = MESH_LABELS.get(project.mesh_quality, project.mesh_quality)
+    preset = MESH_PRESETS.get(project.mesh_quality, MESH_PRESETS["normal"])
     custom = " (사용자 지정 안전율)" if project.target_overrides else ""
     return (
         f"<p>모델: {source} &nbsp;|&nbsp; 작성일: {dt.date.today():%Y-%m-%d} &nbsp;|&nbsp; "
         f"KStruct {esc(__version__)}<br>"
         f"적용 기준: {esc(pack.label)}{custom} &nbsp;|&nbsp; 단위: {units} &nbsp;|&nbsp; "
-        f"메시: {quality} (모델 대각선/{MESH_PRESETS.get(project.mesh_quality, 0):g}), "
+        f"메시: {quality} (모델 대각선/{preset.divisions:g}, 두께 방향 {preset.layers}개 이상), "
         f"2차 사면체 요소 {len(mesh.tets):,}개, 절점 {mesh.n_nodes:,}개</p>"
     )
 
