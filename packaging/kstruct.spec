@@ -17,6 +17,10 @@ for package in ("OCP", "netgen", "pyngcore", "vtkmodules", "pyvista", "pyvistaqt
 datas += collect_data_files("kstruct", includes=["resources/**/*"])
 datas.append((str(ROOT / "THIRD_PARTY_NOTICES.md"), "."))  # shown in the About dialog
 hiddenimports += collect_submodules("kstruct")
+if (ROOT / "src" / "kstruct" / "_build.py").is_file():  # version stamp from packaging/build.py
+    hiddenimports.append("kstruct._build")
+else:
+    print("kstruct.spec: no build stamp (run packaging/build.py); freezing the plain release version")
 hiddenimports += ["scipy.sparse.linalg", "scipy.spatial", "lxml.etree", "networkx"]
 
 # delvewheel/auditwheel put shared libraries in "<dist>.libs" folders beside the packages

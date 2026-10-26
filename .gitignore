@@ -10,3 +10,6 @@ dist/
 *.cvg
 *.sta
 *.spec.bak
+
+# build stamp written by packaging/build.py
+src/kstruct/_build.py

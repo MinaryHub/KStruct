@@ -63,11 +63,11 @@ def setup_logging() -> Path:
         console = logging.StreamHandler(sys.stderr)
         console.setFormatter(fmt)
         root.addHandler(console)
-    from kstruct import __version__
+    from kstruct import build_info
 
     logging.getLogger("kstruct").info(
         "KStruct %s, Python %s, %s %s, frozen=%s",
-        __version__,
+        build_info(),
         platform.python_version(),
         platform.system(),
         platform.release(),
@@ -88,10 +88,10 @@ def install_excepthook() -> None:
 
 
 def environment_summary() -> str:
-    from kstruct import __version__
+    from kstruct import build_info
 
     return (
-        f"KStruct {__version__}\n"
+        f"KStruct {build_info()}\n"
         f"Python {platform.python_version()}\n"
         f"{platform.system()} {platform.release()} ({platform.machine()})\n"
         f"frozen={getattr(sys, 'frozen', False)}\n"

@@ -80,6 +80,11 @@ def main() -> None:
 
     setup_logging()
     install_excepthook()
+    if "--version" in sys.argv:
+        from kstruct import build_info
+
+        print(f"KStruct {build_info()}")
+        sys.exit(0)
     if "--selftest" in sys.argv:
         sys.exit(selftest())
     if "--selftest-gui" in sys.argv:

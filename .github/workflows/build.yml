@@ -34,10 +34,16 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
-      - name: Freeze
-        run: uv run pyinstaller packaging/kstruct.spec --noconfirm --log-level WARN
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup -y --no-progress
 
-      - name: Smoke test frozen app
+      - name: Build (stamp version 0.x.y.<run number>, freeze, self-test, package)
+        env:
+          KSTRUCT_BUILD_NUMBER: ${{ github.run_number }}
+        run: uv run python packaging/build.py
+
+      - name: GUI smoke test of the frozen app
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
@@ -47,29 +53,14 @@ jobs:
           else
             BIN=dist/KStruct/KStruct
           fi
-          "$BIN" --selftest
           "$BIN" --selftest-gui selftest.png
-
-      - name: Package (Windows installer)
-        if: runner.os == 'Windows'
-        run: |
-          choco install innosetup -y --no-progress
-          iscc /DAppVersion=${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }} packaging\windows\kstruct.iss
-
-      - name: Package (macOS dmg)
-        if: runner.os == 'macOS'
-        run: hdiutil create -volname KStruct -srcfolder dist/KStruct.app -ov -format UDZO dist/KStruct-macOS.dmg
-
-      - name: Package (Linux tarball)
-        if: runner.os == 'Linux'
-        run: tar -C dist -czf dist/KStruct-linux-x86_64.tar.gz KStruct
 
       - uses: actions/upload-artifact@v4
         with:
           name: KStruct-${{ matrix.os }}
           path: |
             dist/KStruct-Setup-*.exe
-            dist/KStruct-macOS.dmg
-            dist/KStruct-linux-x86_64.tar.gz
+            dist/KStruct-*-macOS.dmg
+            dist/KStruct-*-linux-*.tar.gz
             selftest.png
           if-no-files-found: error
