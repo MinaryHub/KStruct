@@ -2,6 +2,8 @@
 singularity hot-spots, report wording/units, custom materials, bug report bundle."""
 
 import re
+import subprocess
+import sys
 import tomllib
 import zipfile
 from pathlib import Path
@@ -39,7 +41,43 @@ ROOT = Path(__file__).parents[1]
 
 def test_version_matches_pyproject():
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))
-    assert kstruct.__version__ == pyproject["project"]["version"]
+    assert kstruct.RELEASE_VERSION == pyproject["project"]["version"]
+    assert kstruct.__version__.startswith(kstruct.RELEASE_VERSION)
+
+
+def test_build_stamp_raises_the_version_every_build(tmp_path, monkeypatch):
+    """packaging/build.py: the counter file goes 1, 2, 3 … and the stamp module turns the
+    release version into release.build; an explicit number (CI run number) wins."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("kbuild", ROOT / "packaging" / "build.py")
+    kbuild = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kbuild)
+    monkeypatch.delenv("KSTRUCT_BUILD_NUMBER", raising=False)
+    counter = tmp_path / "build_number.txt"
+    assert [kbuild.next_build_number(counter) for _ in range(3)] == [1, 2, 3]
+    assert counter.read_text() == "3\n"
+    assert kbuild.next_build_number(counter, explicit=57) == 57
+    monkeypatch.setenv("KSTRUCT_BUILD_NUMBER", "99")
+    assert kbuild.next_build_number(counter) == 99 and counter.read_text() == "3\n"
+
+    # the stamp is a module next to kstruct/__init__.py: write it into a copy of the package
+    pkg = tmp_path / "src" / "kstruct"
+    pkg.mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text((ROOT / "pyproject.toml").read_text("utf-8"), "utf-8")
+    (pkg / "__init__.py").write_text((ROOT / "src/kstruct/__init__.py").read_text("utf-8"), "utf-8")
+    version = kbuild.write_stamp(57, pkg / "_build.py", commit="abc1234")
+    assert version == kstruct.RELEASE_VERSION + ".57"
+    stamp = (pkg / "_build.py").read_text("utf-8")
+    assert "BUILD_NUMBER = 57" in stamp and 'GIT_COMMIT = "abc1234"' in stamp
+    out = subprocess.run(
+        [sys.executable, "-c", "import kstruct; print(kstruct.__version__, kstruct.build_info())"],
+        cwd=tmp_path / "src",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.split()[0] == version and "abc1234" in out.stdout
 
 
 # --- hidden parts -----------------------------------------------------------------------

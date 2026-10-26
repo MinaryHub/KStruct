@@ -16,7 +16,8 @@ uv run kstruct --selftest-gui out.png     # 창 열고 예제 해석 후 스크�
 uv run pytest                             # 전체 테스트 (~1분, Qt 창이 뜸)
 uv run pytest tests/test_fem_static.py::test_cantilever_tip_deflection   # 단일 테스트
 uv run ruff check --fix src tests && uv run ruff format src tests
-uv run pyinstaller packaging/kstruct.spec --noconfirm   # dist/KStruct/ 생성 후 --selftest로 확인
+uv run python packaging/build.py                # 버전 스탬프(빌드 번호 +1) → PyInstaller → selftest → 설치 파일
+uv run pyinstaller packaging/kstruct.spec --noconfirm   # 프리즈만 (dist/KStruct/), 버전 스탬프 없음
 ```
 
 CI(`.github/workflows/build.yml`)가 Windows/macOS/Linux에서 테스트 → PyInstaller → 배포본 selftest → 설치 파일(Inno Setup / dmg / tar.gz)을 만든다. 로컬 Windows에서는 Inno Setup 설치가 실패해 설치 파일 단계는 CI에서만 검증됨.
@@ -52,7 +53,7 @@ CI(`.github/workflows/build.yml`)가 Windows/macOS/Linux에서 테스트 → PyI
 - **조건 문구**: 고정·하중·연결 설명은 `report/describe.py` 한 곳에서 만들어 패널과 PDF가 같은 문장을 쓴다. 보고서 수치는 모두 `units.fmt`를 거친다.
 - **프로젝트 파일의 메시**: `save_project(project, path, mesh)`는 `mesh.npz`와 `mesh.json`(키 = 보이는 부품 brep 바이트 해시 + 메시 등급 + 세분화)을 넣고, `load_project_mesh`는 키가 현재 프로젝트와 같을 때만 돌려준다. 결과는 저장하지 않는다.
 - **환경설정·자동 저장**(`ui/prefs.py`): 데이터 폴더의 `prefs.json`(최근 파일, 마지막 폴더, 창 geometry·splitter)과 `autosave.kst`(+`.json` 메타). `MainWindow._dirty`가 변경을 추적해 3분마다 자동 저장하고, 시작 시 `offer_recovery()`가 복구를 묻는다. `closeEvent`는 dirty면 저장 여부를 묻는데 **테스트에서는 `window.ask_before_close = False`**로 꺼야 한다(pytest-qt가 teardown에서 창을 닫을 때 모달이 떠서 멈춤). 예제 파일은 최근 목록에 넣지 않는다.
-- **로그·진단**(`paths.py`): `setup_logging()`이 사용자 데이터 폴더(`KSTRUCT_DATA_DIR`로 재지정 가능)에 회전 로그를 쓰고, `install_excepthook` + `MainWindow.install_crash_dialog`가 처리되지 않은 예외를 로그·대화상자로 보낸다. "문제 보고"는 로그+환경+.kst를 zip으로 묶는다(`ui/dialogs.py`). 버전은 `kstruct.__version__` 하나이며 pyproject와 일치하는지 테스트가 확인한다.
+- **로그·진단**(`paths.py`): `setup_logging()`이 사용자 데이터 폴더(`KSTRUCT_DATA_DIR`로 재지정 가능)에 회전 로그를 쓰고, `install_excepthook` + `MainWindow.install_crash_dialog`가 처리되지 않은 예외를 로그·대화상자로 보낸다. "문제 보고"는 로그+환경+.kst를 zip으로 묶는다(`ui/dialogs.py`). 릴리스 버전은 `kstruct.RELEASE_VERSION`(pyproject와 일치, 테스트 확인)이고, `packaging/build.py`가 빌드마다 `packaging/build_number.txt`를 +1 하거나(CI는 `KSTRUCT_BUILD_NUMBER` = run number) `src/kstruct/_build.py`(git 무시)에 스탬프를 써서 `__version__` = `릴리스.빌드번호`(예 0.1.0.57)가 된다. 정보 창·로그·보고서·설치 파일 이름이 모두 이 값을 쓴다(`build_info()`는 날짜·커밋 포함). `kstruct --version`으로 확인.
 
 ## OCP(cadquery-ocp 8.x, OCCT 8) 주의
 

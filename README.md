@@ -22,7 +22,7 @@ SolidWorks·Inventor·CATIA 원본 파일은 각 프로그램에서 STEP으로 �
 uv sync
 uv run kstruct          # 실행
 uv run pytest           # 테스트 (이론해 비교 검증 포함)
-uv run pyinstaller packaging/kstruct.spec --noconfirm
+uv run python packaging/build.py   # 또는 프리즈만: uv run pyinstaller packaging/kstruct.spec --noconfirm
 ```
 
 기능 완성도 검토, 보완 계획, 함께 써야 할 문서 목록은 [docs/ROADMAP.md](docs/ROADMAP.md)에 있습니다.
