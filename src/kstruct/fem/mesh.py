@@ -14,6 +14,8 @@ from __future__ import annotations
 import multiprocessing
 import os
 import tempfile
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -99,12 +101,21 @@ def _mesh_shape(
     return nodes, tets, tris, faces
 
 
-def _mesh_all(steps: list[Path], maxh: float, names: list[str], face_maxh=None, grading=0.3):
+def _mesh_all(
+    steps: list[Path],
+    maxh: float,
+    names: list[str],
+    face_maxh=None,
+    grading=0.3,
+    check: Callable[[], None] | None = None,
+):
     """Mesh every part in worker processes (in parallel for assemblies).
 
     Netgen occasionally deadlocks inside its own thread pool; a separate process can be
     killed after MESH_TIMEOUT seconds and retried once, instead of freezing the app.
-    Set KSTRUCT_INPROCESS_MESH=1 to mesh in this process (debugging).
+    `check` is polled while waiting and may raise (the user cancelled); the worker
+    processes are then killed. Set KSTRUCT_INPROCESS_MESH=1 to mesh in this process
+    (debugging).
     """
     face_maxh = face_maxh or [None] * len(steps)
     if os.environ.get("KSTRUCT_INPROCESS_MESH") == "1":
@@ -121,9 +132,10 @@ def _mesh_all(steps: list[Path], maxh: float, names: list[str], face_maxh=None, 
                 for step, fh in zip(steps, face_maxh, strict=True)
             ]
             results = []
+            deadline = time.monotonic() + MESH_TIMEOUT
             for job, name in zip(jobs, names, strict=True):
                 try:
-                    results.append(job.get(timeout=MESH_TIMEOUT))
+                    results.append(_wait(job, deadline, check))
                 except multiprocessing.TimeoutError:
                     if attempt == 2:
                         raise MeshingError(
@@ -131,6 +143,8 @@ def _mesh_all(steps: list[Path], maxh: float, names: list[str], face_maxh=None, 
                             "메시 품질을 '거침'이나 '보통'으로 바꿔 보세요."
                         ) from None
                     raise _Retry from None
+                except _Stop as stop:  # check() raised: pass its exception on untouched
+                    raise stop.error from None
                 except Exception as e:  # netgen raises plain Exception
                     raise MeshingError(f"'{name}' 부품의 메시 생성에 실패했습니다: {e}") from e
             return results
@@ -144,6 +158,29 @@ def _mesh_all(steps: list[Path], maxh: float, names: list[str], face_maxh=None, 
 
 class _Retry(Exception):
     pass
+
+
+class _Stop(Exception):
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+
+def _wait(job, deadline: float, check: Callable[[], None] | None):
+    """job.get() until the deadline, calling check() (which may raise) a few times a
+    second so a cancel does not wait for Netgen."""
+    while True:
+        if check is not None:
+            try:
+                check()
+            except Exception as e:
+                raise _Stop(e) from e
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise multiprocessing.TimeoutError
+        try:
+            return job.get(timeout=min(left, 0.25))
+        except multiprocessing.TimeoutError:
+            continue
 
 
 def _mesh_or_raise(step: Path, maxh: float, name: str, face_maxh=None, grading=0.3):
@@ -192,7 +229,10 @@ def face_sizes(
     return maxh, per_part, notes
 
 
-def generate_mesh(project: Project, quality: str | None = None) -> FEMesh:
+def generate_mesh(
+    project: Project, quality: str | None = None, check: Callable[[], None] | None = None
+) -> FEMesh:
+    """`check` is polled while the parts are meshed and may raise to abandon the job."""
     quality = quality or project.mesh_quality
     preset = MESH_PRESETS[quality]
     parts = [p for p in project.parts if p.visible]
@@ -204,7 +244,7 @@ def generate_mesh(project: Project, quality: str | None = None) -> FEMesh:
     offset = 0
     with tempfile.TemporaryDirectory() as tmp:
         steps = [write_step(p.shape, Path(tmp) / f"part{p.id}.step") for p in parts]
-        meshes = _mesh_all(steps, maxh, [p.name for p in parts], per_part, preset.grading)
+        meshes = _mesh_all(steps, maxh, [p.name for p in parts], per_part, preset.grading, check)
         for part, (n, t, s, f) in zip(parts, meshes, strict=True):
             if len(t) == 0:
                 raise MeshingError(f"'{part.name}' 부품의 메시 생성에 실패했습니다.")

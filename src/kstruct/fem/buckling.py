@@ -19,7 +19,9 @@ from kstruct.fem.assembly import (
     SolverError,
     d_matrices,
     element_dofs,
+    inverse_operator,
     part_property,
+    rigid_body_modes,
     stiffness_matrix,
 )
 from kstruct.fem.bolts import bolt_stiffness_and_preload, build_bolts
@@ -109,8 +111,13 @@ def solve_buckling(
     # Eigenvalues closest to the shift come first; negative ones (load reversal) are dropped,
     # so ask for extra.
     k = min(2 * n_modes + 4, len(free) - 2)
+    sigma = 1e-3
     try:
-        lam, phi = spla.eigsh(Kf, k=k, M=-Kgf, sigma=1e-3, mode="buckling", which="LM", maxiter=300)
+        # buckling mode inverts K - σ(-Kg); with σ this small it stays positive definite
+        OPinv = inverse_operator(Kf + sigma * Kgf, rigid_body_modes(mesh.nodes)[free])
+        lam, phi = spla.eigsh(
+            Kf, k=k, M=-Kgf, sigma=sigma, mode="buckling", which="LM", maxiter=300, OPinv=OPinv
+        )
     except spla.ArpackNoConvergence as e:
         # no buckling mode anywhere near practical load levels (only tiny local compression)
         lam, phi = e.eigenvalues, e.eigenvectors

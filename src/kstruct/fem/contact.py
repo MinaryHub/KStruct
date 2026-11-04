@@ -5,13 +5,19 @@ outward normal n, the gap is g = g0 + n·(u_slave - Σ N_i u_master_i). Active p
 held at g = 0 by a stiff spring; a pair is released when its spring would pull (tension)
 and re-engaged when it penetrates.
 
-With a friction coefficient μ > 0 every closed pair also starts *sticking*: tangential
-springs of the same stiffness hold the relative sliding s = t·(u_slave − Σ N_i u_master_i)
-at zero. When the tangential force of a sticking pair exceeds μ·N (N = normal force) the
-pair *slips*: its tangential springs are removed and a constant friction force μ·N
-opposing the sliding it resisted is applied instead (updated with N each iteration); it
-sticks again when it moves back past the point where it stuck. Without friction parts
-slide freely along the contact.
+With a friction coefficient μ > 0 every closed pair also carries two tangential springs
+(TANGENT_PENALTY_FACTOR × the normal penalty) on the relative sliding
+s = t·(u_slave − Σ N_i u_master_i), relaxed at an anchor. Coulomb's law is enforced by
+return mapping on the anchors: the elastic trial force −α_t (s − base), measured from the
+anchor committed at the start of the load increment, is cut back onto the friction cone
+|F| ≤ μ N and the spring is re-anchored so that it carries exactly that force. The
+matrix does not change while the anchors move, so each sweep is one back-substitution
+(Aitken-accelerated), every pair keeps tangential support, and friction can only resist.
+When nearly every pair is on the cone and their forces add up to the grip μ ΣN, the
+interface slides as a whole: its springs leave the matrix and each pair carries μ N
+against the resultant. Friction depends on the load path, so solve_path applies the
+load in increments on top of the bolt tightening. Without friction parts slide freely
+along the contact.
 """
 
 from __future__ import annotations
@@ -34,7 +40,21 @@ from kstruct.model import Connection
 
 MAX_ITERATIONS = 40
 MAX_FLIPS = 3  # open/closed changes allowed per pair within one solve (anti-chatter)
-MAX_FRICTION_FLIPS = 8  # stick/slip changes allowed per pair within one solve
+# Friction depends on the load path: the external load is applied in this many equal
+# increments on top of the bolt tightening, each starting from the friction state the
+# previous one committed
+FRICTION_INCREMENTS = 4
+# Tangential springs are softer than the normal ones (and than ties): their stiffness sets
+# how fast the anchor iteration settles (each sweep removes about the share k / (k +
+# alpha_t) of the error, k = the parts' own stiffness against sliding). Elastic sliding
+# within the grip stays ~1e-3 of the displacements.
+TANGENT_PENALTY_FACTOR = 1e-3
+FRICTION_TOL = 1e-3  # anchor movement (as force) relative to the friction forces: settled
+# a gross slide: this share of the closed pairs on the friction cone, and the friction
+# forces adding up to this share of the grip (they cannot exceed it)
+GROSS_SLIP_SHARE = 0.9
+GROSS_GRIP_SHARE = 0.98
+MAX_FRICTION_SWEEPS = 400  # back-substitutions allowed for the anchor iteration of a solve
 # Contact uses a softer penalty than ties (constraints.PENALTY_FACTOR = 1e6): penetration
 # stays ~1e-3 of the contact displacement, and releasing a pair can then be done as a
 # low-rank update of the factorization (with 1e6 the subtraction cancels catastrophically)
@@ -51,10 +71,14 @@ class ContactSet:
     tol: float = 0.0  # penetration deeper than this engages a pair (mm, ~1e-6 edge)
     friction: float = 0.0  # Coulomb coefficient μ (0: frictionless)
     tcoefs: np.ndarray | None = None  # (P, 2, 21) sliding gradients along two tangents
-    stick: np.ndarray | None = None  # (P,) bool, meaningful for active pairs
-    slip_force: np.ndarray | None = None  # (P, 2) friction force on the slave (N) when slipping
-    anchor: np.ndarray | None = None  # (P, 2) sliding at which the tangential springs are relaxed
-    slip_dir: np.ndarray | None = None  # (P, 2) unit direction of the friction force once slipped
+    stick: np.ndarray | None = None  # (P,) bool: within the grip (meaningful when closed)
+    anchor: np.ndarray | None = None  # (P, 2) sliding at which the tangential springs relax
+    base: np.ndarray | None = None  # (P, 2) anchor committed at the start of the increment
+    gross: bool = False  # the interface slides as a whole: no springs, mu N along `slide`
+    slide: np.ndarray | None = None  # (2,) unit direction of the friction force when gross
+    slip_force: np.ndarray | None = None  # (P, 2) friction force on the slave when gross
+    aitken: tuple | None = None  # (last anchor step, its relaxation, closed pairs) of a solve
+    normal: np.ndarray | None = None  # (P,) compressive normal force of the last iteration (N)
 
     def __post_init__(self) -> None:
         n = len(self.active)
@@ -64,34 +88,61 @@ class ContactSet:
             self.slip_force = np.zeros((n, 2))
         if self.anchor is None:
             self.anchor = np.zeros((n, 2))
-        if self.slip_dir is None:
-            self.slip_dir = np.zeros((n, 2))
+        if self.base is None:
+            self.base = np.zeros((n, 2))
 
     @property
     def has_friction(self) -> bool:
         return self.friction > 0 and self.tcoefs is not None
 
     @property
-    def sticking(self) -> np.ndarray:
-        """Pairs that carry tangential springs."""
-        if not self.has_friction:
+    def sprung(self) -> np.ndarray:
+        """Pairs that carry tangential springs: every closed pair unless the interface
+        slides as a whole."""
+        if not self.has_friction or self.gross:
             return np.zeros(len(self.active), dtype=bool)
-        return self.active & self.stick
+        return self.active.copy()
 
     @property
     def slipping(self) -> np.ndarray:
         if not self.has_friction:
             return np.zeros(len(self.active), dtype=bool)
-        return self.active & ~self.stick
+        return self.active & (~self.stick | self.gross)
+
+    def slip_share(self) -> float:
+        """Share of the clamping (normal) force that sits on slipping pairs. Counting pairs
+        would mislead: the corner nodes of quadratic triangles carry next to no normal
+        force under a uniform pressure, so they "slip" anywhere while transmitting
+        nothing."""
+        if not self.has_friction or self.normal is None:
+            return 0.0
+        n = np.maximum(self.normal, 0.0)
+        total = n[self.active].sum()
+        return float(n[self.slipping].sum() / total) if total > 0 else 0.0
+
+    def commit_friction(self, u: np.ndarray, alpha_t: float) -> None:
+        """End of a load increment: the springs keep the friction forces they carry (for a
+        gross slide the anchors move onto the friction cone) and become the reference
+        the next increment measures its elastic trial forces from. A gross slide carries
+        over: the load of the next increment grows in the same direction."""
+        if not self.has_friction:
+            return
+        if self.gross:
+            # the load grows in proportion: a slide as a whole goes on in the next
+            # increment (finding it again from sticking springs takes hundreds of sweeps)
+            self.anchor = self.sliding(u) + self.slip_force / alpha_t
+        else:
+            self.stick[:] = True
+        self.base = self.anchor.copy()
 
     def reset_friction(self) -> None:
         """Every pair sticks again with relaxed springs (a new load is a new solution, not
-        an increment: the stick/slip pattern and the slip directions found under another
-        load would only mislead the first iterations)."""
+        an increment of the last one)."""
         self.stick[:] = True
         self.slip_force[:] = 0.0
         self.anchor[:] = 0.0
-        self.slip_dir[:] = 0.0
+        self.base[:] = 0.0
+        self.gross = False
 
     def gap(self, u: np.ndarray) -> np.ndarray:
         return self.gap0 + np.einsum("pi,pi->p", self.coefs, u[self.dofs])
@@ -204,6 +255,7 @@ class ContactSolver:
         self.contacts = contacts
         self.factorize = factorize
         self.alpha = CONTACT_PENALTY_FACTOR * scale
+        self.alpha_t = TANGENT_PENALTY_FACTOR * self.alpha
         self.position = np.full(self.n_dof, -1)
         self.position[free] = np.arange(len(free))
         # tiny springs everywhere keep parts that are only held by contact from being
@@ -214,11 +266,15 @@ class ContactSolver:
         self._fact_solve = None
         self._fact_state: list[tuple[np.ndarray, np.ndarray]] | None = None
         self._update = None  # (signature, C, Y, S) of the last Woodbury update
-        self._t_factorize = np.inf  # measured cost of one factorization (s)
-        self._t_solve = 0.0  # measured cost of one back-substitution (s)
-        self._t_column = None  # measured cost per column of a batched back-substitution
+        # how many update columns (back-substitutions) one refactorization is worth; set
+        # from the factorization's size, never from wall-clock time (that made the result
+        # of a contact solve change from run to run)
+        self._breakeven = 0.0
         self.factorizations = 0
         self.updates = 0
+        # False once any solve stopped at MAX_ITERATIONS with the state still changing:
+        # the result then belongs to an arbitrary intermediate contact/friction state
+        self.converged = True
 
     # --- assembly --------------------------------------------------------------------
 
@@ -233,33 +289,36 @@ class ContactSolver:
         dofs = np.where(dofs >= 0, dofs, 0)
         return dofs, c
 
-    def _spring_rows(self, cs: ContactSet) -> list[tuple[np.ndarray, np.ndarray]]:
-        """(dofs, coefs) of every penalty spring of the current state: the normal spring of
-        each closed pair and the two tangential springs of each sticking pair."""
-        rows = [self._rows(cs, cs.active)]
+    def _springs(self, cs: ContactSet, active, sprung) -> list:
+        """(mask, coefs, stiffness) of every penalty spring family for a given state: the
+        normal spring of each closed pair and the two tangential springs of each sprung
+        pair."""
+        out = [(active, None, self.alpha)]
         if cs.has_friction:
-            rows += [self._rows(cs, cs.sticking, cs.tcoefs[:, k]) for k in range(2)]
-        return rows
+            out += [(sprung, cs.tcoefs[:, k], self.alpha_t) for k in range(2)]
+        return out
 
     def _penalty(self) -> tuple[sp.csr_matrix, np.ndarray]:
         rows, cols, vals = [], [], []
         f_c = np.zeros(len(self.free))
         for cs in self.contacts:
-            for dofs, c in self._spring_rows(cs):
+            for mask, coefs, stiffness in self._springs(cs, cs.active, cs.sprung):
+                dofs, c = self._rows(cs, mask, coefs)
                 rows.append(np.repeat(dofs, 21, axis=1).ravel())
                 cols.append(np.tile(dofs, (1, 21)).ravel())
-                vals.append(self.alpha * np.einsum("pi,pj->pij", c, c).ravel())
+                vals.append(stiffness * np.einsum("pi,pj->pij", c, c).ravel())
             dofs, c = self._rows(cs, cs.active)
             np.add.at(f_c, dofs.ravel(), (self.alpha * c * -cs.gap0[cs.active][:, None]).ravel())
             if cs.has_friction:
+                sprung, gross = cs.sprung, cs.active & cs.gross
                 for k in range(2):
-                    # sticking: spring relaxed at the anchor, f = -alpha (s - anchor)
-                    dofs, c = self._rows(cs, cs.sticking, cs.tcoefs[:, k])
-                    offset = self.alpha * cs.anchor[cs.sticking, k]
+                    # springs relaxed at the anchor: f = -alpha_t (s - anchor)
+                    dofs, c = self._rows(cs, sprung, cs.tcoefs[:, k])
+                    offset = self.alpha_t * cs.anchor[sprung, k]
                     np.add.at(f_c, dofs.ravel(), (c * offset[:, None]).ravel())
-                    # slipping: Coulomb force on the slave, reaction on the master
-                    dofs, c = self._rows(cs, cs.slipping, cs.tcoefs[:, k])
-                    force = cs.slip_force[cs.slipping, k]
+                    # gross slide: Coulomb force on the slave, reaction on the master
+                    dofs, c = self._rows(cs, gross, cs.tcoefs[:, k])
+                    force = cs.slip_force[gross, k]
                     np.add.at(f_c, dofs.ravel(), (c * force[:, None]).ravel())
         K_pen = sp.csr_matrix(
             (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
@@ -268,10 +327,10 @@ class ContactSolver:
         return K_pen, f_c
 
     def _state(self) -> list[tuple[np.ndarray, np.ndarray]]:
-        return [(cs.active.copy(), cs.sticking.copy()) for cs in self.contacts]
+        return [(cs.active.copy(), cs.sprung) for cs in self.contacts]
 
     def _signature(self) -> tuple:
-        return tuple(cs.active.tobytes() + cs.sticking.tobytes() for cs in self.contacts)
+        return tuple(cs.active.tobytes() + cs.sprung.tobytes() for cs in self.contacts)
 
     def matrix(self) -> sp.csr_matrix:
         """Reduced matrix of the current active set."""
@@ -289,11 +348,16 @@ class ContactSolver:
         n = len(self.free)
         k = 0
         for cs, (old_active, old_stick) in zip(self.contacts, self._fact_state, strict=True):
-            springs = [(cs.active, old_active, None)]
-            if cs.has_friction:
-                springs += [(cs.sticking, old_stick, cs.tcoefs[:, j]) for j in range(2)]
-            for now, old, coefs in springs:
-                for mask, sign in ((now & ~old, 1.0), (~now & old, -1.0)):
+            springs = [
+                (now, old, coefs, stiffness)
+                for (now, coefs, stiffness), (old, _, _) in zip(
+                    self._springs(cs, cs.active, cs.sprung),
+                    self._springs(cs, old_active, old_stick),
+                    strict=True,
+                )
+            ]
+            for now, old, coefs, stiffness in springs:
+                for mask, sign in ((now & ~old, stiffness), (~now & old, -stiffness)):
                     if not mask.any():
                         continue
                     dofs, c = self._rows(cs, mask, coefs)
@@ -308,61 +372,34 @@ class ContactSolver:
         C = sp.csr_matrix(
             (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(k, n)
         )
-        return C, self.alpha * np.concatenate(signs)
+        return C, np.concatenate(signs)
 
     def reduced_solve(self, K_c: sp.csr_matrix, rhs: np.ndarray) -> np.ndarray:
-        import time
-
         change = self._change()
         k = change[0].shape[0] if change is not None else MAX_UPDATE_RANK + 1
         if k == 0:
-            return self._timed_solve(rhs)
-        # the update costs about k back-substitutions; refactorize when that would take
-        # longer than a fresh factorization (small systems factorize fast)
-        per_column = self._t_column if self._t_column is not None else 5 * self._t_solve
-        log.debug(
-            "contact solve: %d changed pairs, update ~%.1fs vs factorize %.1fs",
-            k,
-            k * per_column,
-            self._t_factorize,
-        )
-        if k <= MAX_UPDATE_RANK and k * per_column < self._t_factorize:
+            return self._fact_solve(rhs)
+        # the update costs about k back-substitutions; refactorize when that is more than
+        # a fresh factorization is worth (small systems factorize fast)
+        log.debug("contact solve: %d changed pairs, break-even %.0f", k, self._breakeven)
+        if k <= MAX_UPDATE_RANK and k < self._breakeven:
             x = self._woodbury(K_c, rhs, *change)
             if x is not None:
                 return x
-        t0 = time.perf_counter()
         self._fact_solve = self.factorize(K_c)
-        self._t_factorize = time.perf_counter() - t0
+        self._breakeven = float(getattr(self._fact_solve, "breakeven", 0.0))
         self._fact_state = self._state()
         self._update = None
         self.factorizations += 1
-        x = self._timed_solve(rhs)
-        if self._t_column is None:  # calibrate the batched cost on two columns
-            self._solve_columns(np.column_stack([rhs, rhs]))
-        return x
-
-    def _timed_solve(self, rhs: np.ndarray) -> np.ndarray:
-        import time
-
-        t0 = time.perf_counter()
-        x = self._fact_solve(rhs)
-        self._t_solve = max(time.perf_counter() - t0, 1e-6)
-        return x
+        return self._fact_solve(rhs)
 
     def _solve_columns(self, B: np.ndarray) -> np.ndarray:
-        import time
-
-        t0 = time.perf_counter()
         try:
             Y = self._fact_solve(np.asfortranarray(B))
             if Y.shape != B.shape:
                 raise ValueError
         except Exception:  # solver only takes vectors
             Y = np.column_stack([self._fact_solve(B[:, j]) for j in range(B.shape[1])])
-        # SuperLU solves a block of right-hand sides column by column; measure the real
-        # per-column cost (several times a single warm solve) for the update/refactorize
-        # decision
-        self._t_column = (time.perf_counter() - t0) / max(B.shape[1], 1)
         return np.asarray(Y)
 
     def _woodbury(self, K_c, rhs: np.ndarray, C: sp.csr_matrix, D: np.ndarray):
@@ -393,20 +430,49 @@ class ContactSolver:
 
     # --- active-set loop -------------------------------------------------------------
 
-    def solve(self, f: np.ndarray) -> tuple[np.ndarray, sp.csr_matrix]:
+    @property
+    def has_friction(self) -> bool:
+        return any(cs.has_friction for cs in self.contacts)
+
+    def solve_path(self, f_start: np.ndarray, f: np.ndarray) -> tuple[np.ndarray, sp.csr_matrix]:
+        """Settle the contact under f_start (the bolt tightening, or nothing), then apply
+        the rest of the load in FRICTION_INCREMENTS steps, each from the friction state the
+        previous one committed. Without friction the answer does not depend on the path:
+        a single solve under f."""
+        if not self.has_friction:
+            return self.solve(f)
+        u = np.zeros(self.n_dof)
+        if np.any(f_start):
+            u = self.solve(f_start)[0]
+        else:
+            for cs in self.contacts:
+                cs.reset_friction()
+        for k in range(1, FRICTION_INCREMENTS + 1):
+            for cs in self.contacts:
+                cs.commit_friction(u, self.alpha_t)
+            u, K_c = self.solve(f_start + (f - f_start) * (k / FRICTION_INCREMENTS), True)
+        return u, K_c  # the last increment's stick/slip state is the reported one
+
+    def solve(self, f: np.ndarray, keep_friction: bool = False) -> tuple[np.ndarray, sp.csr_matrix]:
         """Settle the active set (and the stick/slip state) under the full-size load f.
-        Returns the displacement and the reduced matrix of the final contact state."""
+        Returns the displacement and the reduced matrix of the final contact state.
+        keep_friction starts from the committed friction state (an increment of
+        solve_path) instead of relaxing every tangential spring at zero sliding."""
         f_f = f[self.free]
         load_scale = max(np.abs(f).max(), 1e-30)
         u = np.zeros(self.n_dof)
         K_c = self.K_ff
         changed = True
         for cs in self.contacts:  # the open/closed state carries over, friction starts afresh
-            cs.reset_friction()
+            cs.aitken = None
+            if not keep_friction:
+                cs.reset_friction()
         seen = {self._signature()}
         flips = [np.zeros(len(cs.active), dtype=int) for cs in self.contacts]
-        tflips = [np.zeros(len(cs.active), dtype=int) for cs in self.contacts]
-        for _ in range(MAX_ITERATIONS):
+        exhausted = True
+        changes = 0  # iterations that changed the springs (each needs a new solve matrix)
+        sweeps = 0  # iterations that only moved anchors / friction forces (same matrix)
+        while True:
             K_pen, f_c = self._penalty()
             K_c = self.K_ff + K_pen
             u = np.zeros(self.n_dof)
@@ -421,9 +487,9 @@ class ContactSolver:
             # iterations, so each pair may change state only a few times per solve.
             residual = self.K @ u - f
             geom_tol = 1e-6 * max(np.abs(u).max(), 1e-30)
-            changed = False  # a pair changed state (needs new springs)
-            forces_changed = False  # only the Coulomb forces moved (same springs)
-            for cs, count, tcount in zip(self.contacts, flips, tflips, strict=True):
+            changed = False  # the springs changed (pairs opened / closed, gross slide)
+            forces_changed = False  # only anchors or Coulomb forces moved (same matrix)
+            for cs, count in zip(self.contacts, flips, strict=True):
                 g = cs.gap(u)
                 # K u - f on the slave node is -alpha*g*n (the spring pushing it back)
                 spring = -np.einsum("pi,pi->p", cs.coefs[:, :3], residual[cs.dofs[:, :3]])
@@ -436,93 +502,132 @@ class ContactSolver:
                 new_active = np.where(cs.active, spring <= force_tol, g < -max(cs.tol, geom_tol))
                 frozen = count >= MAX_FLIPS
                 new_active = np.where(frozen, cs.active, new_active)
-                new_stick = cs.stick.copy()
-                if cs.has_friction:
-                    new_stick, forces_moved = self._coulomb(
-                        cs,
-                        new_active,
-                        tcount >= MAX_FRICTION_FLIPS,
-                        residual,
-                        u,
-                        -spring,
-                        force_tol,
-                    )
-                    forces_changed |= forces_moved
                 flipped = new_active != cs.active
-                tflipped = new_stick != cs.stick
                 count += flipped
-                tcount += tflipped
-                changed |= bool(np.any(flipped | tflipped))
-                cs.active, cs.stick = new_active, new_stick
+                changed |= bool(np.any(flipped))
+                if cs.has_friction:
+                    switched, moved = self._coulomb(cs, new_active, u, -spring, force_tol)
+                    changed |= switched
+                    forces_changed |= moved
+                cs.active = new_active
+            log.debug(
+                "contact iteration: %d open/closed changes so far, springs %s, forces %s",
+                sum(int(x.sum()) for x in flips),
+                "changed" if changed else "same",
+                "moving" if forces_changed else "settled",
+            )
             if not changed and not forces_changed:
+                exhausted = False
                 break
             if changed:
+                changes += 1
                 signature = self._signature()
                 if signature in seen:  # chattering between two states: keep the current one
                     log.info("contact: active set cycles, stopping")
+                    exhausted = False
                     break
                 seen.add(signature)
+                if changes >= MAX_ITERATIONS:
+                    break
+            else:
+                sweeps += 1
+                if sweeps >= MAX_FRICTION_SWEEPS:
+                    break
+        if exhausted:
+            self.converged = False
+            log.warning(
+                "contact: no settled state after %d state changes and %d friction sweeps",
+                changes,
+                sweeps,
+            )
         log.info(
-            "contact: %d iterations, %d factorizations, %d low-rank updates",
-            MAX_ITERATIONS if changed else _ + 1,
+            "contact: %d iterations (%d state changes), %d factorizations, %d low-rank updates",
+            changes + sweeps + 1,
+            changes,
             self.factorizations,
             self.updates,
         )
         return u, K_c
 
-    def _coulomb(self, cs, new_active, frozen, residual, u, normal, force_tol):
-        """Stick/slip decision of one contact set. `normal` is the compressive normal force
-        of each pair (N); returns the new stick mask and whether the friction forces of
-        slipping pairs changed by more than 0.1 %.
+    def _coulomb(self, cs, new_active, u, normal, force_tol):
+        """Friction update of one contact set after a solve; `normal` is the compressive
+        normal force of each pair (N). Returns (springs changed, forces still moving).
 
-        A sticking pair slips when its spring force -alpha (s - anchor) exceeds mu N; the
-        friction force then points along that spring force (against the sliding the pair
-        was resisting) and keeps that direction: the direction a slipping pair's node moves
-        afterwards is dominated by the elastic response of its neighbours to the force
-        changes around it, so it would just flip from iteration to iteration. A slipping
-        pair sticks again when it has moved back past its anchor along the friction force
-        (the anchor is then reset to the current sliding), or when it opens. A pair that
-        keeps alternating is frozen in the slipping state, whose force is bounded by mu N;
-        frozen in the sticking state it could hold any force.
+        Partial slip (return mapping on fixed springs): the elastic trial force
+        -alpha_t (s - base) is measured from the anchors committed at the start of the
+        increment. Within mu N the pair sticks and its spring stays at the base;
+        beyond, the force is cut back onto the friction cone, mu N along the trial force,
+        and the spring is re-anchored to carry exactly that force at the current sliding.
+        The springs never leave the matrix, so each sweep is one back-substitution, no
+        pair can lose its tangential support (a fully slipping bolted plate used to spin
+        about the bolt), and friction can only resist: a pair pushed back by its own
+        friction force sticks again.
+
+        Gross slide: when the tangential load on the whole interface exceeds mu sum(N),
+        no anchor can hold it; the springs leave and every pair carries mu N against the
+        resultant (the part is then held only by whatever else holds it, or slides away).
         """
         sliding = cs.sliding(u)
+        cs.normal = normal
         limit = cs.friction * np.maximum(normal, 0.0)
-        trial = -self.alpha * (sliding - cs.anchor)
+        # pairs that are open (or have just closed) are force-free where they are
+        fresh = ~new_active | ~cs.active
+        cs.base[fresh] = sliding[fresh]
+        cs.anchor[fresh] = sliding[fresh]
+        trial = -self.alpha_t * (sliding - cs.base)
         magnitude = np.linalg.norm(trial, axis=1)
-        was_slipping = cs.active & ~cs.stick
-        start = new_active & ~was_slipping & (magnitude > limit * (1 + 1e-6) + force_tol)
-        # The sticking pairs shed load to each other one iteration at a time; when the
-        # whole interface is pushed beyond its grip mu * sum(N) in one direction, it slides
-        # as a whole: let every sticking pair slip at once instead of cascading.
-        holding = new_active & ~was_slipping
-        whole = None  # direction of the sliding when the interface slides as a whole
-        if holding.any():
-            slip_norm = np.linalg.norm(cs.slip_force, axis=1).sum()
-            resultant = trial[holding].sum(axis=0) + cs.slip_force.sum(axis=0)
-            total = magnitude[holding].sum() + slip_norm
-            aligned = np.linalg.norm(resultant) > 0.9 * total
-            if aligned and total > limit[new_active].sum() * (1 + 1e-3) + force_tol:
-                start |= holding & (magnitude > force_tol)
-                whole = resultant / np.linalg.norm(resultant)
-        returned = np.einsum("pk,pk->p", sliding - cs.anchor, cs.slip_dir) > 0
-        keep = was_slipping & new_active & (~returned | frozen)
-        slip = start | keep
-        first = start & ~np.any(cs.slip_dir != 0, axis=1)
-        slip_dir = np.where(
-            first[:, None], trial / np.maximum(magnitude, 1e-300)[:, None], cs.slip_dir
+        grip = limit[new_active].sum()
+        # round-off-sized tangential forces on nearly unloaded pairs are not slip
+        over = new_active & (magnitude > limit * (1 + 1e-6) + force_tol)
+        # A gross slide needs both: more tangential load than the grip, and no sticking
+        # core left. Part of the load can be self-equilibrated (a pressed block's Poisson
+        # expansion held back by a side support) and relaxes by partial slip instead.
+        force = trial.copy()
+        force[over] *= (limit[over] / magnitude[over])[:, None]
+        if not cs.gross and over.sum() >= GROSS_SLIP_SHARE * new_active.sum() > 0:
+            carried = force[new_active].sum(axis=0)
+            demand = np.linalg.norm(carried)
+            if demand >= GROSS_GRIP_SHARE * grip:
+                cs.gross = True
+                cs.slide = carried / demand
+                log.info(
+                    "contact: interface slides as a whole (%.4g N of grip %.4g N)", demand, grip
+                )
+                cs.slip_force = np.where(new_active[:, None], limit[:, None] * cs.slide, 0.0)
+                cs.stick[:] = False
+                return True, True
+        if cs.gross:
+            new_force = np.where(new_active[:, None], limit[:, None] * cs.slide, 0.0)
+            change = np.abs(new_force - cs.slip_force).sum()
+            cs.slip_force = new_force
+            cs.stick[:] = False
+            return False, bool(change > FRICTION_TOL * max(np.abs(new_force).sum(), force_tol))
+        anchor = np.where(new_active[:, None], sliding + force / self.alpha_t, cs.anchor)
+        movement = self.alpha_t * np.abs(anchor - cs.anchor)[new_active].sum()
+        # Aitken (Irons-Tuck) acceleration of the anchor fixed point: each plain sweep only
+        # removes a small share of the error when the springs are stiff against the parts
+        step = (anchor - cs.anchor)[new_active].ravel()
+        prev = cs.aitken
+        omega = 1.0
+        if prev is not None and prev[0].shape == step.shape and np.array_equal(prev[2], new_active):
+            d = step - prev[0]
+            dd = float(d @ d)
+            if dd > 0:
+                omega = float(np.clip(-prev[1] * (prev[0] @ d) / dd, 0.1, 20.0))
+        cs.aitken = (step, omega, new_active.copy())
+        if omega != 1.0:
+            anchor[new_active] = cs.anchor[new_active] + omega * (anchor - cs.anchor)[new_active]
+        total = np.abs(force[new_active]).sum()
+        log.debug(
+            "friction: closed %d, slipping %d, anchor movement %.3g N of %.3g N",
+            int(new_active.sum()),
+            int(over.sum()),
+            movement,
+            total,
         )
-        if whole is not None:
-            # the local (Poisson-type) shear that set the first directions is dwarfed by
-            # the sliding of the whole interface: every slipping pair resists that sliding
-            slip_dir[slip] = whole
-        new_force = np.where(slip[:, None], limit[:, None] * slip_dir, 0.0)
-        anchor = cs.anchor.copy()
-        reset = ~new_active | (was_slipping & ~slip)
-        anchor[reset] = sliding[reset]  # re-engaging / sticking again is force-free
-        delta = np.abs(new_force - cs.slip_force).max() if slip.any() else 0.0
-        scale = max(np.abs(new_force).max() if slip.any() else 0.0, force_tol)
-        cs.slip_force, cs.anchor, cs.slip_dir = new_force, anchor, slip_dir
-        return ~slip, bool(delta > 1e-3 * scale)
+        cs.anchor = anchor
+        cs.stick = ~over
+        return False, bool(movement > FRICTION_TOL * max(total, force_tol))
 
     def current_solver(self):
         """Exact solver for the current active set on full-size right-hand sides (used for

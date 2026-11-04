@@ -237,6 +237,13 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
                 "최대 응력이 볼트 머리·너트가 누르는 자리에 있습니다. 체결력이 좁은 면적에 몰리는 "
                 "국부 응력이므로, 와셔를 쓰거나 체결력을 낮추거나 볼트 자리 두께를 늘리는 것을 검토하세요."
             )
+    if not getattr(result, "contact_converged", True):
+        notes.insert(
+            0,
+            "접촉·마찰 상태 계산이 정해진 반복 횟수 안에 수렴하지 않았습니다. 접촉면과 볼트의 "
+            "결과(특히 볼트 전단력, 마찰로 전달되는 힘)는 믿기 어렵습니다. 마찰 계수를 0으로 "
+            "두고 비교하거나 메시 품질을 바꿔 결과가 비슷한지 확인하세요.",
+        )
     for i, (closed, total, slipping) in enumerate(result.contact or []):
         if closed == 0:
             notes.append(f"접촉 {i + 1}: 맞닿은 면이 모두 떨어졌습니다(힘을 전달하지 않음).")
@@ -247,7 +254,7 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             )
         if slipping:
             notes.append(
-                f"접촉 {i + 1}: 눌려 있는 면의 약 {slipping / closed * 100:.0f}%가 마찰 한계를 넘어 "
+                f"접촉 {i + 1}: 눌려 있는 면의 약 {slipping / closed * 100:.0f}%(누르는 힘 기준)가 마찰 한계를 넘어 "
                 "미끄러집니다. 미끄러지면 안 되는 자리라면 체결력을 높이거나 핀·키를 검토하세요."
             )
     size = float(np.ptp(mesh.nodes, axis=0).max())

@@ -16,6 +16,11 @@ CHUNK = 4000  # elements per assembly batch (bounds peak memory)
 # measured: at 90k DOF the direct solve (21 s) still beats AMG (25 s); contact and bolt
 # preload loops factorize several times, so the direct path is kept up to this size
 DIRECT_SOLVER_MAX_DOF = 120_000
+# A refactorization costs about this many back-substitutions per nonzero-per-column of
+# the factor (measured 0.17-0.30 from 17k to 85k DOF); the contact loop uses it to choose
+# between a low-rank update and a fresh factorization without timing anything
+REFACTOR_COLUMNS_PER_FILL = 0.25
+AMG_BREAKEVEN = 2.0  # AMG setup is worth about this many preconditioned CG solves
 
 Progress = Callable[[float, str], None]
 
@@ -116,6 +121,7 @@ def make_solver(K: sp.csr_matrix, near_null: np.ndarray):
                 raise SolverError("unstable")
             return x
 
+        solve.breakeven = REFACTOR_COLUMNS_PER_FILL * lu.nnz / max(n, 1)
         return solve
 
     import pyamg
@@ -133,7 +139,19 @@ def make_solver(K: sp.csr_matrix, near_null: np.ndarray):
             raise SolverError("unstable")
         return x
 
+    solve.breakeven = AMG_BREAKEVEN
     return solve
+
+
+def inverse_operator(A: sp.spmatrix, near_null: np.ndarray) -> spla.LinearOperator:
+    """A⁻¹ as a LinearOperator for eigsh's OPinv (shift-invert).
+
+    Without it eigsh factorizes with scipy's default splu (COLAMD + partial pivoting):
+    measured 2x slower on a plain 94k-DOF bracket, far worse with penalty ties, and with
+    no iterative fallback for large models. A must be the shifted matrix K - σM.
+    """
+    solve = make_solver(A.tocsr(), near_null)
+    return spla.LinearOperator(A.shape, matvec=lambda x: solve(np.ravel(x)), dtype=float)
 
 
 def solve_spd(K: sp.csr_matrix, f: np.ndarray, near_null: np.ndarray) -> np.ndarray:

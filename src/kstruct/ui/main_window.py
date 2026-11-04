@@ -68,7 +68,7 @@ from kstruct.ui import prefs, steps
 from kstruct.ui.dialogs import AboutDialog, save_bug_report
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 from kstruct.ui.viewer import ModelViewer, ResultField
-from kstruct.ui.worker import run_job
+from kstruct.ui.worker import Cancelled, JobHandle, run_job
 from kstruct.units import fmt, quantity, system_of
 
 CAD_FILTER = (
@@ -146,6 +146,7 @@ class MainWindow(QMainWindow):
         self._sample_files: set[Path] = set()
         self.materials: dict = {}
         self._busy = False
+        self._job: JobHandle | None = None  # the running mesh / solve job
 
         self.viewer = ModelViewer()
         self.viewer.selection_changed.connect(self._selection_changed)
@@ -266,6 +267,8 @@ class MainWindow(QMainWindow):
         prefs.set_window_state(bytes(self.saveGeometry().data()), self._splitter.sizes())
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if self._job is not None:  # don't leave a solve running behind a closed window
+            self._job.cancel()
         if self.project is not None and self._dirty and self.ask_before_close:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Question)
@@ -636,6 +639,7 @@ class MainWindow(QMainWindow):
 
         def done(mesh):
             self._busy = False
+            self._job = None
             panel.set_busy(False)
             self.mesh = mesh
             self._invalidate_result()
@@ -645,10 +649,28 @@ class MainWindow(QMainWindow):
 
         def failed(e):
             self._busy = False
+            self._job = None
             panel.set_busy(False)
+            if isinstance(e, Cancelled):
+                panel.info.setText("메시 만들기를 취소했습니다.")
+                return
             self.warn(friendly_error(e))
 
-        run_job(lambda progress: generate_mesh(project), done, failed)
+        self._job = run_job(
+            lambda progress: generate_mesh(project, check=progress.check), done, failed
+        )
+
+    def cancel_job(self) -> None:
+        """Stop the running mesh / solve job at its next checkpoint."""
+        if self._job is not None and not self._job.cancelled:
+            log.info("job cancel requested")
+            self._job.cancel()
+            solve_panel = self.panels[STEP_SOLVE]
+            text = "취소하는 중… 지금 계산 중인 단계가 끝나면 멈춥니다."
+            if solve_panel.cancel.isVisible():
+                solve_panel.status.setText(text)
+            else:
+                self.panels[STEP_MESH].info.setText(text)
 
     def solve(self) -> None:
         if self.project is None or self._busy:
@@ -673,7 +695,7 @@ class MainWindow(QMainWindow):
             m = mesh
             if m is None:
                 progress(0.02, "메시 만드는 중 (잠시 걸릴 수 있습니다)")
-                m = generate_mesh(project)
+                m = generate_mesh(project, check=progress.check)
             if kind == AnalysisKind.MODAL:
                 return m, solve_modal(project, m, materials, project.n_modes, progress)
             if kind == AnalysisKind.THERMAL:
@@ -684,6 +706,7 @@ class MainWindow(QMainWindow):
 
         def done(value):
             self._busy = False
+            self._job = None
             self.previous = self._key_numbers() or self.previous  # solved again unchanged
             self._solved_quality = project.mesh_quality
             self.mesh, self.result = value
@@ -714,11 +737,15 @@ class MainWindow(QMainWindow):
 
         def failed(e):
             self._busy = False
+            self._job = None
             panel.set_progress(None, "")
+            if isinstance(e, Cancelled):
+                panel.status.setText("해석을 취소했습니다.")
+                return
             log.warning("solve failed: %s: %s", type(e).__name__, e)
             self.warn(friendly_error(e))
 
-        run_job(job, done, failed, lambda f, m: panel.set_progress(f, m))
+        self._job = run_job(job, done, failed, lambda f, m: panel.set_progress(f, m))
 
     # --- results ---------------------------------------------------------------------
 
