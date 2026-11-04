@@ -46,7 +46,9 @@ class StaticResult:
     reactions: list[np.ndarray]  # per fixture, (3,) N
     applied_load: np.ndarray  # (3,) N, sum of external forces
     thermal: ThermalResult | None = None  # temperature field used for thermal stress
-    contact: list[tuple[int, int, int]] | None = None  # per contact: (closed, total, slipping)
+    # per contact: (closed pairs, all pairs, slipping) where slipping = closed x the share
+    # of the clamping force on slipping pairs (see ContactSet.slip_share)
+    contact: list[tuple[int, int, int]] | None = None
     contact_converged: bool = True  # False: the contact/friction iteration did not settle
     bolts: list | None = None  # fem.bolts.BoltResult per bolt
     bolt_nodes: np.ndarray | None = None  # nodes under bolt heads / nuts
@@ -271,6 +273,7 @@ def solve_static(
         else None
     )
 
+    f_preload = np.zeros(n_dof)  # the bolt tightening, applied before the other loads
     if any(c.bolt.preload for c in connectors):
         joined = {
             frozenset((x.faces_a[0].part_id, x.faces_b[0].part_id)) for x in project.connections
@@ -290,10 +293,11 @@ def solve_static(
             unit_solver = linear_solver()
         axial = axial_vectors(connectors, n_dof)
         pulls = locked_pulls(connectors, axial, unit_solver)
-        f = f + bolt_stiffness_and_preload(connectors, n_dof, pulls)[1]
+        f_preload = bolt_stiffness_and_preload(connectors, n_dof, pulls)[1]
+        f = f + f_preload
     if contact_solver is not None:
         report(0.5, "접촉 상태 계산 중 (반복)")
-        u = contact_solver.solve(f)[0]
+        u = contact_solver.solve_path(f_preload, f)[0]
         # only the stabilising springs hold a part that slid or lifted off
         if np.abs(u).max() > 0.2 * size:
             raise SolverError("contact unstable")
@@ -324,7 +328,14 @@ def solve_static(
         reactions=reactions,
         applied_load=applied,
         thermal=thermal,
-        contact=[(int(cs.active.sum()), len(cs.active), int(cs.slipping.sum())) for cs in contacts],
+        contact=[
+            (
+                int(cs.active.sum()),
+                len(cs.active),
+                int(round(cs.slip_share() * cs.active.sum())),
+            )
+            for cs in contacts
+        ],
         contact_converged=contact_solver.converged if contact_solver is not None else True,
         bolts=evaluate(connectors, u, pulls),
         bolt_nodes=np.unique(

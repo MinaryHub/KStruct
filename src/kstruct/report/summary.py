@@ -254,7 +254,7 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             )
         if slipping:
             notes.append(
-                f"접촉 {i + 1}: 눌려 있는 면의 약 {slipping / closed * 100:.0f}%가 마찰 한계를 넘어 "
+                f"접촉 {i + 1}: 눌려 있는 면의 약 {slipping / closed * 100:.0f}%(누르는 힘 기준)가 마찰 한계를 넘어 "
                 "미끄러집니다. 미끄러지면 안 되는 자리라면 체결력을 높이거나 핀·키를 검토하세요."
             )
     size = float(np.ptp(mesh.nodes, axis=0).max())

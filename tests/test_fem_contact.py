@@ -262,35 +262,34 @@ def _bolted_lap(friction: float, shear: float, preload: float) -> Project:
     return project
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known limitation: with preload + friction the stick/slip iteration does not "
-    "settle within MAX_ITERATIONS here (the bolt keeps ~830 N; the result is flagged "
-    "contact_converged=False). It used to pass or fail at random because the solver chose "
-    "between low-rank update and refactorization by wall-clock time.",
-)
 def test_friction_relieves_the_bolt_of_part_of_the_shear():
     """Without friction the bolt carries the whole 1000 N; with μ = 0.2 the preloaded
     interface takes a good part of it. (The plates have no head bearing faces here, so the
     bolt pulls on the hole walls and the plates dish: the friction grip is well below μ·P.)"""
     _, plain = _solve(_bolted_lap(0.0, 1000.0, 10_000.0))
-    _, gripped = _solve(_bolted_lap(0.2, 1000.0, 10_000.0))
+    project = _bolted_lap(0.2, 1000.0, 10_000.0)
+    mesh, gripped = _solve(project)
     assert plain.bolts[0].shear == pytest.approx(1000.0, rel=0.05)
+    assert gripped.contact_converged
     assert gripped.bolts[0].shear < 0.6 * plain.bolts[0].shear
     assert gripped.bolts[0].axial == pytest.approx(10_000.0, rel=0.05)
+    # the same model gives the same answer (the solver path used to depend on timing)
+    again = solve_static(project, mesh, {p.id: STEEL for p in project.parts})
+    assert again.bolts[0].shear == pytest.approx(gripped.bolts[0].shear, rel=1e-9)
 
 
-def test_unsettled_contact_iteration_is_flagged():
+def test_unsettled_contact_iteration_is_flagged(monkeypatch):
     """A contact solve that runs out of iterations must say so instead of passing off an
-    intermediate state as the answer, and the summary must warn about it. (The preloaded
-    friction lap joint above is such a case; a settled one carries no warning.)"""
+    intermediate state as the answer, and the summary must warn about it."""
+    import kstruct.fem.contact as contact
     from kstruct import standards
     from kstruct.report.summary import summarize
 
-    project = _bolted_lap(0.2, 1000.0, 10_000.0)
+    project = _sheared_stack(0.4, 200.0)
+    _, settled = _solve(project)
+    assert settled.contact_converged
+    monkeypatch.setattr(contact, "MAX_FRICTION_SWEEPS", 2)  # far too few anchor sweeps
     _, cut = _solve(project)
     assert not cut.contact_converged
     summary = summarize(project, cut, standards.effective_pack(project))
     assert "수렴하지 않았습니다" in summary.notes[0]
-    _, settled = _solve(_bolted_lap(0.0, 1000.0, 10_000.0))
-    assert settled.contact_converged
