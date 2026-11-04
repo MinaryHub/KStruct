@@ -616,3 +616,33 @@ def test_recent_files_autosave_and_recovery(qtbot, tmp_path, monkeypatch):
     # the recent menu lists the files
     other._fill_recent_menu()
     assert [a.text() for a in other.recent_menu.actions()] == ["saved.kst", "my_bracket.step"]
+
+
+def test_solve_can_be_cancelled(qtbot):
+    """The cancel button shows while solving; cancelling stops the job without a result or
+    an error dialog, and the window can solve again afterwards."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind, Load, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    window.project.loads = [
+        Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (90, 30, 8)))], vector=(0, 0, -1000.0))
+    ]
+    window.project.mesh_quality = "coarse"
+    window.warn = lambda *a, **k: pytest.fail("cancelling must not show an error")
+    window._go(mw.STEP_SOLVE)
+    panel = window.panels[mw.STEP_SOLVE]
+    window.solve()  # no mesh yet: meshing runs first, in worker processes
+    assert panel.cancel.isVisible()
+    window.cancel_job()
+    qtbot.waitUntil(lambda: not window._busy, timeout=60_000)
+    assert window.result is None
+    assert "취소했습니다" in panel.status.text()
+    assert not panel.cancel.isVisible() and panel.run.isEnabled()
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)

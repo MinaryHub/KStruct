@@ -1042,6 +1042,10 @@ class MeshStep(StepPanel):
         self.run = QPushButton("메시 만들기")
         self.run.clicked.connect(app.build_mesh)
         self.add(self.run)
+        self.cancel = QPushButton("취소")
+        self.cancel.setVisible(False)
+        self.cancel.clicked.connect(app.cancel_job)
+        self.add(self.cancel)
         self.progress = QProgressBar()
         self.progress.setVisible(False)
         self.progress.setRange(0, 0)
@@ -1139,6 +1143,7 @@ class MeshStep(StepPanel):
 
     def set_busy(self, busy: bool) -> None:
         self.run.setEnabled(not busy)
+        self.cancel.setVisible(busy)
         self.progress.setVisible(busy)
 
 
@@ -1240,6 +1245,10 @@ class SolveStep(StepPanel):
         self.run.setStyleSheet("font-weight: bold;")
         self.run.clicked.connect(app.solve)
         self.add(self.run)
+        self.cancel = QPushButton("취소")
+        self.cancel.setVisible(False)
+        self.cancel.clicked.connect(app.cancel_job)
+        self.add(self.cancel)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setVisible(False)
@@ -1350,6 +1359,7 @@ class SolveStep(StepPanel):
         busy = frac is not None
         self.progress.setVisible(busy)
         self.run.setEnabled(not busy)
+        self.cancel.setVisible(busy)
         if busy:
             self.progress.setValue(int(frac * 100))
         self.status.setText(msg)
