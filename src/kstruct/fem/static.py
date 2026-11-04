@@ -47,6 +47,7 @@ class StaticResult:
     applied_load: np.ndarray  # (3,) N, sum of external forces
     thermal: ThermalResult | None = None  # temperature field used for thermal stress
     contact: list[tuple[int, int, int]] | None = None  # per contact: (closed, total, slipping)
+    contact_converged: bool = True  # False: the contact/friction iteration did not settle
     bolts: list | None = None  # fem.bolts.BoltResult per bolt
     bolt_nodes: np.ndarray | None = None  # nodes under bolt heads / nuts
 
@@ -324,6 +325,7 @@ def solve_static(
         applied_load=applied,
         thermal=thermal,
         contact=[(int(cs.active.sum()), len(cs.active), int(cs.slipping.sum())) for cs in contacts],
+        contact_converged=contact_solver.converged if contact_solver is not None else True,
         bolts=evaluate(connectors, u, pulls),
         bolt_nodes=np.unique(
             np.concatenate([np.r_[b.weights_a[0], b.weights_b[0]] for b in connectors])

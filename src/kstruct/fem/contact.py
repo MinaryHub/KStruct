@@ -214,11 +214,15 @@ class ContactSolver:
         self._fact_solve = None
         self._fact_state: list[tuple[np.ndarray, np.ndarray]] | None = None
         self._update = None  # (signature, C, Y, S) of the last Woodbury update
-        self._t_factorize = np.inf  # measured cost of one factorization (s)
-        self._t_solve = 0.0  # measured cost of one back-substitution (s)
-        self._t_column = None  # measured cost per column of a batched back-substitution
+        # how many update columns (back-substitutions) one refactorization is worth; set
+        # from the factorization's size, never from wall-clock time (that made the result
+        # of a contact solve change from run to run)
+        self._breakeven = 0.0
         self.factorizations = 0
         self.updates = 0
+        # False once any solve stopped at MAX_ITERATIONS with the state still changing:
+        # the result then belongs to an arbitrary intermediate contact/friction state
+        self.converged = True
 
     # --- assembly --------------------------------------------------------------------
 
@@ -311,58 +315,31 @@ class ContactSolver:
         return C, self.alpha * np.concatenate(signs)
 
     def reduced_solve(self, K_c: sp.csr_matrix, rhs: np.ndarray) -> np.ndarray:
-        import time
-
         change = self._change()
         k = change[0].shape[0] if change is not None else MAX_UPDATE_RANK + 1
         if k == 0:
-            return self._timed_solve(rhs)
-        # the update costs about k back-substitutions; refactorize when that would take
-        # longer than a fresh factorization (small systems factorize fast)
-        per_column = self._t_column if self._t_column is not None else 5 * self._t_solve
-        log.debug(
-            "contact solve: %d changed pairs, update ~%.1fs vs factorize %.1fs",
-            k,
-            k * per_column,
-            self._t_factorize,
-        )
-        if k <= MAX_UPDATE_RANK and k * per_column < self._t_factorize:
+            return self._fact_solve(rhs)
+        # the update costs about k back-substitutions; refactorize when that is more than
+        # a fresh factorization is worth (small systems factorize fast)
+        log.debug("contact solve: %d changed pairs, break-even %.0f", k, self._breakeven)
+        if k <= MAX_UPDATE_RANK and k < self._breakeven:
             x = self._woodbury(K_c, rhs, *change)
             if x is not None:
                 return x
-        t0 = time.perf_counter()
         self._fact_solve = self.factorize(K_c)
-        self._t_factorize = time.perf_counter() - t0
+        self._breakeven = float(getattr(self._fact_solve, "breakeven", 0.0))
         self._fact_state = self._state()
         self._update = None
         self.factorizations += 1
-        x = self._timed_solve(rhs)
-        if self._t_column is None:  # calibrate the batched cost on two columns
-            self._solve_columns(np.column_stack([rhs, rhs]))
-        return x
-
-    def _timed_solve(self, rhs: np.ndarray) -> np.ndarray:
-        import time
-
-        t0 = time.perf_counter()
-        x = self._fact_solve(rhs)
-        self._t_solve = max(time.perf_counter() - t0, 1e-6)
-        return x
+        return self._fact_solve(rhs)
 
     def _solve_columns(self, B: np.ndarray) -> np.ndarray:
-        import time
-
-        t0 = time.perf_counter()
         try:
             Y = self._fact_solve(np.asfortranarray(B))
             if Y.shape != B.shape:
                 raise ValueError
         except Exception:  # solver only takes vectors
             Y = np.column_stack([self._fact_solve(B[:, j]) for j in range(B.shape[1])])
-        # SuperLU solves a block of right-hand sides column by column; measure the real
-        # per-column cost (several times a single warm solve) for the update/refactorize
-        # decision
-        self._t_column = (time.perf_counter() - t0) / max(B.shape[1], 1)
         return np.asarray(Y)
 
     def _woodbury(self, K_c, rhs: np.ndarray, C: sp.csr_matrix, D: np.ndarray):
@@ -406,6 +383,7 @@ class ContactSolver:
         seen = {self._signature()}
         flips = [np.zeros(len(cs.active), dtype=int) for cs in self.contacts]
         tflips = [np.zeros(len(cs.active), dtype=int) for cs in self.contacts]
+        exhausted = True
         for _ in range(MAX_ITERATIONS):
             K_pen, f_c = self._penalty()
             K_c = self.K_ff + K_pen
@@ -455,13 +433,18 @@ class ContactSolver:
                 changed |= bool(np.any(flipped | tflipped))
                 cs.active, cs.stick = new_active, new_stick
             if not changed and not forces_changed:
+                exhausted = False
                 break
             if changed:
                 signature = self._signature()
                 if signature in seen:  # chattering between two states: keep the current one
                     log.info("contact: active set cycles, stopping")
+                    exhausted = False
                     break
                 seen.add(signature)
+        if exhausted:
+            self.converged = False
+            log.warning("contact: no settled state after %d iterations", MAX_ITERATIONS)
         log.info(
             "contact: %d iterations, %d factorizations, %d low-rank updates",
             MAX_ITERATIONS if changed else _ + 1,

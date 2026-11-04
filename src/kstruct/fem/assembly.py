@@ -16,6 +16,11 @@ CHUNK = 4000  # elements per assembly batch (bounds peak memory)
 # measured: at 90k DOF the direct solve (21 s) still beats AMG (25 s); contact and bolt
 # preload loops factorize several times, so the direct path is kept up to this size
 DIRECT_SOLVER_MAX_DOF = 120_000
+# A refactorization costs about this many back-substitutions per nonzero-per-column of
+# the factor (measured 0.17-0.30 from 17k to 85k DOF); the contact loop uses it to choose
+# between a low-rank update and a fresh factorization without timing anything
+REFACTOR_COLUMNS_PER_FILL = 0.25
+AMG_BREAKEVEN = 2.0  # AMG setup is worth about this many preconditioned CG solves
 
 Progress = Callable[[float, str], None]
 
@@ -116,6 +121,7 @@ def make_solver(K: sp.csr_matrix, near_null: np.ndarray):
                 raise SolverError("unstable")
             return x
 
+        solve.breakeven = REFACTOR_COLUMNS_PER_FILL * lu.nnz / max(n, 1)
         return solve
 
     import pyamg
@@ -133,6 +139,7 @@ def make_solver(K: sp.csr_matrix, near_null: np.ndarray):
             raise SolverError("unstable")
         return x
 
+    solve.breakeven = AMG_BREAKEVEN
     return solve
 
 
