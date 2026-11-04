@@ -8,7 +8,13 @@ from dataclasses import dataclass
 import numpy as np
 import scipy.sparse.linalg as spla
 
-from kstruct.fem.assembly import SolverError, mass_matrix, stiffness_matrix
+from kstruct.fem.assembly import (
+    SolverError,
+    inverse_operator,
+    mass_matrix,
+    rigid_body_modes,
+    stiffness_matrix,
+)
 from kstruct.fem.bolts import bolt_stiffness_and_preload, build_bolts
 from kstruct.fem.constraints import build_constraints
 from kstruct.fem.mesh import FEMesh
@@ -66,7 +72,9 @@ def solve_modal(
     # shift slightly below zero so rigid-body (zero) modes don't make K - σM singular
     sigma = -1.0 * (2 * np.pi) ** 2
     try:
-        omega2, phi = spla.eigsh(Kf, k=k, M=Mf, sigma=sigma, which="LM")
+        # K - σM = K + |σ|M is positive definite even for a free-floating part
+        OPinv = inverse_operator(Kf - sigma * Mf, rigid_body_modes(mesh.nodes)[free])
+        omega2, phi = spla.eigsh(Kf, k=k, M=Mf, sigma=sigma, which="LM", OPinv=OPinv)
     except (RuntimeError, spla.ArpackNoConvergence) as e:
         raise SolverError("not converged") from e
     order = np.argsort(omega2)
