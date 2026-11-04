@@ -173,24 +173,67 @@ def recover_stress(
     return acc / np.maximum(count, 1)[:, None]
 
 
+@dataclass
+class _Stiffness:
+    """Everything of a static solve that does not depend on the loads, so the load cases
+    of one project share a single assembly and (without contact) a single factorization."""
+
+    constraints: Constraints
+    connectors: list
+    K: object  # stiffness incl. bolt springs, without penalty rows
+    Kp: object  # K + penalty equations
+    free: np.ndarray
+    near_null: np.ndarray
+    scale: float
+    solver: Callable | None = None  # factorization of Kp[free][:, free], made on first use
+
+
+def _stiffness(
+    project: Project,
+    mesh: FEMesh,
+    materials: dict[int, Material],
+    constraints: Constraints | None = None,
+) -> _Stiffness:
+    n_dof = mesh.n_nodes * 3
+    c = constraints or build_constraints(project, mesh, contacts_as_bonded=False)
+    connectors = build_bolts(project, mesh)
+    K = stiffness_matrix(mesh, materials)
+    if connectors:
+        K = K + bolt_stiffness_and_preload(connectors, n_dof)[0]
+    scale = K.diagonal().max()
+    free = np.flatnonzero(~c.fixed)
+    return _Stiffness(
+        constraints=c,
+        connectors=connectors,
+        K=K,
+        Kp=K + c.penalty_matrix(n_dof, scale),
+        free=free,
+        near_null=rigid_body_modes(mesh.nodes)[free],
+        scale=scale,
+    )
+
+
 def solve_static(
     project: Project,
     mesh: FEMesh,
     materials: dict[int, Material],
     progress: Progress | None = None,
     constraints: Constraints | None = None,
+    shared: _Stiffness | None = None,
 ) -> StaticResult:
+    """`shared` (from _stiffness, same mesh, materials, fixtures, connections and bolts)
+    skips the assembly and reuses its factorization; only the loads may differ."""
     report = progress or (lambda frac, msg: None)
     n_dof = mesh.n_nodes * 3
 
     report(0.05, "경계조건 준비 중")
-    c = constraints or build_constraints(project, mesh, contacts_as_bonded=False)
     contact_connections = [x for x in project.connections if x.kind == ConnectionKind.CONTACT]
     contacts = [build_contact(mesh, x) for x in contact_connections]
-    connectors = build_bolts(project, mesh)
 
     report(0.1, "강성행렬 조립 중")
-    K = stiffness_matrix(mesh, materials)
+    st = shared or _stiffness(project, mesh, materials, constraints)
+    c, connectors, K, Kp = st.constraints, st.connectors, st.K, st.Kp
+    free, near_null, scale = st.free, st.near_null, st.scale
     f_mech = _load_vector(project, mesh, materials)
     thermal = None
     if has_thermal_loads(project):
@@ -201,21 +244,18 @@ def solve_static(
     f = f_mech if dT is None else f_mech + _thermal_load(mesh, materials, dT)
     pulls = np.zeros(len(connectors))
     unit_solver = None
-    if connectors:
-        K = K + bolt_stiffness_and_preload(connectors, n_dof)[0]
     if not np.any(f) and not any(c.bolt.preload for c in connectors):
         raise SolverError("하중이 없습니다. 힘, 압력, 중력 또는 온도 하중을 추가하세요.")
 
     report(0.4, "연립방정식 푸는 중")
-    scale = K.diagonal().max()
-    Kp = K + c.penalty_matrix(n_dof, scale)
-    free = np.flatnonzero(~c.fixed)
-    near_null = rigid_body_modes(mesh.nodes)[free]
     size = np.ptp(mesh.nodes, axis=0).max()
 
-    def linear_solver(matrix):
-        """Factorize once; the returned function solves full-size right-hand sides."""
-        solve = make_solver(matrix.tocsr(), near_null)
+    def linear_solver():
+        """Kp on the free DOFs, factorized once per _Stiffness; the returned function
+        solves full-size right-hand sides."""
+        if st.solver is None:
+            st.solver = make_solver(Kp[free][:, free].tocsr(), near_null)
+        solve = st.solver
 
         def run(rhs):
             out = np.zeros(n_dof)
@@ -246,7 +286,7 @@ def solve_static(
             contact_solver.solve(f_nominal)
             unit_solver = contact_solver.current_solver()
         else:
-            unit_solver = linear_solver(Kp[free][:, free])
+            unit_solver = linear_solver()
         axial = axial_vectors(connectors, n_dof)
         pulls = locked_pulls(connectors, axial, unit_solver)
         f = f + bolt_stiffness_and_preload(connectors, n_dof, pulls)[1]
@@ -259,7 +299,7 @@ def solve_static(
     elif unit_solver is not None:
         u = unit_solver(f)  # the preload stage already factorized this matrix
     else:
-        u = linear_solver(Kp[free][:, free])(f)
+        u = linear_solver()(f)
     if np.abs(u).max() > 1e3 * size:
         raise SolverError("unstable")
 
@@ -303,11 +343,12 @@ def solve_cases(
     report = progress or (lambda frac, msg: None)
     n = len(project.cases)
     results = []
+    shared = _stiffness(project, mesh, materials) if project.cases else None
     for i, case in enumerate(project.cases):
         prefix = f"[{case.name}] " if n > 1 else ""
 
         def sub(frac, msg, i=i, prefix=prefix):
             report((i + frac) / n, prefix + msg)
 
-        results.append(solve_static(with_case(project, i), mesh, materials, sub))
+        results.append(solve_static(with_case(project, i), mesh, materials, sub, shared=shared))
     return results

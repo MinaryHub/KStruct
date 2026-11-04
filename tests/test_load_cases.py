@@ -120,6 +120,36 @@ def test_cases_solve_independently_and_superpose():
     assert all(s.verdict in (Verdict.OK, Verdict.WARN, Verdict.FAIL) for s in summaries)
 
 
+def test_cases_share_one_assembly_and_factorization(monkeypatch):
+    """K and fixtures are the same in every case, so only the first case factorizes."""
+    import kstruct.fem.static as static
+
+    project, tip = _beam()
+    project.cases = [
+        LoadCase(f"{i}", [Load(LoadKind.FORCE, [tip], vector=(0, 0, -100.0 * (i + 1)))])
+        for i in range(3)
+    ]
+    mesh = generate_mesh(project, "coarse")
+    calls = {"factorize": 0, "assemble": 0}
+    real_solver, real_stiffness = static.make_solver, static.stiffness_matrix
+
+    def counting_solver(*args):
+        calls["factorize"] += 1
+        return real_solver(*args)
+
+    def counting_stiffness(*args):
+        calls["assemble"] += 1
+        return real_stiffness(*args)
+
+    monkeypatch.setattr(static, "make_solver", counting_solver)
+    monkeypatch.setattr(static, "stiffness_matrix", counting_stiffness)
+    results = solve_cases(project, mesh, {0: STEEL})
+    assert calls == {"factorize": 1, "assemble": 1}
+    tips = [r.displacement[:, 2].min() for r in results]
+    assert tips[1] == pytest.approx(2 * tips[0], rel=1e-9)
+    assert tips[2] == pytest.approx(3 * tips[0], rel=1e-9)
+
+
 def test_report_has_a_case_table():
     from kstruct.report.pdf import build_html
 
