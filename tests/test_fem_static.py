@@ -202,3 +202,76 @@ def test_meshing_timeout_is_reported(monkeypatch):
     monkeypatch.setattr(mesh_module, "MESH_TIMEOUT", 0.01)  # nothing can mesh this fast
     with pytest.raises(MeshingError, match="끝나지 않았습니다"):
         generate_mesh(_project(_box(0, 0, 0, 10, 10, 10)), "coarse")
+
+
+def _pinned_plate() -> Project:
+    """Plate on a pin through a hole, pulled along its length, with rollers against
+    rotation and drift."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.gp import gp_Dir
+
+    from kstruct.geometry.samples import _hole
+
+    plate = BRepAlgoAPI_Cut(_box(0, 0, 0, 100, 20, 5), _hole(10, 10, -1, gp_Dir(0, 0, 1), 4, 7))
+    project = _project(plate.Shape())
+    project.fixtures = [
+        Fixture(FixtureKind.PIN, [_face(project, (14, 10, 2.5))]),
+        Fixture(FixtureKind.ROLLER, [_face(project, (50, 0, 2.5))]),
+        Fixture(FixtureKind.ROLLER, [_face(project, (50, 10, 0))]),
+    ]
+    project.loads = [Load(LoadKind.FORCE, [_face(project, (100, 10, 2.5))], vector=(500.0, 0, 0))]
+    return project
+
+
+def test_multigrid_solver_matches_the_factorization(monkeypatch):
+    """Large models are solved by p-multigrid CG with the constraints eliminated instead
+    of penalised. Forced onto small models here: bonded parts (ties), a pin (two coupled
+    equations per node) and an unheld part (falls back and is diagnosed)."""
+    import kstruct.fem.static as static
+
+    def both(project, materials):
+        mesh = generate_mesh(project, "coarse")
+        monkeypatch.setattr(static, "ITERATIVE_MIN_DOF", 10**9)
+        direct = static.solve_static(project, mesh, materials)
+        monkeypatch.setattr(static, "ITERATIVE_MIN_DOF", 0)
+        shared = static._stiffness(project, mesh, materials)
+        iterative = static.solve_static(project, mesh, materials, shared=shared)
+        assert shared.exact and 0 < shared.iterations < 60
+        return direct, iterative
+
+    # two bonded blocks pulled apart: the exact tie against the penalty tie
+    lower, upper = _box(0, 0, 0, 10, 10, 50), _box(0, 0, 50, 10, 10, 50)
+    project = _project(lower, upper)
+    project.fixtures = [Fixture(FixtureKind.FIXED, [_face(project, (5, 5, 0), 0)])]
+    project.connections = [
+        Connection(
+            ConnectionKind.BONDED,
+            faces_a=[_face(project, (5, 5, 50), 0)],
+            faces_b=[_face(project, (5, 5, 50), 1)],
+        )
+    ]
+    project.loads = [
+        Load(LoadKind.FORCE, [_face(project, (5, 5, 100), 1)], vector=(50.0, 0, 1000.0))
+    ]
+    direct, iterative = both(project, {0: STEEL, 1: STEEL})
+    assert iterative.displacement == pytest.approx(direct.displacement, rel=1e-3, abs=1e-7)
+    assert iterative.von_mises.max() == pytest.approx(direct.von_mises.max(), rel=1e-3)
+    assert iterative.reactions[0] == pytest.approx([-50.0, 0.0, -1000.0], abs=1e-4)
+
+    # a pinned hole: the reaction comes from constraint multipliers, not spring forces
+    project = _pinned_plate()
+    direct, iterative = both(project, {0: STEEL})
+    assert iterative.displacement == pytest.approx(direct.displacement, rel=1e-3, abs=1e-7)
+    total = sum(iterative.reactions)
+    assert total == pytest.approx(-iterative.applied_load, abs=1e-3)
+    for a, b in zip(iterative.reactions, direct.reactions, strict=True):
+        assert a == pytest.approx(b, rel=1e-3, abs=1e-2)
+
+    # nothing holds the upper block: the iteration cannot solve it, the factorization
+    # that takes over reports it
+    project = _project(lower, upper)
+    project.fixtures = [Fixture(FixtureKind.FIXED, [_face(project, (5, 5, 0), 0)])]
+    project.loads = [Load(LoadKind.FORCE, [_face(project, (5, 5, 100), 1)], vector=(0, 0, 1.0))]
+    monkeypatch.setattr(static, "ITERATIVE_MIN_DOF", 0)
+    with pytest.raises(SolverError, match="unstable"):
+        _solve(project)

@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.sparse as sp
+import scipy.sparse.csgraph  # noqa: F401  (sp.csgraph)
+import scipy.sparse.linalg  # noqa: F401  (sp.linalg)
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
 from scipy.spatial import cKDTree
@@ -51,6 +53,124 @@ class Constraints:
             force = -alpha * c * (c @ u[dofs])
             np.add.at(total, dofs % 3, force)
         return total
+
+    def equation_matrix(self) -> sp.csr_matrix:
+        """(m, 3N) one row per penalty equation, with the fixed DOFs' columns zeroed."""
+        n_dof = len(self.fixed)
+        if not self.penalty_rows:
+            return sp.csr_matrix((0, n_dof))
+        sizes = np.array([len(d) for d in self.penalty_rows])
+        rows = np.repeat(np.arange(len(sizes)), sizes)
+        cols = np.concatenate(self.penalty_rows)
+        vals = np.concatenate(self.penalty_coefs) * ~self.fixed[cols]
+        C = sp.csr_matrix((vals, (rows, cols)), shape=(len(sizes), n_dof))
+        C.eliminate_zeros()
+        return C
+
+    def elimination(self) -> tuple[sp.csr_matrix, np.ndarray] | None:
+        """(T, unknowns): T (3N, k) with u = T û satisfying every constraint exactly, and
+        the DOF each û stands for. Fixed DOFs are zero rows, each equation removes one
+        slave DOF (u_s = -Σ c_j u_j / c_s), the other free DOFs are the unknowns.
+        Tᵀ K T is then positive definite without penalty terms, which iterative solvers
+        need.
+
+        Returns None when the equations cannot be untangled cheaply (a slave of one tie
+        is the master of another over a large area, or dependent equations); the caller
+        then keeps the penalty formulation.
+        """
+        n_dof = len(self.fixed)
+        free = ~self.fixed
+        C = self.equation_matrix()
+        kept = np.flatnonzero(np.diff(C.indptr) > 0)  # equations on fixed DOFs only: void
+        C = C[kept]
+        m = C.shape[0]
+        if m == 0:
+            masters = np.flatnonzero(free)
+            T = sp.csr_matrix(
+                (np.ones(len(masters)), (masters, np.arange(len(masters)))),
+                shape=(n_dof, len(masters)),
+            )
+            return T, masters
+        # pivot: the DOF the equation was written for (listed first: the tied node's own
+        # DOF) when it is free, unused and not small; otherwise the largest coefficient
+        is_slave = np.zeros(n_dof, dtype=bool)
+        slave = np.empty(m, dtype=np.int64)
+        for i, eq in enumerate(kept):
+            lo, hi = C.indptr[i], C.indptr[i + 1]
+            cols, vals = C.indices[lo:hi], np.abs(C.data[lo:hi])
+            vals = np.where(is_slave[cols], -1.0, vals)
+            k = int(np.argmax(vals))
+            if vals[k] < 1e-8:
+                return None
+            first = self.penalty_rows[eq][0]
+            at = np.flatnonzero(cols == first)
+            if len(at) and vals[at[0]] >= 0.5 * vals[k]:
+                k = int(at[0])
+            slave[i] = cols[k]
+            is_slave[cols[k]] = True
+        masters = np.flatnonzero(free & ~is_slave)
+        Css = C[:, slave].tocsc()  # (m, m): identity-like unless equations share slaves
+        Csm = C[:, masters].tocsr()
+        pattern = (Css != 0).astype(np.int8)
+        n_comp, label = sp.csgraph.connected_components(pattern, directed=False)
+        diag = Css.diagonal()
+        if n_comp == m:  # every equation has its own slave: plain division
+            X = sp.diags(1.0 / diag) @ Csm
+        else:
+            order = np.argsort(label, kind="stable")
+            bounds = np.flatnonzero(np.diff(label[order])) + 1
+            groups = np.split(order, bounds)
+            if max(len(g) for g in groups) > 12:
+                return None
+            # block-diagonal inverse, one small dense block per coupled group
+            rows, cols, vals = [], [], []
+            dense = Css.tocsr()
+            for g in groups:
+                if len(g) == 1:
+                    block = np.array([[1.0 / diag[g[0]]]])
+                else:
+                    block = dense[g][:, g].toarray()
+                    if np.linalg.cond(block) > 1e6:
+                        return None
+                    block = np.linalg.inv(block)
+                rows.append(np.repeat(g, len(g)))
+                cols.append(np.tile(g, len(g)))
+                vals.append(block.ravel())
+            inv = sp.csr_matrix(
+                (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(m, m)
+            )
+            X = inv @ Csm
+        if X.nnz and np.abs(X.data).max() > 1e3:
+            return None
+        k = len(masters)
+        identity = sp.csr_matrix((np.ones(k), (masters, np.arange(k))), shape=(n_dof, k))
+        X = X.tocoo()
+        slaves = sp.csr_matrix((-X.data, (slave[X.row], X.col)), shape=(n_dof, k))
+        return (identity + slaves).tocsr(), masters
+
+    def multiplier_forces(self, residual: np.ndarray) -> np.ndarray | None:
+        """(m, 3) force each penalty equation exerts on the structure when the constraints
+        hold exactly: K u - f = Cᵀ μ on the free DOFs, solved for μ in the least-squares
+        sense. None when the equations are dependent."""
+        C = self.equation_matrix()
+        m = C.shape[0]
+        if m == 0:
+            return np.zeros((0, 3))
+        r = residual * ~self.fixed
+        G = (C @ C.T).tocsc()
+        used = G.diagonal() > 0
+        mu = np.zeros(m)
+        try:
+            idx = np.flatnonzero(used)
+            mu[idx] = sp.linalg.spsolve(G[idx][:, idx], (C @ r)[idx])
+        except RuntimeError:
+            return None
+        if not np.all(np.isfinite(mu)):
+            return None
+        forces = np.zeros((m, 3))
+        Cc = C.tocoo()
+        np.add.at(forces, (Cc.row, Cc.col % 3), Cc.data * mu[Cc.row])
+        return forces
 
     def penalty_matrix(self, n_dof: int, stiffness_scale: float) -> sp.csr_matrix:
         if not self.penalty_rows:

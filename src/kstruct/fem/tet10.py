@@ -109,8 +109,8 @@ def stiffness(X: np.ndarray, D: np.ndarray) -> np.ndarray:
     for p, w in zip(GAUSS_POINTS, GAUSS_WEIGHTS, strict=True):
         dNdx, det = gradients(X, p)
         B = strain_matrix(dNdx)
-        DB = np.einsum("eij,ejk->eik", D, B)
-        K += np.einsum("eji,ejk,e->eik", B, DB, det * w)
+        # batched matmul (BLAS) is several times faster than the equivalent einsum
+        K += (B.transpose(0, 2, 1) @ (D @ B)) * (det * w)[:, None, None]
     return K
 
 
