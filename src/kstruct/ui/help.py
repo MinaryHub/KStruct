@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from functools import cache
 from importlib import resources
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -66,7 +67,6 @@ class HelpDialog(QDialog):
         for related in t.related:
             link = QPushButton(f"→ {topic(related).title}")
             link.setFlat(True)
-            link.setStyleSheet("text-align: left; color: palette(link);")
             link.clicked.connect(lambda _=False, k=related: HelpDialog(k, self).exec())
             layout.addWidget(link)
 
@@ -86,7 +86,8 @@ class HelpButton(QToolButton):
         self.setAutoRaise(True)
         self.setToolTip(topic(key).short)
         self.setFixedSize(20, 20)
-        self.setStyleSheet("QToolButton { border-radius: 10px; font-weight: bold; }")
+        self.setProperty("role", "help")  # styled by ui/theme.py
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clicked.connect(lambda: HelpDialog(self.key, self.window()).exec())
 
 

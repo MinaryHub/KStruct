@@ -9,18 +9,22 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
-    QListWidget,
+    QLabel,
     QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QToolButton,
@@ -64,9 +68,9 @@ from kstruct.report.summary import (
     summarize_modal,
     summarize_thermal,
 )
-from kstruct.ui import prefs, steps
+from kstruct.ui import prefs, steps, theme
 from kstruct.ui.dialogs import AboutDialog, save_bug_report
-from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
+from kstruct.ui.help import HelpDialog, topic
 from kstruct.ui.viewer import ModelViewer, ResultField
 from kstruct.ui.worker import Cancelled, JobHandle, run_job
 from kstruct.units import fmt, quantity, system_of
@@ -148,7 +152,10 @@ class MainWindow(QMainWindow):
         self._busy = False
         self._job: JobHandle | None = None  # the running mesh / solve job
 
+        app = QApplication.instance()
+        self.theme = theme.apply(app, prefs.theme()) if app is not None else theme.current()
         self.viewer = ModelViewer()
+        self.viewer.apply_theme(self.theme)
         self.viewer.selection_changed.connect(self._selection_changed)
         self.viewer.probed.connect(lambda text: self.panels[STEP_RESULT].probe.setText(text))
 
@@ -166,9 +173,14 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_side())
-        splitter.addWidget(self.viewer)
+        # right pane: a welcome page until a model is open, then the 3D view
+        self.pane = QStackedWidget()
+        self.pane.addWidget(self._build_welcome())
+        self.pane.addWidget(self.viewer)
+        splitter.addWidget(self.pane)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([380, 1060])
+        splitter.setSizes([400, 1040])
+        splitter.setHandleWidth(1)
         self.setCentralWidget(splitter)
         self._build_toolbar()
         self._restore_window_state(splitter)
@@ -183,69 +195,214 @@ class MainWindow(QMainWindow):
 
     def _build_side(self) -> QWidget:
         side = QWidget()
+        side.setObjectName("sidePanel")
+        side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        side.setMinimumWidth(340)
         layout = QVBoxLayout(side)
-        self.nav = QListWidget()
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(0)
+
+        # the seven steps in a row: number badge, tick when done (theme.StepNav)
+        self.nav = theme.StepNav()
         for name, key in zip(STEP_NAMES, STEP_KEYS, strict=True):
             item = QListWidgetItem(name)
-            item.setToolTip(topic(key).short)
+            item.setToolTip(f"{name} — {topic(key).short}")
             self.nav.addItem(item)
-        self.nav.setMaximumHeight(7 * 22 + 8)
         self.nav.currentRowChanged.connect(self._nav_changed)
-        layout.addWidget(with_help(self.nav, "help.mode"))
+        nav_box = QWidget()
+        nav_layout = QHBoxLayout(nav_box)
+        nav_layout.setContentsMargins(6, 0, 6, 4)
+        nav_layout.addWidget(self.nav)
+        layout.addWidget(nav_box)
+        rule = QFrame()
+        rule.setFrameShape(QFrame.Shape.HLine)
+        rule.setStyleSheet(f"color: {self.theme.border};")
+        self._rule = rule
+        layout.addWidget(rule)
 
         self.stack = QStackedWidget()
         for panel in self.panels:
+            panel.layout_.setContentsMargins(16, 14, 12, 12)
+            panel.layout_.setSpacing(8)
+            # long option texts must not push the panel wider than the side bar
+            for combo in panel.findChildren(QComboBox):
+                combo.setSizeAdjustPolicy(
+                    QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+                )
+                combo.setMinimumContentsLength(6)
             scroll = QScrollArea()
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             scroll.setWidget(panel)
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.Shape.NoFrame)
             self.stack.addWidget(scroll)
         layout.addWidget(self.stack, 1)
 
-        buttons = QHBoxLayout()
-        self.prev_btn = QPushButton("◀ 이전")
-        self.next_btn = QPushButton("다음 ▶")
+        footer = QWidget()
+        footer.setObjectName("stepFooter")
+        footer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        buttons = QHBoxLayout(footer)
+        buttons.setContentsMargins(16, 10, 16, 10)
+        self.prev_btn = QPushButton("이전")
+        self.next_btn = QPushButton("다음 단계")
+        theme.mark(self.next_btn, primary="true")
         self.prev_btn.clicked.connect(lambda: self._go(self.nav.currentRow() - 1))
         self.next_btn.clicked.connect(lambda: self._go(self.nav.currentRow() + 1))
         buttons.addWidget(self.prev_btn)
-        buttons.addWidget(self.next_btn)
-        layout.addLayout(buttons)
+        buttons.addWidget(self.next_btn, 1)
+        layout.addWidget(footer)
         return side
+
+    def _build_welcome(self) -> QWidget:
+        """Shown instead of an empty 3D view: what the program does and how to start."""
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = QFrame()
+        card.setObjectName("welcomeCard")
+        card.setFixedWidth(560)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(36, 32, 36, 28)
+        box.setSpacing(10)
+        title = QLabel("부품이 견디는지 확인해 보세요")
+        title.setObjectName("welcomeTitle")
+        box.addWidget(title)
+        intro = QLabel(
+            "CAD에서 만든 부품을 열고 재료·고정·하중을 고르면, 안전한지와 얼마나 휘는지를 "
+            "색과 쉬운 말로 알려 드립니다. 왼쪽의 7단계를 차례로 따라가면 됩니다."
+        )
+        intro.setWordWrap(True)
+        intro.setProperty("role", "hint")
+        box.addWidget(intro)
+        box.addSpacing(8)
+        row = QHBoxLayout()
+        open_model = QPushButton("모델 열기…")
+        theme.mark(open_model, primary="true")
+        open_model.setMinimumHeight(36)
+        open_model.clicked.connect(self.open_file)
+        open_project = QPushButton("프로젝트 열기…")
+        open_project.setMinimumHeight(36)
+        open_project.clicked.connect(self.open_project)
+        row.addWidget(open_model, 1)
+        row.addWidget(open_project, 1)
+        box.addLayout(row)
+        formats = QLabel("STEP · IGES · STL · OBJ · FBX · glTF · 3MF 파일을 열 수 있습니다.")
+        formats.setProperty("role", "hint")
+        box.addWidget(formats)
+
+        box.addSpacing(10)
+        section = QLabel("예제로 시작하기")
+        section.setProperty("role", "section")
+        box.addWidget(section)
+        samples = QHBoxLayout()
+        for label, name, tip in (
+            ("브래킷", "bracket", "부품 하나의 강도 확인"),
+            ("판 2장", "two_plates", "여러 부품: 접합과 접촉"),
+            ("볼트 체결", "bolted", "볼트 체결력과 안전율"),
+        ):
+            b = QPushButton(label)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, n=name: self.open_sample(n))
+            samples.addWidget(b)
+        box.addLayout(samples)
+
+        self._welcome_recent_title = QLabel("최근 파일")
+        self._welcome_recent_title.setProperty("role", "section")
+        box.addWidget(self._welcome_recent_title)
+        self._welcome_recent = QVBoxLayout()
+        self._welcome_recent.setSpacing(0)
+        box.addLayout(self._welcome_recent)
+        outer.addWidget(card)
+        self._fill_welcome_recent()
+        return page
+
+    def _fill_welcome_recent(self) -> None:
+        while self._welcome_recent.count():
+            item = self._welcome_recent.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        files = prefs.recent_files()[:5]
+        self._welcome_recent_title.setVisible(bool(files))
+        for path in files:
+            link = QPushButton(path.name)
+            link.setFlat(True)
+            link.setToolTip(str(path))
+            link.setCursor(Qt.CursorShape.PointingHandCursor)
+            link.clicked.connect(lambda _=False, p=path: self.load(p))
+            self._welcome_recent.addWidget(link)
+
+    def _show_pane(self) -> None:
+        """Welcome page without a project, the 3D view with one."""
+        if self.project is None:
+            self._fill_welcome_recent()
+        self.pane.setCurrentIndex(0 if self.project is None else 1)
 
     def _build_toolbar(self) -> None:
         bar = self.addToolBar("기본")
         bar.setMovable(False)
+        bar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
+        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        bar.setIconSize(QSize(18, 18))
+        name = QLabel("KStruct")
+        name.setObjectName("appName")
+        bar.addWidget(name)
+        self._icons: list[tuple[object, str]] = []  # (action or button, icon name)
 
-        def action(text, slot, key=None, shortcut=None):
+        def action(text, slot, key=None, shortcut=None, icon=None, icon_only=False):
             a = QAction(text, self)
             if shortcut:
                 a.setShortcut(shortcut)
             if key:
                 a.setToolTip(topic(key).short)
+            if icon:
+                a.setIcon(theme.icon(icon))
+                self._icons.append((a, icon))
             a.triggered.connect(slot)
             bar.addAction(a)
+            if icon_only:
+                bar.widgetForAction(a).setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             return a
 
-        action("새로 시작", self.new_project, "project.new")
-        action("모델 열기", self.open_file, "step.open", QKeySequence.StandardKey.Open)
-        action("프로젝트 열기", self.open_project, "project.open")
-        action("프로젝트 저장", self.save_project, "project.save", QKeySequence.StandardKey.Save)
+        action("새로 시작", self.new_project, "project.new", icon="new")
+        action("모델 열기", self.open_file, "step.open", QKeySequence.StandardKey.Open, "open")
+        action("프로젝트 열기", self.open_project, "project.open", icon="project")
+        action("저장", self.save_project, "project.save", QKeySequence.StandardKey.Save, "save")
         self.recent_button = QToolButton()
         self.recent_button.setText("최근 파일")
+        self.recent_button.setIcon(theme.icon("recent"))
+        self.recent_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._icons.append((self.recent_button, "recent"))
         self.recent_button.setToolTip(topic("project.recent").short)
         self.recent_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.recent_menu = QMenu(self.recent_button)
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
         self.recent_button.setMenu(self.recent_menu)
         bar.addWidget(self.recent_button)
-        bar.addWidget(HelpButton("project.save"))
         bar.addSeparator()
-        action("화면 맞춤", self.viewer.fit, "view.fit", "F")
-        bar.addWidget(HelpButton("view.fit"))
-        bar.addSeparator()
-        action("사용 안내", lambda: HelpDialog("help.mode", self).exec(), "help.mode", "F1")
-        action("문제 보고", self.report_problem, "help.report")
-        action("정보", lambda: AboutDialog(self).exec(), "help.about")
+        action("화면 맞춤", self.viewer.fit, "view.fit", "F", "fit")
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        bar.addWidget(spacer)
+        action("사용 안내", lambda: HelpDialog("help.mode", self).exec(), "help.mode", "F1", "help")
+        action("문제 보고", self.report_problem, "help.report", icon="report")
+        action("화면 색", self.toggle_theme, "view.theme", icon="theme", icon_only=True)
+        action("정보", lambda: AboutDialog(self).exec(), "help.about", icon="info", icon_only=True)
+
+    def toggle_theme(self) -> None:
+        """Switch between the light and the dark look and remember the choice."""
+        name = "dark" if self.theme.name == "light" else "light"
+        prefs.set_theme(name)
+        self.theme = theme.apply(QApplication.instance(), name)
+        for holder, icon_name in self._icons:
+            holder.setIcon(theme.icon(icon_name))
+        self._rule.setStyleSheet(f"color: {self.theme.border};")
+        self.viewer.apply_theme(self.theme)
+        self.nav.viewport().update()
+        if self.project is not None:
+            self.panels[self.nav.currentRow()].refresh()
+        if self.result is not None and self.nav.currentRow() == STEP_RESULT:
+            self.show_result()
 
     def _fill_recent_menu(self) -> None:
         self.recent_menu.clear()
@@ -386,6 +543,24 @@ class MainWindow(QMainWindow):
             return self.result is not None
         return True
 
+    def _step_done(self, step: int) -> bool:
+        """Whether the step's input is complete (ticked in the navigator)."""
+        p = self.project
+        if p is None:
+            return False
+        if step == STEP_OPEN:
+            return bool(p.parts)
+        if step == STEP_MATERIAL:
+            visible = p.visible_parts()
+            return bool(visible) and all(part.material_id for part in visible)
+        if step == STEP_FIXTURE:
+            return bool(p.fixtures)
+        if step == STEP_LOAD:
+            return bool(p.loads) or any(b.preload for b in p.bolts)
+        if step == STEP_MESH:
+            return self.mesh is not None
+        return self.result is not None
+
     def _update_nav(self) -> None:
         for i in range(self.nav.count()):
             item = self.nav.item(i)
@@ -394,6 +569,7 @@ class MainWindow(QMainWindow):
                 item.setFlags(flags | Qt.ItemFlag.ItemIsEnabled)
             else:
                 item.setFlags(flags & ~Qt.ItemFlag.ItemIsEnabled)
+            item.setData(theme.STEP_DONE, self._step_done(i))
         row = self.nav.currentRow()
         self.prev_btn.setEnabled(row > 0)
         self.next_btn.setEnabled(row < STEP_RESULT and self._step_available(row + 1))
@@ -436,6 +612,7 @@ class MainWindow(QMainWindow):
         self._annotate()
         self.panels[STEP_OPEN].refresh()
         self._update_nav()
+        self._show_pane()
         name = path.name if path else (project.source_path.name if project.source_path else "")
         self.setWindowTitle(f"KStruct — {name}" if name else "KStruct — 부품 강도 해석")
 
@@ -453,6 +630,8 @@ class MainWindow(QMainWindow):
         self.panels[STEP_OPEN].parts.clear()
         self._go(STEP_OPEN)
         self._update_nav()
+        self._show_pane()
+        self.setWindowTitle("KStruct — 부품 강도 해석")
 
     def open_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "모델 열기", prefs.last_dir(), CAD_FILTER)
@@ -954,15 +1133,13 @@ class MainWindow(QMainWindow):
 
     def _fill_summary(self, panel: steps.ResultStep) -> None:
         s = self.summary
-        if s.verdict is None:
-            color, bg = "#2b5d8a", "#eaf2fa"
-        else:
-            _, color, bg = VERDICT_STYLE[s.verdict]
+        color, bg = self.theme.verdict(s.verdict)
         panel.card.setStyleSheet(
-            f"QFrame#verdictCard {{ background: {bg}; border: 2px solid {color}; border-radius: 6px; }}"
+            f"QFrame#verdictCard {{ background: {bg}; border: 1px solid {color}; "
+            f"border-left: 5px solid {color}; border-radius: 8px; }}"
         )
         panel.card_title.setText(
-            f"<span style='font-size:15pt; color:{color}'><b>{s.headline}</b></span>"
+            f"<span style='font-size:14pt; color:{color}'><b>{s.headline}</b></span>"
         )
         panel.card_body.setText(s.explanation)
         lines = []
@@ -1045,7 +1222,7 @@ class MainWindow(QMainWindow):
                     f" (응력 없는 기준 온도 {self.project.reference_temperature:.0f} °C)"
                 )
         for note in s.notes:
-            lines.append(f"<span style='color:#8a6d3b'>※ {note}</span>")
+            lines.append(f"<span style='color:{self.theme.warn}'>※ {note}</span>")
         panel.summary.setText("<br><br>".join(lines))
 
     def save_report(self) -> None:

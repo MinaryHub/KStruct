@@ -72,6 +72,18 @@ def window_state() -> tuple[bytes | None, list[int] | None]:
         return None, prefs.get("splitter")
 
 
+def theme() -> str:
+    """ "light" or "dark" (the look the user chose last)."""
+    name = load_prefs().get("theme", "light")
+    return name if name in ("light", "dark") else "light"
+
+
+def set_theme(name: str) -> None:
+    prefs = load_prefs()
+    prefs["theme"] = name
+    save_prefs(prefs)
+
+
 # --- autosave ---------------------------------------------------------------------------
 
 

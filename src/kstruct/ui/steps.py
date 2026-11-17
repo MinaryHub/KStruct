@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -52,6 +53,7 @@ from kstruct.model import (
     MeshRefinement,
 )
 from kstruct.report.describe import describe_connection, describe_fixture, describe_load
+from kstruct.ui import theme
 from kstruct.ui.dialogs import MaterialDialog, load_user_library, save_user_library
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 from kstruct.units import quantity, system_of
@@ -129,15 +131,29 @@ DIRECTIONS = [
 
 
 def _title(text: str, key: str) -> QWidget:
-    label = QLabel(f"<h3 style='margin:0'>{text}</h3>")
+    label = QLabel(text)
+    label.setObjectName("stepTitle")  # styled by ui/theme.py, like the roles below
     return with_help(label, key)
 
 
 def _hint(text: str) -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
-    label.setStyleSheet("color: palette(placeholder-text);")
+    label.setProperty("role", "hint")
     return label
+
+
+def _section(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setProperty("role", "section")
+    return label
+
+
+def _primary(button: QPushButton) -> QPushButton:
+    """The one main action of a panel (filled with the accent colour)."""
+    button.setProperty("primary", "true")
+    button.setMinimumHeight(34)
+    return button
 
 
 def _row(*widgets: QWidget) -> QWidget:
@@ -183,7 +199,7 @@ class StepPanel(QWidget):
 class OpenStep(StepPanel):
     def __init__(self, app: MainWindow) -> None:
         super().__init__(app, "1. 모델 열기", "step.open")
-        open_btn = QPushButton("파일 열기…")
+        open_btn = _primary(QPushButton("파일 열기…"))
         open_btn.clicked.connect(app.open_file)
         self.add(with_help(open_btn, "step.open"))
         cad_help = QPushButton("SolidWorks·Inventor·CATIA 파일은?")
@@ -208,7 +224,7 @@ class OpenStep(StepPanel):
         box.setLayout(samples)
         self.add(box)
 
-        self.add(with_help(QLabel("<b>부품</b>"), "view.parts"))
+        self.add(with_help(_section("부품"), "view.parts"))
         self.parts = QListWidget()
         self.parts.itemChanged.connect(self._toggled)
         self.add(self.parts, 1)
@@ -333,7 +349,7 @@ class MaterialStep(StepPanel):
         box.setLayout(form)
         self.add(box)
 
-        self.add(QLabel("<b>부품을 고르고 재료를 지정하세요</b>"))
+        self.add(_section("부품을 고르고 재료를 지정하세요"))
         self.parts = QListWidget()
         self.parts.setMaximumHeight(120)
         self.parts.currentRowChanged.connect(lambda _: self._show_part())
@@ -530,7 +546,7 @@ class _FaceListStep(StepPanel):
 
     def finish_layout(self) -> None:
         self.add(self.selection_label)
-        self.add(QLabel("<b>지정된 항목</b>"))
+        self.add(_section("지정된 항목"))
         self.add(self.items, 1)
         self.add(self.remove)
 
@@ -570,7 +586,7 @@ class FixtureStep(_FaceListStep):
             self.kinds.addButton(radio, i)
             radio.setProperty("kind", kind)
             self.add(with_help(radio, key))
-        self.add_btn = QPushButton("선택한 면을 고정")
+        self.add_btn = _primary(QPushButton("선택한 면을 고정"))
         self.add_btn.clicked.connect(self._add)
         self.add(self.add_btn)
         self.finish_layout()
@@ -719,12 +735,15 @@ class LoadStep(_FaceListStep):
         super().__init__(app, "4. 하중", "step.load")
         self.case = QComboBox()
         self.case.currentIndexChanged.connect(self._case_chosen)
+        self.case.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         case_add = QPushButton("추가")
         case_add.clicked.connect(self._add_case)
         case_rename = QPushButton("이름")
         case_rename.clicked.connect(self._rename_case)
         self.case_remove = QPushButton("삭제")
         self.case_remove.clicked.connect(self._remove_case)
+        for button in (case_add, case_rename, self.case_remove):
+            button.setProperty("compact", "true")
         self.add(
             with_help(
                 _row(QLabel("하중 케이스"), self.case, case_add, case_rename, self.case_remove),
@@ -767,7 +786,7 @@ class LoadStep(_FaceListStep):
         self.value_hint = _hint("")
         self.add(self.value_hint)
 
-        self.add_btn = QPushButton("하중 추가")
+        self.add_btn = _primary(QPushButton("하중 추가"))
         self.add_btn.clicked.connect(self._add)
         self.add(self.add_btn)
         self.finish_layout()
@@ -782,10 +801,13 @@ class LoadStep(_FaceListStep):
         self.kind_help.key = LOAD_LABELS[kind][1]
         self.kind_help.setToolTip(topic(self.kind_help.key).short)
         self.selection_label.setVisible(kind in FACE_LOADS)
-        self.direction.setVisible(kind in (LoadKind.FORCE, LoadKind.GRAVITY, LoadKind.BEARING))
-        self.direction_label.setVisible(self.direction.isVisible())
-        self.axis.setVisible(kind in AXIS_LOADS)
-        self.axis_label.setVisible(kind in AXIS_LOADS)
+        # each control sits in a wrapper with its "?" button: hide the wrapper too, or the
+        # button of a hidden row stays behind on its own
+        show_direction = kind in (LoadKind.FORCE, LoadKind.GRAVITY, LoadKind.BEARING)
+        for widget in (self.direction, self.direction.parentWidget(), self.direction_label):
+            widget.setVisible(show_direction)
+        for widget in (self.axis, self.axis.parentWidget(), self.axis_label):
+            widget.setVisible(kind in AXIS_LOADS)
         if kind == LoadKind.BEARING:
             # a pin pushes along a fixed direction: no "normal to the face" choices
             for i in range(2):
@@ -795,8 +817,9 @@ class LoadStep(_FaceListStep):
         else:
             for i in range(2):
                 self.direction.model().item(i).setEnabled(True)
-        self.ambient.setVisible(kind in (LoadKind.CONVECTION, LoadKind.RADIATION))
-        self.ambient_label.setVisible(self.ambient.isVisible())
+        show_ambient = kind in (LoadKind.CONVECTION, LoadKind.RADIATION)
+        self.ambient.setVisible(show_ambient)
+        self.ambient_label.setVisible(show_ambient)
         defaults = {  # internal units
             LoadKind.FORCE: ("크기", 1000.0),
             LoadKind.PRESSURE: ("압력", 1.0),
@@ -1039,7 +1062,7 @@ class MeshStep(StepPanel):
             self.quality.addItem(label, key)
         self.quality.currentIndexChanged.connect(self._quality_changed)
         self.add(with_help(self.quality, "mesh.quality"))
-        self.run = QPushButton("메시 만들기")
+        self.run = _primary(QPushButton("메시 만들기"))
         self.run.clicked.connect(app.build_mesh)
         self.add(self.run)
         self.cancel = QPushButton("취소")
@@ -1166,7 +1189,7 @@ ANALYSIS_LABELS = [
 class SolveStep(StepPanel):
     def __init__(self, app: MainWindow) -> None:
         super().__init__(app, "6. 해석", "step.solve")
-        self.add(QLabel("<b>무엇을 알고 싶나요?</b>"))
+        self.add(_section("무엇을 알고 싶나요?"))
         self.kinds = QButtonGroup(self)
         for i, (kind, label, key) in enumerate(ANALYSIS_LABELS):
             radio = QRadioButton(label)
@@ -1240,9 +1263,8 @@ class SolveStep(StepPanel):
         self.checklist = QLabel()
         self.checklist.setTextFormat(Qt.TextFormat.RichText)
         self.add(self.checklist)
-        self.run = QPushButton("해석 시작")
+        self.run = _primary(QPushButton("해석 시작"))
         self.run.setMinimumHeight(40)
-        self.run.setStyleSheet("font-weight: bold;")
         self.run.clicked.connect(app.solve)
         self.add(self.run)
         self.cancel = QPushButton("취소")
@@ -1315,9 +1337,9 @@ class SolveStep(StepPanel):
         lines = []
         for ok, text in problems:
             mark = (
-                "<span style='color:#2e9e5b'>✔</span>"
+                f"<span style='color:{theme.current().ok}'>✔</span>"
                 if ok
-                else "<span style='color:#c0392b'>✘</span>"
+                else f"<span style='color:{theme.current().fail}'>✘</span>"
             )
             lines.append(f"{mark} {text}")
         self.checklist.setText("<br>".join(lines))
@@ -1451,7 +1473,7 @@ class ResultStep(StepPanel):
         self.add(self.probe)
 
         buttons = QHBoxLayout()
-        report = QPushButton("보고서 저장 (PDF)")
+        report = _primary(QPushButton("보고서 저장 (PDF)"))
         report.clicked.connect(app.save_report)
         buttons.addWidget(report)
         buttons.addWidget(HelpButton("result.report"))
@@ -1464,7 +1486,7 @@ class ResultStep(StepPanel):
         self.add(b)
         self.layout_.addStretch(1)
         disclaimer = _hint(topic("result.disclaimer").short)
-        disclaimer.setStyleSheet("color: #8a6d3b; font-size: 11px;")
+        disclaimer.setProperty("role", "disclaimer")
         self.add(with_help(disclaimer, "result.disclaimer"))
 
     def set_fields(self, fields: list[tuple[str, str]]) -> None:

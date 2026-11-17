@@ -646,3 +646,63 @@ def test_solve_can_be_cancelled(qtbot):
     assert not panel.cancel.isVisible() and panel.run.isEnabled()
     window.solve()
     qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+
+
+def test_welcome_page_stepper_and_theme(qtbot, monkeypatch, tmp_path):
+    """Without a project the right pane is the welcome page; the navigator ticks the
+    steps whose input is complete; the dark/light choice is applied and remembered."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind
+    from kstruct.ui import main_window as mw
+    from kstruct.ui import prefs, theme
+
+    monkeypatch.setenv("KSTRUCT_DATA_DIR", str(tmp_path))
+    window = _window(qtbot)
+    assert window.pane.currentIndex() == 0  # welcome
+    assert not any(window.nav.item(i).data(theme.STEP_DONE) for i in range(7))
+
+    window.open_sample("bracket")
+    assert window.pane.currentWidget() is window.viewer
+
+    def done():
+        return [bool(window.nav.item(i).data(theme.STEP_DONE)) for i in range(7)]
+
+    assert done() == [True, False, False, False, False, False, False]
+    window._go(mw.STEP_MATERIAL)
+    window.panels[mw.STEP_MATERIAL].parts.setCurrentRow(0)
+    window.project.parts[0].material_id = "s235"
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    window._project_changed()
+    assert done()[:4] == [True, True, True, False]
+
+    assert window.theme.name == "light"
+    window.toggle_theme()
+    assert window.theme.name == "dark" and prefs.theme() == "dark"
+    assert theme.current().surface in window.styleSheet() or theme.current() is theme.DARK
+    window.toggle_theme()
+    assert window.theme.name == "light" and prefs.theme() == "light"
+
+    window.ask_before_close = False
+    monkeypatch.setattr(window, "_confirm", lambda *a, **k: True)
+    window.new_project()
+    assert window.pane.currentIndex() == 0
+
+
+def test_hidden_load_rows_take_their_help_button_along(qtbot):
+    """The "?" of a hidden row (rotation axis for a plain force) used to stay behind."""
+    from kstruct.model import LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    window._go(mw.STEP_LOAD)
+    panel = window.panels[mw.STEP_LOAD]
+    panel.kind.setCurrentIndex(panel.kind.findData(LoadKind.FORCE))
+    assert panel.direction.parentWidget().isVisible()
+    assert not panel.axis.parentWidget().isVisible()
+    panel.kind.setCurrentIndex(panel.kind.findData(LoadKind.TORQUE))
+    assert panel.axis.parentWidget().isVisible()
+    assert not panel.direction.parentWidget().isVisible()

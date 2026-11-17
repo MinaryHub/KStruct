@@ -68,7 +68,10 @@ class ModelViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.plotter)
 
-        self.plotter.set_background("#f4f6f8", top="#dfe5ec")
+        from kstruct.ui import theme
+
+        self._theme = theme.current()
+        self.plotter.set_background(self._theme.viewer_bottom, top=self._theme.viewer_top)
         self.plotter.add_axes()
         self.plotter.enable_anti_aliasing("ssaa")
 
@@ -108,6 +111,18 @@ class ModelViewer(QWidget):
 
     # --- CAD model -----------------------------------------------------------------
 
+    def apply_theme(self, t) -> None:
+        """Recolour the background, the part edges and the scalar bar text (ui.theme.Theme)."""
+        self._theme = t
+        self.plotter.set_background(t.viewer_bottom, top=t.viewer_top)
+        for actors in self._actors.values():
+            if len(actors) > 1:
+                actors[1].prop.color = t.viewer_text
+        for bar in self.plotter.scalar_bars.values():
+            for prop in (bar.GetTitleTextProperty(), bar.GetLabelTextProperty()):
+                prop.SetColor(*pv.Color(t.viewer_text).float_rgb)
+        self.plotter.render()
+
     def load_project(self, project: Project) -> None:
         self.plotter.clear_actors()
         self._project = project
@@ -136,7 +151,7 @@ class ModelViewer(QWidget):
                     manifold_edges=False,
                     non_manifold_edges=False,
                 ),
-                color="#2b3440",
+                color=self._theme.viewer_text,
                 line_width=1.5,
                 pickable=False,
             )
@@ -262,7 +277,11 @@ class ModelViewer(QWidget):
                 algorithm="dataset_surface", nonlinear_subdivision=0
             )
             self._mesh_actor = self.plotter.add_mesh(
-                surf, style="wireframe", color="#1f3a5a", line_width=0.6, pickable=False
+                surf,
+                style="wireframe",
+                color=self._theme.viewer_text,
+                line_width=0.6,
+                pickable=False,
             )
         self.plotter.render()
 
@@ -311,7 +330,7 @@ class ModelViewer(QWidget):
                 "position_y": 0.15,
                 "height": 0.7,
                 "fmt": "%.3g",
-                "color": "#2b3440",
+                "color": self._theme.viewer_text,
             },
         )
         _use_korean_font(self.plotter.scalar_bars[field.title])
