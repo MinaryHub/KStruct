@@ -706,3 +706,62 @@ def test_hidden_load_rows_take_their_help_button_along(qtbot):
     panel.kind.setCurrentIndex(panel.kind.findData(LoadKind.TORQUE))
     assert panel.axis.parentWidget().isVisible()
     assert not panel.direction.parentWidget().isVisible()
+
+
+def test_undo_and_redo(qtbot):
+    """Edits to the project can be undone and redone; the mesh survives when nothing it
+    depends on changed; opening a file starts a fresh history."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind, Load, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    assert not window.undo_action.isEnabled()
+    shape = window.project.parts[0].shape
+    window._go(mw.STEP_FIXTURE)
+
+    window.project.parts[0].material_id = "s235"
+    window._project_changed()
+    fixture = Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    window.project.fixtures.append(fixture)
+    window._project_changed()
+    window._project_changed()  # nothing changed: no extra step
+    load = Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (90, 30, 8)))], vector=(0, 0, -500.0))
+    window.project.loads.append(load)
+    window._project_changed()
+    assert len(window._history) == 3 and window.undo_action.isEnabled()
+
+    window.project.mesh_quality = "coarse"
+    window.build_mesh()
+    qtbot.waitUntil(lambda: window.mesh is not None, timeout=60_000)
+    window._record()  # the mesh preset changed
+    mesh = window.mesh
+
+    window.undo()  # mesh preset back to normal: that mesh no longer fits
+    assert window.project.mesh_quality == "normal" and window.mesh is None
+    window.redo()
+    assert window.project.mesh_quality == "coarse"
+    window.mesh = mesh
+    window.undo()
+    window.undo()  # the load
+    assert window.project.loads == [] and len(window.project.fixtures) == 1
+    window.undo()  # the fixture
+    assert window.project.fixtures == [] and window.project.parts[0].material_id == "s235"
+    assert window.panels[mw.STEP_FIXTURE].items.count() == 0  # the panel follows
+    window.redo()
+    window.redo()
+    assert len(window.project.fixtures) == 1 and len(window.project.loads) == 1
+    assert window.redo_action.isEnabled()
+    # a new edit drops the redo branch
+    window.project.loads.clear()
+    window._project_changed()
+    assert not window.redo_action.isEnabled()
+    # hidden parts come back with their checkbox
+    window.project.parts[0].visible = False
+    window._project_changed()
+    window.undo()
+    assert window.project.parts[0].visible
+
+    window.open_sample("two_plates")
+    assert not window.undo_action.isEnabled() and window._history == []

@@ -123,6 +123,11 @@ class ModelViewer(QWidget):
                 prop.SetColor(*pv.Color(t.viewer_text).float_rgb)
         self.plotter.render()
 
+    def set_project(self, project: Project) -> None:
+        """Swap in another project object with the same parts (undo/redo) without
+        rebuilding the scene."""
+        self._project = project
+
     def load_project(self, project: Project) -> None:
         self.plotter.clear_actors()
         self._project = project

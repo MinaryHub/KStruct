@@ -1263,6 +1263,11 @@ class SolveStep(StepPanel):
         self.checklist = QLabel()
         self.checklist.setTextFormat(Qt.TextFormat.RichText)
         self.add(self.checklist)
+        self.estimate = QLabel()
+        self.estimate.setWordWrap(True)
+        self.estimate.setTextFormat(Qt.TextFormat.RichText)
+        self.estimate.setVisible(False)
+        self.add(with_help(self.estimate, "analysis.estimate"))
         self.run = _primary(QPushButton("해석 시작"))
         self.run.setMinimumHeight(40)
         self.run.clicked.connect(app.solve)
@@ -1344,6 +1349,17 @@ class SolveStep(StepPanel):
             lines.append(f"{mark} {text}")
         self.checklist.setText("<br>".join(lines))
         self.run.setEnabled(all(ok for ok, _ in problems))
+        # how big the run is, once there is a mesh to tell from
+        mesh = self.app.mesh
+        if mesh is None or project is None:
+            self.estimate.setVisible(False)
+        else:
+            from kstruct.fem.estimate import solve_estimate
+
+            text, warning = solve_estimate(project, mesh)
+            colour = theme.current().warn if warning else theme.current().muted
+            self.estimate.setText(f"<span style='color:{colour}'>{text}</span>")
+            self.estimate.setVisible(True)
 
     def _kind_changed(self) -> None:
         self.app.project.analysis = self.kinds.checkedButton().property("kind")

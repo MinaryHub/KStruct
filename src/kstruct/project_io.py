@@ -66,7 +66,22 @@ def save_project(project: Project, path: str | Path, mesh=None) -> Path:
     """Write the .kst file; with `mesh` (fem.mesh.FEMesh) the mesh is stored too so the
     file reopens without meshing again."""
     path = Path(path)
-    doc = {
+    doc = to_document(project)
+    # write next to the target and swap it in at the end: a failure half-way (disk full,
+    # a shape that cannot be written) must not destroy the previous file or the autosave
+    partial = path.with_name(path.name + ".part")
+    try:
+        _write_archive(project, partial, doc, mesh)
+        os.replace(partial, path)
+    finally:
+        partial.unlink(missing_ok=True)
+    return path
+
+
+def to_document(project: Project) -> dict:
+    """Everything of the project except the part shapes, as plain JSON data. This is the
+    file's project.json and also the undo history's snapshot (ui/main_window.py)."""
+    return {
         "format": "kstruct",
         "version": FORMAT_VERSION,
         "source_path": str(project.source_path) if project.source_path else None,
@@ -129,15 +144,6 @@ def save_project(project: Project, path: str | Path, mesh=None) -> Path:
             for c in project.connections
         ],
     }
-    # write next to the target and swap it in at the end: a failure half-way (disk full,
-    # a shape that cannot be written) must not destroy the previous file or the autosave
-    partial = path.with_name(path.name + ".part")
-    try:
-        _write_archive(project, partial, doc, mesh)
-        os.replace(partial, path)
-    finally:
-        partial.unlink(missing_ok=True)
-    return path
 
 
 def _write_archive(project: Project, path: Path, doc: dict, mesh) -> None:
@@ -222,31 +228,45 @@ def _load_project(path: Path) -> Project:
         doc = json.loads(z.read("project.json"))
         if doc.get("format") != "kstruct" or doc.get("version", 0) > FORMAT_VERSION:
             raise ProjectFileError("이 버전의 KStruct에서 열 수 없는 프로젝트 파일입니다.")
-        project = Project(
-            source_path=Path(doc["source_path"]) if doc.get("source_path") else None,
-            mesh_quality=doc.get("mesh_quality", "normal"),
-            standard=doc.get("standard", "iso"),
-            analysis=AnalysisKind(doc.get("analysis", "static")),
-            reference_temperature=doc.get("reference_temperature", 20.0),
-            operating_frequency=doc.get("operating_frequency", 0.0),
-            n_modes=doc.get("n_modes", 6),
-            load_cycle=doc.get("load_cycle", "none"),
-            fatigue_surface=doc.get("fatigue_surface", "machined"),
-            fatigue_reliability=str(doc.get("fatigue_reliability", "90")),
-            units=doc.get("units"),
-            target_overrides={k: float(v) for k, v in doc.get("target_overrides", {}).items()},
-            custom_materials={
-                m["id"]: material_from_record(m) for m in doc.get("custom_materials", [])
-            },
-        )
+        shapes = {}
         for pd in doc["parts"]:
             brep = Path(z.extract(f"parts/{pd['id']}.brep", tmp))
             shape = TopoDS_Shape()
             if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
                 raise ProjectFileError(f"부품 형상을 읽을 수 없습니다: {pd['name']}")
-            project.parts.append(
-                Part(pd["id"], pd["name"], shape, pd.get("material_id"), pd.get("visible", True))
+            shapes[pd["id"]] = shape
+    return from_document(doc, shapes)
+
+
+def from_document(doc: dict, shapes: dict) -> Project:
+    """Inverse of to_document, with the part shapes by part id."""
+    project = Project(
+        source_path=Path(doc["source_path"]) if doc.get("source_path") else None,
+        mesh_quality=doc.get("mesh_quality", "normal"),
+        standard=doc.get("standard", "iso"),
+        analysis=AnalysisKind(doc.get("analysis", "static")),
+        reference_temperature=doc.get("reference_temperature", 20.0),
+        operating_frequency=doc.get("operating_frequency", 0.0),
+        n_modes=doc.get("n_modes", 6),
+        load_cycle=doc.get("load_cycle", "none"),
+        fatigue_surface=doc.get("fatigue_surface", "machined"),
+        fatigue_reliability=str(doc.get("fatigue_reliability", "90")),
+        units=doc.get("units"),
+        target_overrides={k: float(v) for k, v in doc.get("target_overrides", {}).items()},
+        custom_materials={
+            m["id"]: material_from_record(m) for m in doc.get("custom_materials", [])
+        },
+    )
+    for pd in doc["parts"]:
+        project.parts.append(
+            Part(
+                pd["id"],
+                pd["name"],
+                shapes[pd["id"]],
+                pd.get("material_id"),
+                pd.get("visible", True),
             )
+        )
     project.fixtures = [
         Fixture(FixtureKind(f["kind"]), _unrefs(f["faces"])) for f in doc["fixtures"]
     ]

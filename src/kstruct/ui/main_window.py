@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -54,9 +56,11 @@ from kstruct.model import (
 from kstruct.project_io import (
     SUFFIX,
     ProjectFileError,
+    from_document,
     load_project,
     load_project_mesh,
     save_project,
+    to_document,
 )
 from kstruct.report.summary import (
     VERDICT_STYLE,
@@ -82,6 +86,7 @@ CAD_FILTER = (
     "모든 파일 (*)"
 )
 PROJECT_FILTER = f"KStruct 프로젝트 (*{SUFFIX})"
+MAX_UNDO = 50  # steps kept in the undo history
 SAMPLES = {"bracket": l_bracket, "two_plates": two_plates, "bolted": bolted_plates}
 
 log = logging.getLogger("kstruct.ui")
@@ -151,6 +156,12 @@ class MainWindow(QMainWindow):
         self.materials: dict = {}
         self._busy = False
         self._job: JobHandle | None = None  # the running mesh / solve job
+        # undo history: project documents (project_io.to_document as JSON text; the part
+        # shapes never change and stay with the parts). _baseline is the current state.
+        self._history: list[str] = []
+        self._future: list[str] = []
+        self._baseline: str | None = None
+        self._restoring = False
 
         app = QApplication.instance()
         self.theme = theme.apply(app, prefs.theme()) if app is not None else theme.current()
@@ -367,6 +378,13 @@ class MainWindow(QMainWindow):
         action("모델 열기", self.open_file, "step.open", QKeySequence.StandardKey.Open, "open")
         action("프로젝트 열기", self.open_project, "project.open", icon="project")
         action("저장", self.save_project, "project.save", QKeySequence.StandardKey.Save, "save")
+        self.undo_action = action(
+            "실행 취소", self.undo, "project.undo", QKeySequence.StandardKey.Undo, "undo", True
+        )
+        self.redo_action = action(
+            "다시 실행", self.redo, "project.undo", QKeySequence.StandardKey.Redo, "redo", True
+        )
+        self._update_undo_actions()
         self.recent_button = QToolButton()
         self.recent_button.setText("최근 파일")
         self.recent_button.setIcon(theme.icon("recent"))
@@ -613,6 +631,7 @@ class MainWindow(QMainWindow):
         self.panels[STEP_OPEN].refresh()
         self._update_nav()
         self._show_pane()
+        self._reset_history()
         name = path.name if path else (project.source_path.name if project.source_path else "")
         self.setWindowTitle(f"KStruct — {name}" if name else "KStruct — 부품 강도 해석")
 
@@ -631,6 +650,7 @@ class MainWindow(QMainWindow):
         self._go(STEP_OPEN)
         self._update_nav()
         self._show_pane()
+        self._reset_history()
         self.setWindowTitle("KStruct — 부품 강도 해석")
 
     def open_file(self) -> None:
@@ -657,6 +677,7 @@ class MainWindow(QMainWindow):
         self._set_project(project)
         if len(project.parts) > 1:
             self.detect_connections(quiet=True)
+        self._reset_history()  # the automatic connections are part of the opened state
         self._dirty = True  # a fresh import has no project file yet
         if path not in self._sample_files:  # built-in samples are not "recent files"
             prefs.remember_file(path)
@@ -720,6 +741,7 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self.mesh = None
         self._invalidate_result()
+        self._record()
 
     def _invalidate_result(self) -> None:
         if self.summary is not None:  # remember what the run being discarded came to
@@ -732,6 +754,93 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self._invalidate_result()
         self._annotate()
+        self._record()
+
+    # --- undo / redo -----------------------------------------------------------------
+
+    def _document(self) -> str:
+        return json.dumps(to_document(self.project), ensure_ascii=False, sort_keys=True)
+
+    def _reset_history(self) -> None:
+        """A project was opened or closed: nothing to undo yet."""
+        self._history.clear()
+        self._future.clear()
+        self._baseline = self._document() if self.project is not None else None
+        self._update_undo_actions()
+
+    def _record(self) -> None:
+        """Remember the state before the change that just happened (called after every
+        edit; edits that did not change the project document are ignored)."""
+        if self.project is None or self._restoring:
+            return
+        doc = self._document()
+        if doc == self._baseline:
+            return
+        if self._baseline is not None:
+            self._history.append(self._baseline)
+            del self._history[:-MAX_UNDO]
+        self._future.clear()
+        self._baseline = doc
+        self._update_undo_actions()
+
+    def _update_undo_actions(self) -> None:
+        if hasattr(self, "undo_action"):
+            self.undo_action.setEnabled(bool(self._history))
+            self.redo_action.setEnabled(bool(self._future))
+
+    def undo(self) -> None:
+        self._step_history(self._history, self._future, "실행 취소했습니다.")
+
+    def redo(self) -> None:
+        self._step_history(self._future, self._history, "다시 실행했습니다.")
+
+    def _step_history(self, source: list[str], target: list[str], message: str) -> None:
+        if self.project is None or self._busy:
+            return
+        self._record()  # an edit that has not reported itself yet
+        if not source:
+            return
+        target.append(self._baseline)
+        self._restore(source.pop())
+        self.statusBar().showMessage(message)
+
+    def _restore(self, doc: str) -> None:
+        """Make the project what the document says (fixtures, loads, materials, settings,
+        hidden parts); the mesh survives when nothing it depends on changed."""
+        old = self.project
+        project = from_document(json.loads(doc), {p.id: p.shape for p in old.parts})
+
+        def mesh_inputs(p: Project):
+            return (
+                p.mesh_quality,
+                [(r.faces, r.size) for r in p.mesh_refinements],
+                [part.id for part in p.parts if part.visible],
+            )
+
+        self._restoring = True
+        try:
+            self.project = project
+            self.viewer.set_project(project)
+            for part in project.parts:
+                self.viewer.set_part_visible(part.id, part.visible)
+            if mesh_inputs(old) != mesh_inputs(project):
+                self.mesh = None
+            self._dirty = True
+            self._invalidate_result()
+            self._annotate()
+            self.panels[STEP_OPEN].refresh()
+            row = self.nav.currentRow()
+            if row == STEP_RESULT:
+                self._go(STEP_SOLVE)  # the result is gone
+            elif row != STEP_OPEN:
+                self.panels[row].refresh()
+            if self.nav.currentRow() == STEP_MESH:
+                self.viewer.show_mesh(self.mesh)
+            self._update_nav()
+        finally:
+            self._restoring = False
+        self._baseline = self._document()  # a panel may normalise a value while refreshing
+        self._update_undo_actions()
 
     def _annotate(self) -> None:
         if self.project is not None:
@@ -869,6 +978,12 @@ class MainWindow(QMainWindow):
             project.mesh_quality,
         )
         panel.set_progress(0.0, "시작")
+        started = time.perf_counter()
+
+        def show_progress(fraction: float, message: str) -> None:
+            seconds = time.perf_counter() - started
+            clock = f" · {seconds:.0f}초" if seconds >= 3 else ""
+            panel.set_progress(fraction, f"{message}{clock}")
 
         def job(progress):
             m = mesh
@@ -913,6 +1028,9 @@ class MainWindow(QMainWindow):
             self._configure_result_panel()
             self._update_nav()
             self._go(STEP_RESULT)
+            seconds = time.perf_counter() - started
+            log.info("solve finished in %.1f s", seconds)
+            self.statusBar().showMessage(f"해석을 마쳤습니다 ({seconds:.1f}초).")
 
         def failed(e):
             self._busy = False
@@ -924,7 +1042,7 @@ class MainWindow(QMainWindow):
             log.warning("solve failed: %s: %s", type(e).__name__, e)
             self.warn(friendly_error(e))
 
-        self._job = run_job(job, done, failed, lambda f, m: panel.set_progress(f, m))
+        self._job = run_job(job, done, failed, show_progress)
 
     # --- results ---------------------------------------------------------------------
 
