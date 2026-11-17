@@ -1267,7 +1267,7 @@ class SolveStep(StepPanel):
         self.estimate.setWordWrap(True)
         self.estimate.setTextFormat(Qt.TextFormat.RichText)
         self.estimate.setVisible(False)
-        self.add(with_help(self.estimate, "analysis.estimate"))
+        self.add(with_help(self.estimate, "analysis.estimate")).setVisible(False)
         self.run = _primary(QPushButton("해석 시작"))
         self.run.setMinimumHeight(40)
         self.run.clicked.connect(app.solve)
@@ -1351,6 +1351,7 @@ class SolveStep(StepPanel):
         self.run.setEnabled(all(ok for ok, _ in problems))
         # how big the run is, once there is a mesh to tell from
         mesh = self.app.mesh
+        self.estimate.parentWidget().setVisible(mesh is not None and project is not None)
         if mesh is None or project is None:
             self.estimate.setVisible(False)
         else:

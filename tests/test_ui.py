@@ -737,6 +737,12 @@ def test_undo_and_redo(qtbot):
     qtbot.waitUntil(lambda: window.mesh is not None, timeout=60_000)
     window._record()  # the mesh preset changed
     mesh = window.mesh
+    # with a mesh the solve step says how big the run is; without one the line and its
+    # help button are both hidden
+    solve_panel = window.panels[mw.STEP_SOLVE]
+    window._go(mw.STEP_SOLVE)
+    assert solve_panel.estimate.isVisible() and "미지수" in solve_panel.estimate.text()
+    window._go(mw.STEP_FIXTURE)
 
     window.undo()  # mesh preset back to normal: that mesh no longer fits
     assert window.project.mesh_quality == "normal" and window.mesh is None
@@ -765,3 +771,5 @@ def test_undo_and_redo(qtbot):
 
     window.open_sample("two_plates")
     assert not window.undo_action.isEnabled() and window._history == []
+    window._go(mw.STEP_SOLVE)
+    assert not solve_panel.estimate.parentWidget().isVisible()
