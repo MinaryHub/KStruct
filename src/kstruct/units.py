@@ -60,6 +60,13 @@ def quantity(system: str, kind: str) -> Quantity:
     return SYSTEMS.get(system, SI)[kind]
 
 
-def fmt(system: str, kind: str, value: float, digits: str = ",.4g") -> str:
+def fmt(system: str, kind: str, value: float, digits: str | None = None) -> str:
+    """Value with its unit. Without `digits`: four significant digits, never in exponent
+    notation for ordinary magnitudes (",.4g" printed 14,500 psi as "1.45e+04 psi")."""
     q = quantity(system, kind)
-    return f"{q.show(value):{digits}} {q.unit}"
+    shown = q.show(value)
+    if digits is not None:
+        return f"{shown:{digits}} {q.unit}"
+    if abs(shown) >= 1000:
+        return f"{shown:,.0f} {q.unit}"
+    return f"{shown:,.4g} {q.unit}"

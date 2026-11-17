@@ -15,7 +15,7 @@ from PySide6.QtGui import QPageLayout, QPageSize, QPdfWriter, QTextDocument
 from kstruct import __version__, standards
 from kstruct.fem.mesh import MESH_PRESETS
 from kstruct.fem.static import StaticResult
-from kstruct.model import THERMAL_LOADS, Project
+from kstruct.model import THERMAL_LOADS, LoadKind, Project, active_project
 from kstruct.report.describe import describe_connection, describe_fixture, describe_load
 from kstruct.report.summary import VERDICT_STYLE, Summary
 from kstruct.units import fmt, system_of
@@ -312,13 +312,25 @@ def _thermal_html(project, result, summary, images, materials) -> str:
             f"<td>{limit}</td></tr>"
         )
     notes = _list(summary.notes)
+    has_radiation = any(ld.kind == LoadKind.RADIATION for ld in project.loads)
+    has_table = any(m.conductivity_table for m in materials.values())
+    method_note = "; ".join(
+        [
+            "복사는 '복사 냉각'을 지정한 면에서만 고려(반복 계산)"
+            if has_radiation
+            else "복사 열전달은 지정하지 않아 고려하지 않음",
+            "온도에 따른 열전도율 변화를 반영(재료의 열전도율 표)"
+            if has_table
+            else "열전도율은 온도와 무관한 상수로 가정",
+        ]
+    )
     body = f"""
 {f"<ul>{notes}</ul>" if notes else ""}
 <h2>1. 부품별 온도</h2>
 <table width="100%" border="1" cellspacing="0" cellpadding="4">
 <tr style="background:#eef1f5;"><th>부품</th><th>최저</th><th>최고</th><th>권장 최고 사용온도</th></tr>
 {"".join(rows)}</table>
-<p>들어온 열 {result.heat_in:.3g} W · 빠져나간 열 {result.heat_out:.3g} W</p>
+<p>들어온 열 {fmt(us, "power", result.heat_in)} · 빠져나간 열 {fmt(us, "power", result.heat_out)}</p>
 <h2>2. 해석 조건</h2>
 <p><b>재료</b></p><ul>{_materials_list(project, materials)}</ul>
 <p><b>열 조건</b></p><ul>{loads}</ul>
@@ -328,7 +340,7 @@ def _thermal_html(project, result, summary, images, materials) -> str:
 {_pictures(images)}
 <h2>4. 해석 방법과 한계</h2>
 <ul><li>정상상태 열전도 해석 (충분한 시간이 지나 온도가 더 이상 변하지 않는 상태)</li>
-<li>복사 열전달과 온도에 따른 물성 변화는 고려하지 않음</li>
+<li>{method_note}</li>
 <li>권장 최고 사용온도는 대략적인 값이며 재료 등급에 따라 다름</li></ul>
 """
     return _page(
@@ -392,6 +404,10 @@ def build_html(
     from kstruct.fem.modal import ModalResult
     from kstruct.fem.thermal import ThermalResult
 
+    # the result was computed on the visible parts and the conditions that refer only to
+    # them: report exactly that (a hidden part's fixture used to crash the report, its
+    # loads were listed although they were not applied)
+    project = active_project(project)
     if isinstance(result, BucklingResult):
         return _buckling_html(project, result, summary, images, materials or {})
     if isinstance(result, ModalResult):

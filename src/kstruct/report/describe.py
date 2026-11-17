@@ -74,7 +74,7 @@ def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) ->
         g = (sum(c * c for c in ld.vector) ** 0.5) / GRAVITY
         return f"자중 {g:.2g} g"
     if ld.kind == LoadKind.TORQUE:
-        return f"토크 {fmt(system, 'torque', ld.magnitude, ',.4g')}{_axis(ld)}: {faces(ld.faces)}"
+        return f"토크 {fmt(system, 'torque', ld.magnitude)}{_axis(ld)}: {faces(ld.faces)}"
     if ld.kind == LoadKind.BEARING:
         fq = quantity(system, "force")
         fx, fy, fz = (fq.show(c) for c in ld.vector)
@@ -87,7 +87,7 @@ def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) ->
     if ld.kind == LoadKind.FACE_TEMPERATURE:
         return f"고정 온도 {fmt(system, 'temperature', ld.magnitude, '.1f')}: {faces(ld.faces)}"
     if ld.kind == LoadKind.HEAT_FLOW:
-        return f"열 입력 {ld.magnitude:.3g} W: {faces(ld.faces)}"
+        return f"열 입력 {fmt(system, 'power', ld.magnitude)}: {faces(ld.faces)}"
     if ld.kind == LoadKind.CONVECTION:
         air = fmt(system, "temperature", ld.ambient, ".0f")
         return f"대류 h={ld.magnitude:.3g} W/m²K, 공기 {air}: {faces(ld.faces)}"
@@ -98,10 +98,12 @@ def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) ->
 
 
 def _axis(ld: Load) -> str:
-    names = {(1, 0, 0): "X", (0, 1, 0): "Y", (0, 0, 1): "Z"}
-    key = tuple(int(round(c)) for c in ld.vector)
-    if key in names:
-        return f", {names[key]} 축"
-    if key in {tuple(-c for c in k) for k in names}:
-        return f", −{names[tuple(-c for c in key)]} 축"
-    return ", 원통면의 축"
+    norm = sum(c * c for c in ld.vector) ** 0.5
+    if norm == 0:
+        return ", 원통면의 축"
+    for i, name in enumerate("XYZ"):
+        c = ld.vector[i] / norm
+        if abs(c) > 1 - 1e-6:  # rounding the components called (0.9, 0.44, 0) "X"
+            return f", {name} 축" if c > 0 else f", −{name} 축"
+    x, y, z = (c / norm for c in ld.vector)
+    return f", 축 방향 ({x:+.2f}, {y:+.2f}, {z:+.2f})"

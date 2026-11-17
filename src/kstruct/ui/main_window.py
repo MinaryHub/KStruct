@@ -999,7 +999,10 @@ class MainWindow(QMainWindow):
                     f" ~ <b>{fmt(us, 'temperature', r.temperature[nodes].max(), '.1f')}</b>{limit}"
                 )
             if r.heat_in:
-                lines.append(f"들어온 열 {r.heat_in:.3g} W · 빠져나간 열 {r.heat_out:.3g} W")
+                lines.append(
+                    f"들어온 열 {fmt('SI', 'power', r.heat_in)} · "
+                    f"빠져나간 열 {fmt('SI', 'power', r.heat_out)}"
+                )
         else:
             if self.overview is not None:
                 o = self.overview

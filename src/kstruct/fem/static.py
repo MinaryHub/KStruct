@@ -92,16 +92,25 @@ class StaticResult:
 
     @property
     def safety_factor(self) -> np.ndarray:
-        """Per node. Ductile: yield / von Mises. Brittle: tensile strength / max principal."""
+        """Per node. Ductile: yield / von Mises. Brittle: the smaller of tensile strength /
+        largest tensile principal stress and compressive strength / largest compressive
+        principal stress (compressive strength = tensile strength unless the material
+        says otherwise; checking tension only called a crushed part 100x safe)."""
         fos = np.full(self.mesh.n_nodes, FOS_CAP)
         for pid, m in self.materials.items():
             nodes = self.mesh.part_nodes(pid)
             if m.ductile:
                 demand, capacity = self.von_mises[nodes], m.yield_strength
             else:
-                demand, capacity = np.maximum(self.principal[nodes, 0], 0), m.tensile_strength
+                principal = self.principal[nodes]
+                demand, capacity = np.maximum(principal[:, 0], 0), m.tensile_strength
+                crush = np.maximum(-principal[:, 2], 0)
+                with np.errstate(divide="ignore"):
+                    fos[nodes] = np.minimum(
+                        (m.compressive_strength or m.tensile_strength) / crush, FOS_CAP
+                    )
             with np.errstate(divide="ignore"):
-                fos[nodes] = np.minimum(capacity / demand, FOS_CAP)
+                fos[nodes] = np.minimum(fos[nodes], np.minimum(capacity / demand, FOS_CAP))
         return fos
 
 

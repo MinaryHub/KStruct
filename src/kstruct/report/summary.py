@@ -15,8 +15,9 @@ from kstruct.fem.fatigue import (
 )
 from kstruct.fem.singularity import KIND_NAMES, NONE, find_singularities
 from kstruct.fem.static import StaticResult
-from kstruct.model import ConnectionKind, Project
+from kstruct.model import ConnectionKind, FixtureKind, Project
 from kstruct.standards import StandardPack, Verdict, verdict
+from kstruct.units import fmt, system_of
 
 VERDICT_STYLE = {
     Verdict.OK: ("✅ 안전", "#2e9e5b", "#e8f6ee"),
@@ -42,7 +43,8 @@ class PartSummary:
     target: float
     verdict: Verdict
     max_disp: float
-    at_fixture: bool  # peak sits on a fixture face (likely a stress singularity)
+    at_fixture: bool  # peak sits on a fully fixed face (likely a stress singularity)
+    crushing: bool = False  # brittle part governed by compression (stress = compressive)
     # when the peak sits in a stress-singularity zone: the kind of singularity and the
     # "hot-spot" value just outside the zone, which does not grow with mesh refinement
     singular_kind: str | None = None
@@ -52,6 +54,7 @@ class PartSummary:
     fatigue_fos: float | None = None
     fatigue_life: float | None = None  # cycles at the weakest node
     fatigue_verdict: Verdict | None = None
+    fatigue_excludes_singularity: bool = False  # fatigue values taken outside the zone
 
     @property
     def governing_fos(self) -> float:
@@ -85,16 +88,28 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
     p1 = result.principal[:, 0]
     fos = result.safety_factor
     disp = result.displacement_magnitude
-    fixture_nodes = mesh.face_nodes([r for fx in project.fixtures for r in fx.faces])
+    # only a fully fixed face clamps the material (rollers and pins let it breathe)
+    fixture_nodes = mesh.face_nodes(
+        [r for fx in project.fixtures if fx.kind == FixtureKind.FIXED for r in fx.faces]
+    )
     singular = find_singularities(project, mesh)
 
     parts = []
     for pid, m in result.materials.items():
         nodes = mesh.part_nodes(pid)
         demand = vm if m.ductile else p1
+        capacity = m.yield_strength if m.ductile else m.tensile_strength
         peak = nodes[int(np.argmax(demand[nodes]))]
         weakest = nodes[int(np.argmin(fos[nodes]))]
         target = pack.target(m)
+        # a brittle part governed by compression: report the compressive stress and
+        # strength the safety factor was computed from
+        crushing = False
+        if not m.ductile:
+            crush_capacity = m.compressive_strength or m.tensile_strength
+            p3 = result.principal[:, 2]
+            if -p3[weakest] / crush_capacity > max(p1[weakest], 0.0) / capacity:
+                crushing, demand, capacity, peak = True, -p3, crush_capacity, weakest
         part = PartSummary(
             part_id=pid,
             name=project.part(pid).name,
@@ -102,7 +117,8 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             ductile=m.ductile,
             max_stress=float(demand[peak]),
             max_stress_at=mesh.nodes[peak],
-            capacity=m.yield_strength if m.ductile else m.tensile_strength,
+            capacity=capacity,
+            crushing=crushing,
             min_fos=float(fos[weakest]),
             target=target,
             verdict=verdict(float(fos[weakest]), target),
@@ -130,6 +146,15 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
         fatigue = fatigue_check(result, cycle, settings)
         for s in parts:
             nodes = mesh.part_nodes(s.part_id)
+            # Like the static check, the fatigue check of a ductile part is taken outside
+            # a singular zone: the stress at a sharp corner grows with every mesh
+            # refinement, and so did the fatigue verdict (1.50 / 1.36 / 1.19 on the sample
+            # bracket). The note below says that the corner itself is not assessed.
+            if s.ductile and s.singular_kind is not None:
+                zone = singular.zone(mesh, s.part_id)
+                outside = nodes[~zone[nodes]]
+                if len(outside):
+                    nodes, s.fatigue_excludes_singularity = outside, True
             weakest = nodes[int(np.argmin(fatigue.safety_factor[nodes]))]
             s.fatigue_fos = float(fatigue.safety_factor[weakest])
             s.fatigue_life = float(fatigue.life[nodes].min())
@@ -190,6 +215,7 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             )
 
     notes = []
+    us = system_of(project)
     if fatigue is not None and fatigue.factors:
         surface = SURFACE_FACTORS[project.fatigue_surface][0]
         parts_text = ", ".join(
@@ -200,6 +226,24 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             f"피로 한도 보정: 표면 '{surface}', 크기 계수 {any_f['kb']:.2f}, "
             f"신뢰도 {project.fatigue_reliability}%(계수 {any_f['kc']:.2f}) → 재료 피로 한도의 "
             f"{parts_text}배를 사용했습니다. 노치·용접부는 따로 고려하지 않았습니다."
+        )
+    for s in parts:
+        if s.crushing:
+            assumed = (
+                ""
+                if result.materials[s.part_id].compressive_strength
+                else " 이 재료에는 압축 강도 값이 없어 인장 강도와 같다고 (안전한 쪽으로) 보았습니다."
+            )
+            notes.append(
+                f"{s.name}: 취성재가 눌리는 쪽에서 가장 약합니다. 표시한 응력은 압축 응력 "
+                f"{fmt(us, 'stress', s.max_stress, ',.1f')}, 강도는 압축 강도 "
+                f"{fmt(us, 'stress', s.capacity, ',.0f')}입니다.{assumed}"
+            )
+    if any(s.fatigue_excludes_singularity for s in parts):
+        notes.append(
+            "피로 안전율과 수명은 응력 특이점(날카로운 모서리·고정면 가장자리) 주변을 제외한 "
+            "값입니다. 날카로운 모서리는 실제로 피로 균열이 시작되기 쉬운 곳이므로, 반복 하중을 "
+            "받는 부품은 그 모서리에 필렛(둥글림)을 주고 다시 확인하세요."
         )
     for s in parts:
         if s.singular_kind is not None:
@@ -215,10 +259,11 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
                 else "취성재는 날카로운 모서리에서 실제로 깨질 수 있어 최대값으로 판정했습니다."
             )
             notes.append(
-                f"{s.name}: 최대 응력 {s.max_stress:,.1f} MPa가 {s.singular_kind}에 있습니다. "
+                f"{s.name}: 최대 응력 {fmt(us, 'stress', s.max_stress, ',.1f')}가 "
+                f"{s.singular_kind}에 있습니다. "
                 "이런 곳은 메시를 세밀하게 할수록 계산값이 한없이 커지는 '응력 특이점'이라 "
-                f"그 숫자를 그대로 믿기 어렵습니다. 특이점에서 {r:.1f} mm 떨어진 곳 기준으로는 "
-                f"응력 {s.hotspot_stress:,.1f} MPa, 안전율 {s.hotspot_fos:.2f}입니다. {basis} {advice}"
+                f"그 숫자를 그대로 믿기 어렵습니다. 특이점에서 {fmt(us, 'length', r, '.3g')} 떨어진 곳 기준으로는 "
+                f"응력 {fmt(us, 'stress', s.hotspot_stress, ',.1f')}, 안전율 {s.hotspot_fos:.2f}입니다. {basis} {advice}"
             )
         elif s.at_fixture:
             notes.append(
@@ -415,13 +460,19 @@ def summarize_thermal(project: Project, result, materials: dict) -> ThermalSumma
             worst, worst_ratio = (pid, m, t_max), ratio
     notes = _contact_note(project)
     if result.heat_in > 0:
-        balance = abs(result.heat_out - result.heat_in) / result.heat_in
+        balance = abs(result.heat_out - result.heat_in) / max(result.heat_in, result.heat_out)
         if balance > 0.02:
             notes.append(
-                f"들어온 열 {result.heat_in:.3g} W와 나간 열 {result.heat_out:.3g} W의 차이가 "
+                f"들어온 열 {fmt('SI', 'power', result.heat_in)}와 나간 열 "
+                f"{fmt('SI', 'power', result.heat_out)}의 차이가 "
                 f"{balance * 100:.0f}%입니다. 메시를 더 세밀하게 하면 정확해집니다."
             )
-    headline = f"최고 {T.max():,.1f} °C · 최저 {T.min():,.1f} °C"
+    us = system_of(project)
+
+    def deg(value: float, digits: str = ".0f") -> str:
+        return fmt(us, "temperature", value, digits)
+
+    headline = f"최고 {deg(T.max(), ',.1f')} · 최저 {deg(T.min(), ',.1f')}"
     if worst is None:
         return ThermalSummary(None, headline, "온도 분포를 계산했습니다.", notes)
     pid, m, t_max = worst
@@ -430,19 +481,18 @@ def summarize_thermal(project: Project, result, materials: dict) -> ThermalSumma
     if t_max <= 0.9 * limit:
         verdict = Verdict.OK
         limit_text = (
-            f"가장 뜨거운 곳도 {name} 재료의 권장 최고 사용온도({limit:.0f} °C)보다 "
-            "충분히 낮습니다."
+            f"가장 뜨거운 곳도 {name} 재료의 권장 최고 사용온도({deg(limit)})보다 충분히 낮습니다."
         )
     elif t_max <= limit:
         verdict = Verdict.WARN
         limit_text = (
-            f"{name}의 최고 온도 {t_max:.0f} °C가 재료의 권장 최고 사용온도({limit:.0f} °C)에 "
+            f"{name}의 최고 온도 {deg(t_max)}가 재료의 권장 최고 사용온도({deg(limit)})에 "
             "가깝습니다. 냉각을 늘리거나 내열성이 높은 재료를 검토하세요."
         )
     else:
         verdict = Verdict.FAIL
         limit_text = (
-            f"{name}의 최고 온도 {t_max:.0f} °C가 재료의 권장 최고 사용온도({limit:.0f} °C)를 "
+            f"{name}의 최고 온도 {deg(t_max)}가 재료의 권장 최고 사용온도({deg(limit)})를 "
             "넘습니다. 강도가 떨어지거나 변형·변색될 수 있습니다."
         )
     title = VERDICT_STYLE[verdict][0]

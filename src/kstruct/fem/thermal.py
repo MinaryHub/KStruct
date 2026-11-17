@@ -90,6 +90,36 @@ def radiation_coefficient(T: np.ndarray, ambient: float, emissivity: float) -> n
     return emissivity * STEFAN_BOLTZMANN * (Ts**2 + Ta**2) * (Ts + Ta)
 
 
+def radiation_tangent(
+    T: np.ndarray, ambient: float, emissivity: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Newton linearisation of q = εσ(T⁴ − T∞⁴) about T: (h, T_ref) with
+    q ≈ h (T_new − T_ref), h = 4εσT³ in W/(m²·K). The secant coefficient
+    radiation_coefficient() makes the fixed-point iteration oscillate and diverge as soon
+    as radiation carries a few watts; the tangent converges quadratically."""
+    Ts, Ta = np.maximum(T + KELVIN, 1.0), ambient + KELVIN
+    h = 4.0 * emissivity * STEFAN_BOLTZMANN * Ts**3
+    q = emissivity * STEFAN_BOLTZMANN * (Ts**4 - Ta**4)
+    return h, T - q / h
+
+
+def _thermal_groups(project: Project, part_ids: list[int]) -> list[set[int]]:
+    """Sets of parts that conduct heat to each other through their connections."""
+    group = {pid: {pid} for pid in part_ids}
+    for c in project.connections:
+        a, b = c.faces_a[0].part_id, c.faces_b[0].part_id
+        if a in group and b in group and group[a] is not group[b]:
+            merged = group[a] | group[b]
+            for pid in merged:
+                group[pid] = merged
+    seen, out = set(), []
+    for g in group.values():
+        if id(g) not in seen:
+            seen.add(id(g))
+            out.append(g)
+    return out
+
+
 def _conductivity_matrix(mesh: FEMesh, k: np.ndarray) -> sp.csr_matrix:
     X = mesh.nodes[mesh.tets]
     Ke = np.zeros((len(mesh.tets), 10, 10))
@@ -129,6 +159,16 @@ def solve_thermal(
             "온도의 기준이 없습니다. '고정 온도', '대류 냉각', '복사 냉각' 중 하나 이상을 "
             "지정하세요."
         )
+    # every group of connected parts needs its own temperature reference: without one its
+    # conduction matrix is singular and the solve used to return 0 °C for it, silently
+    referenced = {r.part_id for ld in loads if ld.kind in TEMPERATURE_REFERENCES for r in ld.faces}
+    for group in _thermal_groups(project, [int(p) for p in np.unique(mesh.tet_part)]):
+        if not group & referenced:
+            names = ", ".join(f"'{project.part(pid).name}'" for pid in sorted(group))
+            raise SolverError(
+                f"{names} 부품에 온도의 기준이 없습니다. 이 부품에 '고정 온도'·'대류 냉각'·"
+                "'복사 냉각' 중 하나를 지정하거나, 기준이 있는 부품과 접합(맞닿은 면 연결)하세요."
+            )
     faces = {}
     for i, ld in enumerate(loads):
         tris = mesh.tris[mesh.face_tris(ld.faces)]
@@ -171,23 +211,24 @@ def solve_thermal(
                 q = ld.magnitude * WATT / area.sum()
                 np.add.at(f, tris.ravel(), (weights * q).ravel())
             else:
+                ambient: np.ndarray | float = ld.ambient
                 if ld.kind == LoadKind.CONVECTION:
                     h = ld.magnitude * H_SCALE
-                else:  # radiation linearised at the face temperatures of the last pass
+                else:  # radiation: tangent at the face temperatures of the last pass
                     surface = (
                         np.full(len(tris), ld.ambient)
                         if T_prev is None
                         else T_prev[tris].mean(axis=1)
                     )
-                    h = radiation_coefficient(surface, ld.ambient, ld.magnitude) * H_SCALE
+                    h, ambient = radiation_tangent(surface, ld.ambient, ld.magnitude)
+                    h = h * H_SCALE
                 H, integral_n = _surface_matrices(mesh, tris, h)
                 rows = np.repeat(tris, 6, axis=1).ravel()
                 cols = np.tile(tris, (1, 6)).ravel()
                 K = K + sp.csr_matrix((H.ravel(), (rows, cols)), shape=(n, n)).tolil()
-                np.add.at(
-                    f, tris.ravel(), (integral_n * (np.asarray(h)[..., None] * ld.ambient)).ravel()
-                )
-                films.append((tris, h, ld.ambient, integral_n))
+                source = np.broadcast_to(np.asarray(h * ambient, dtype=float), (len(tris),))
+                np.add.at(f, tris.ravel(), (integral_n * source[:, None]).ravel())
+                films.append((tris, h, ambient, integral_n))
         return K.tocsr() + tie_matrix, f, fixed, T, films
 
     def solve_once(T_prev):
@@ -214,13 +255,19 @@ def solve_thermal(
     report(0.85, "열 흐름 계산 중")
     k = element_conductivity(mesh, materials, T if nonlinear else None)
     flux = _nodal_flux(mesh, k, T)
-    heat_in = sum(ld.magnitude for ld in loads if ld.kind == LoadKind.HEAT_FLOW)
-    # heat leaving through fixed-temperature faces: minus the conduction "reaction" there
-    heat_out = -float((_conductivity_matrix(mesh, k) @ T)[fixed].sum())
+    # Heat entering and leaving are summed separately: netting them made a bar between a
+    # hot and a cold face report "0 W in, 0 W out" while 4 W flowed through it.
+    flows = [ld.magnitude * WATT for ld in loads if ld.kind == LoadKind.HEAT_FLOW]
+    # fixed-temperature faces: the conduction "reaction" is the heat each one supplies
+    supplied = _conductivity_matrix(mesh, k) @ T
+    for ld in loads:
+        if ld.kind == LoadKind.FACE_TEMPERATURE:
+            flows.append(float(supplied[mesh.face_nodes(ld.faces)].sum()))
     for tris, h, ambient, integral_n in films:
         per_face = (integral_n * T[tris]).sum(axis=1) - ambient * integral_n.sum(axis=1)
-        heat_out += float((h * per_face).sum())
-    heat_out /= WATT
+        flows.append(-float((h * per_face).sum()))
+    heat_in = sum(q for q in flows if q > 0) / WATT
+    heat_out = -sum(q for q in flows if q < 0) / WATT
     report(1.0, "완료")
     return ThermalResult(mesh, T, flux, heat_in, heat_out, iterations)
 

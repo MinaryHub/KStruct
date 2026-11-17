@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import tempfile
 import zipfile
 from pathlib import Path
@@ -128,6 +129,18 @@ def save_project(project: Project, path: str | Path, mesh=None) -> Path:
             for c in project.connections
         ],
     }
+    # write next to the target and swap it in at the end: a failure half-way (disk full,
+    # a shape that cannot be written) must not destroy the previous file or the autosave
+    partial = path.with_name(path.name + ".part")
+    try:
+        _write_archive(project, partial, doc, mesh)
+        os.replace(partial, path)
+    finally:
+        partial.unlink(missing_ok=True)
+    return path
+
+
+def _write_archive(project: Project, path: Path, doc: dict, mesh) -> None:
     with (
         tempfile.TemporaryDirectory() as tmp,
         zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z,
@@ -136,7 +149,8 @@ def save_project(project: Project, path: str | Path, mesh=None) -> Path:
         brep_bytes = {}
         for p in project.parts:
             brep = Path(tmp) / f"part{p.id}.brep"
-            BRepTools.Write_s(p.shape, str(brep))
+            if not BRepTools.Write_s(p.shape, str(brep)):
+                raise ProjectFileError(f"부품 형상을 저장할 수 없습니다: {p.name}")
             brep_bytes[p.id] = brep.read_bytes()
             z.writestr(f"parts/{p.id}.brep", brep_bytes[p.id])
         if mesh is not None:
@@ -155,7 +169,6 @@ def save_project(project: Project, path: str | Path, mesh=None) -> Path:
                 "mesh.json",
                 json.dumps({"key": mesh_key(project, brep_bytes), "notes": list(mesh.notes)}),
             )
-    return path
 
 
 def load_project_mesh(path: str | Path, project: Project):
@@ -182,12 +195,25 @@ def load_project_mesh(path: str | Path, project: Project):
                 tri_face=data["tri_face"],
                 notes=list(meta.get("notes", [])),
             )
-    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+    except Exception:  # a damaged mesh entry only costs a re-mesh
         return None
 
 
 def load_project(path: str | Path) -> Project:
+    """Read a .kst file. Anything wrong with the file (not a zip, damaged data, missing or
+    mistyped fields, unreadable shapes) is reported as ProjectFileError."""
     path = Path(path)
+    try:
+        return _load_project(path)
+    except ProjectFileError:
+        raise
+    except Exception as e:  # zlib.error, BadZipFile, KeyError, TypeError, OCP failures ...
+        raise ProjectFileError(
+            f"프로젝트 파일이 손상되었거나 형식이 맞지 않아 열 수 없습니다: {path.name}"
+        ) from e
+
+
+def _load_project(path: Path) -> Project:
     try:
         z = zipfile.ZipFile(path)
     except (zipfile.BadZipFile, OSError) as e:

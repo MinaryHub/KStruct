@@ -49,9 +49,14 @@ def _read_triangles(path: Path) -> list[tuple[str, np.ndarray, np.ndarray]]:
     scale = 1000.0 if suffix in _METRE_FORMATS else 1.0
     if suffix == ".3mf":
         unit = (scene.units or "millimeters").lower()
-        scale = {"meters": 1000.0, "centimeters": 10.0, "inches": 25.4, "micron": 1e-3}.get(
-            unit, 1.0
-        )
+        # the 3MF spec (and trimesh) spell the units in the singular: "inch", "meter"
+        scale = {
+            "meter": 1000.0,
+            "centimeter": 10.0,
+            "inch": 25.4,
+            "foot": 304.8,
+            "micron": 1e-3,
+        }.get(unit.rstrip("s").replace("inche", "inch").replace("feet", "foot"), 1.0)
     out = []
     for name, geom in _named(scene):
         out.append((name, np.asarray(geom.vertices) * scale, np.asarray(geom.faces)))

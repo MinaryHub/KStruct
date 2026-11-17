@@ -45,6 +45,8 @@ class Material:
     fatigue_limit: float | None = None  # MPa, fully reversed, polished specimen
     max_service_temperature: float | None = None  # °C, approximate continuous-use limit
     ductile: bool = True
+    # brittle materials: strength in compression (MPa); None = assume the tensile strength
+    compressive_strength: float | None = None
     designations: dict[str, str] = field(default_factory=dict, hash=False, compare=False)
 
 

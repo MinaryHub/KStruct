@@ -69,6 +69,7 @@ def material_from_record(m: dict) -> Material:
         fatigue_limit=m.get("fatigue"),
         max_service_temperature=m.get("tmax"),
         ductile=bool(m["ductile"]),
+        compressive_strength=m.get("ucs"),
         designations=dict(m.get("names", {})),
     )
 
@@ -91,6 +92,7 @@ def material_record(m: Material) -> dict:
         "fatigue": m.fatigue_limit,
         "tmax": m.max_service_temperature,
         "ductile": m.ductile,
+        "ucs": m.compressive_strength,
         "names": dict(m.designations),
     }
 
