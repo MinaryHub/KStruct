@@ -773,3 +773,29 @@ def test_undo_and_redo(qtbot):
     assert not window.undo_action.isEnabled() and window._history == []
     window._go(mw.STEP_SOLVE)
     assert not solve_panel.estimate.parentWidget().isVisible()
+
+
+def test_opening_a_model_on_the_result_step_goes_back_to_step_one(qtbot):
+    """Opening another model while a result was shown left the old verdict card on
+    screen (the navigator had disabled step 7 but the panel stayed)."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind, Load, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    assert window.project.parts[0].name == "브래킷"
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    window.project.loads = [
+        Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (90, 30, 8)))], vector=(0, 0, -500.0))
+    ]
+    window.project.mesh_quality = "coarse"
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    assert window.nav.currentRow() == mw.STEP_RESULT
+    window.open_sample("two_plates")
+    assert window.nav.currentRow() == mw.STEP_OPEN
+    assert window.stack.currentIndex() == mw.STEP_OPEN
+    assert [p.name for p in window.project.parts] == ["아래 판", "위 판"]

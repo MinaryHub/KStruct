@@ -88,6 +88,11 @@ CAD_FILTER = (
 PROJECT_FILTER = f"KStruct 프로젝트 (*{SUFFIX})"
 MAX_UNDO = 50  # steps kept in the undo history
 SAMPLES = {"bracket": l_bracket, "two_plates": two_plates, "bolted": bolted_plates}
+SAMPLE_PART_NAMES = {
+    "bracket": ["브래킷"],
+    "two_plates": ["아래 판", "위 판"],
+    "bolted": ["아래 판", "위 판"],
+}
 
 log = logging.getLogger("kstruct.ui")
 STEP_OPEN, STEP_MATERIAL, STEP_FIXTURE, STEP_LOAD, STEP_MESH, STEP_SOLVE, STEP_RESULT = range(7)
@@ -630,6 +635,11 @@ class MainWindow(QMainWindow):
         self._annotate()
         self.panels[STEP_OPEN].refresh()
         self._update_nav()
+        # a new model starts at step 1: staying on step 7 left the previous model's verdict
+        # card on screen while the navigator had already disabled the result step
+        if self.nav.currentRow() != STEP_OPEN:
+            self._go(STEP_OPEN)
+        self.stack.setCurrentIndex(STEP_OPEN)
         self._show_pane()
         self._reset_history()
         name = path.name if path else (project.source_path.name if project.source_path else "")
@@ -662,6 +672,12 @@ class MainWindow(QMainWindow):
         path = write_step(SAMPLES[name](), Path(tempfile.gettempdir()) / f"kstruct_{name}.step")
         self._sample_files.add(path)
         self.load(path)
+        names = SAMPLE_PART_NAMES.get(name, [])
+        if self.project is not None and len(names) == len(self.project.parts):
+            for part, label in zip(self.project.parts, names, strict=True):
+                part.name = label  # not the temporary file's name "kstruct_bracket"
+            self.panels[STEP_OPEN].refresh()
+            self._reset_history()
 
     def load(self, path: Path) -> None:
         if path.suffix.lower() == SUFFIX:
