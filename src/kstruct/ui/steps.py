@@ -575,7 +575,9 @@ class _FaceListStep(StepPanel):
     def refresh(self) -> None:
         self.items.clear()
         for e in self.entries():
-            self.items.addItem(self.describe(e))
+            text = self.describe(e)
+            self.items.addItem(text)
+            self.items.item(self.items.count() - 1).setToolTip(text)  # long ones are cut off
         self.update_selection(self.app.viewer.selection)
 
     def _remove(self) -> None:
@@ -873,9 +875,16 @@ class LoadStep(_FaceListStep):
             spin.setRange(-1e6, 1e6)
             spin.setDecimals(2)
         self.offset[0].setValue(100.0)
-        self.offset_label = QLabel("작용점 위치")
-        self.offset_row = with_help(_row(*self.offset), "load.remote_offset")
-        form.addRow(self.offset_label, self.offset_row)
+        # one row per axis: three spin boxes side by side made the panel wider than the
+        # side bar and cut off its buttons
+        self.offset_labels = [QLabel(f"작용점 {axis}") for axis in "XYZ"]
+        self.offset_rows = [
+            with_help(spin, "load.remote_offset") if i == 0 else spin
+            for i, spin in enumerate(self.offset)
+        ]
+        for label, row in zip(self.offset_labels, self.offset_rows, strict=True):
+            form.addRow(label, row)
+        self.offset_row = self.offset_rows[0]  # (tests and visibility)
         box = QWidget()
         box.setLayout(form)
         self.add(box)
@@ -900,12 +909,11 @@ class LoadStep(_FaceListStep):
         # each control sits in a wrapper with its "?" button: hide the wrapper too, or the
         # button of a hidden row stays behind on its own
         show_direction = kind in (LoadKind.FORCE, LoadKind.GRAVITY) + AXIS_DIRECTION_LOADS
-        for widget in (self.offset_label, self.offset_row):
+        for widget in (*self.offset_labels, *self.offset_rows, *self.offset):
             widget.setVisible(kind == LoadKind.REMOTE)
         if self.app.project is not None:
             unit = quantity(system_of(self.app.project), "length").unit
-            for spin, axis in zip(self.offset, "XYZ", strict=True):
-                spin.setPrefix(f"{axis} ")
+            for spin in self.offset:
                 spin.setSuffix(f" {unit}")
         for widget in (self.direction, self.direction.parentWidget(), self.direction_label):
             widget.setVisible(show_direction)
