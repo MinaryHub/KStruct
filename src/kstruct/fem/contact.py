@@ -275,6 +275,7 @@ class ContactSolver:
         # False once any solve stopped at MAX_ITERATIONS with the state still changing:
         # the result then belongs to an arbitrary intermediate contact/friction state
         self.converged = True
+        self._offset = np.zeros(self.n_dof)  # imposed displacement of the current solve
 
     # --- assembly --------------------------------------------------------------------
 
@@ -308,13 +309,16 @@ class ContactSolver:
                 cols.append(np.tile(dofs, (1, 21)).ravel())
                 vals.append(stiffness * np.einsum("pi,pj->pij", c, c).ravel())
             dofs, c = self._rows(cs, cs.active)
-            np.add.at(f_c, dofs.ravel(), (self.alpha * c * -cs.gap0[cs.active][:, None]).ravel())
+            # a moved fixed node shifts the gap; its coefficient is not in the matrix
+            gap0 = cs.gap(self._offset)[cs.active]
+            np.add.at(f_c, dofs.ravel(), (self.alpha * c * -gap0[:, None]).ravel())
             if cs.has_friction:
                 sprung, gross = cs.sprung, cs.active & cs.gross
                 for k in range(2):
                     # springs relaxed at the anchor: f = -alpha_t (s - anchor)
                     dofs, c = self._rows(cs, sprung, cs.tcoefs[:, k])
-                    offset = self.alpha_t * cs.anchor[sprung, k]
+                    moved = cs.sliding(self._offset)[sprung, k]
+                    offset = self.alpha_t * (cs.anchor[sprung, k] - moved)
                     np.add.at(f_c, dofs.ravel(), (c * offset[:, None]).ravel())
                     # gross slide: Coulomb force on the slave, reaction on the master
                     dofs, c = self._rows(cs, gross, cs.tcoefs[:, k])
@@ -434,13 +438,15 @@ class ContactSolver:
     def has_friction(self) -> bool:
         return any(cs.has_friction for cs in self.contacts)
 
-    def solve_path(self, f_start: np.ndarray, f: np.ndarray) -> tuple[np.ndarray, sp.csr_matrix]:
+    def solve_path(
+        self, f_start: np.ndarray, f: np.ndarray, offset: np.ndarray | None = None
+    ) -> tuple[np.ndarray, sp.csr_matrix]:
         """Settle the contact under f_start (the bolt tightening, or nothing), then apply
         the rest of the load in FRICTION_INCREMENTS steps, each from the friction state the
         previous one committed. Without friction the answer does not depend on the path:
         a single solve under f."""
         if not self.has_friction:
-            return self.solve(f)
+            return self.solve(f, offset=offset)
         u = np.zeros(self.n_dof)
         if np.any(f_start):
             u = self.solve(f_start)[0]
@@ -450,17 +456,26 @@ class ContactSolver:
         for k in range(1, FRICTION_INCREMENTS + 1):
             for cs in self.contacts:
                 cs.commit_friction(u, self.alpha_t)
-            u, K_c = self.solve(f_start + (f - f_start) * (k / FRICTION_INCREMENTS), True)
+            share = k / FRICTION_INCREMENTS  # imposed displacements grow with the load
+            u, K_c = self.solve(
+                f_start + (f - f_start) * share,
+                True,
+                None if offset is None else offset * share,
+            )
         return u, K_c  # the last increment's stick/slip state is the reported one
 
-    def solve(self, f: np.ndarray, keep_friction: bool = False) -> tuple[np.ndarray, sp.csr_matrix]:
+    def solve(
+        self, f: np.ndarray, keep_friction: bool = False, offset: np.ndarray | None = None
+    ) -> tuple[np.ndarray, sp.csr_matrix]:
         """Settle the active set (and the stick/slip state) under the full-size load f.
         Returns the displacement and the reduced matrix of the final contact state.
         keep_friction starts from the committed friction state (an increment of
-        solve_path) instead of relaxing every tangential spring at zero sliding."""
-        f_f = f[self.free]
-        load_scale = max(np.abs(f).max(), 1e-30)
-        u = np.zeros(self.n_dof)
+        solve_path) instead of relaxing every tangential spring at zero sliding.
+        offset: displacement imposed on the fixed DOFs (prescribed movements)."""
+        self._offset = np.zeros(self.n_dof) if offset is None else offset
+        f_f = (f - self.K @ self._offset)[self.free]
+        load_scale = max(np.abs(f).max(), np.abs(f_f).max(), 1e-30)
+        u = self._offset.copy()
         K_c = self.K_ff
         changed = True
         for cs in self.contacts:  # the open/closed state carries over, friction starts afresh
@@ -475,7 +490,7 @@ class ContactSolver:
         while True:
             K_pen, f_c = self._penalty()
             K_c = self.K_ff + K_pen
-            u = np.zeros(self.n_dof)
+            u = self._offset.copy()
             u[self.free] = self.reduced_solve(K_c, f_f + f_c)
             # Decide by the spring force, not the gap: a stiff penalty keeps even a
             # pulling pair's gap at round-off size. The force is taken from equilibrium

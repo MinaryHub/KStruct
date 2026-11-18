@@ -38,6 +38,22 @@ class Constraints:
     # per fixture, for reactions: DOFs it eliminated, and its range of penalty equations
     fixture_dofs: list[np.ndarray] = field(default_factory=list)
     fixture_equations: list[range] = field(default_factory=list)
+    # prescribed displacement of the fixed DOFs (mm); zero for ordinary fixed DOFs
+    values: np.ndarray | None = None
+    # elastic supports: (fixture index, stiffness matrix 3N x 3N) per support
+    springs: list[tuple[int, sp.csr_matrix]] = field(default_factory=list)
+
+    def prescribed(self) -> np.ndarray:
+        """(3N,) displacement imposed on the fixed DOFs (all zero without DISPLACEMENT)."""
+        return self.values if self.values is not None else np.zeros(len(self.fixed))
+
+    def spring_matrix(self) -> sp.csr_matrix:
+        """Sum of the elastic supports' stiffness (added to K, not a constraint)."""
+        n = len(self.fixed)
+        total = sp.csr_matrix((n, n))
+        for _, K in self.springs:
+            total = total + K
+        return total
 
     def add_equation(self, dofs: np.ndarray, coefs: np.ndarray) -> None:
         """Penalty-enforce sum(coefs * u[dofs]) == 0."""
@@ -80,6 +96,11 @@ class Constraints:
         """
         n_dof = len(self.fixed)
         free = ~self.fixed
+        values = self.prescribed()
+        if np.any(values) and self.penalty_rows:
+            moved = np.flatnonzero(values)
+            if any(np.isin(dofs, moved).any() for dofs in self.penalty_rows):
+                return None  # an equation through a moved DOF is not homogeneous
         C = self.equation_matrix()
         kept = np.flatnonzero(np.diff(C.indptr) > 0)  # equations on fixed DOFs only: void
         C = C[kept]
@@ -222,6 +243,26 @@ def build_constraints(
         if fixture.kind == FixtureKind.FIXED:
             c.fixed[(nodes[:, None] * 3 + np.arange(3)).ravel()] = True
 
+        elif fixture.kind == FixtureKind.DISPLACEMENT:
+            if all(d is None for d in fixture.displacement):
+                raise ConstraintError("강제 변위에 움직일 방향(X·Y·Z 중 하나 이상)을 지정하세요.")
+            if c.values is None:
+                c.values = np.zeros(mesh.n_nodes * 3)
+            for axis, d in enumerate(fixture.displacement):
+                if d is None:
+                    continue
+                dofs = nodes * 3 + axis
+                fresh = dofs[~c.fixed[dofs]]  # a DOF already held keeps its first value
+                c.fixed[fresh] = True
+                c.values[fresh] = float(d)
+
+        elif fixture.kind == FixtureKind.ELASTIC:
+            if fixture.stiffness <= 0:
+                raise ConstraintError("탄성 지지의 강성은 0보다 커야 합니다.")
+            c.springs.append(
+                (len(c.fixture_dofs), elastic_support(mesh, fixture.faces, fixture.stiffness))
+            )
+
         elif fixture.kind == FixtureKind.ROLLER:
             for ref in fixture.faces:
                 surf = _surface_kind(project, ref)
@@ -261,6 +302,47 @@ def build_constraints(
             continue
         add_bonded(c, mesh, connection)
     return c
+
+
+def elastic_support(mesh: FEMesh, refs: list[FaceRef], stiffness: float) -> sp.csr_matrix:
+    """Spring foundation on the faces, acting along each triangle's normal: a total
+    stiffness `stiffness` (N/mm) spread evenly over the area. Consistent matrix
+    k/A · ∫ N_i N_j dA · n nᵀ, so a uniform push of the faces by δ costs exactly k·δ."""
+    tri_idx = mesh.face_tris(refs)
+    if len(tri_idx) == 0:
+        raise ConstraintError("탄성 지지할 면이 메시에 없습니다. 메시를 다시 만들어 주세요.")
+    tris = mesh.tris[tri_idx]
+    X = mesh.nodes[tris]
+    _, normal, area = tet10.tri6_load_weights(X)
+    per_area = stiffness / area.sum()
+    # ∫ N_i N_j dA on a flat TRI6 (exact): degree-4 integrand, 6-point rule
+    M = _tri6_mass(area)  # (S, 6, 6)
+    nn = np.einsum("si,sj->sij", normal, normal)  # (S, 3, 3)
+    blocks = per_area * np.einsum("sab,sij->saibj", M, nn).reshape(len(tris), 18, 18)
+    dofs = (tris[:, :, None] * 3 + np.arange(3)).reshape(len(tris), 18)
+    rows = np.repeat(dofs, 18, axis=1).ravel()
+    cols = np.tile(dofs, (1, 18)).ravel()
+    n = mesh.n_nodes * 3
+    return sp.csr_matrix((blocks.ravel(), (rows, cols)), shape=(n, n))
+
+
+def _tri6_mass(area: np.ndarray) -> np.ndarray:
+    """∫ N_i N_j dA for flat TRI6 triangles of the given areas (S, 6, 6), node order
+    corners 0..2 then midsides (1,2) (0,2) (0,1)."""
+    # standard result for the quadratic triangle (corner-corner 6, corner-own-opposite
+    # midside -4, corner-corner off -1, midside 32, midside off 16) / 180
+    m = np.array(
+        [
+            [6, -1, -1, -4, 0, 0],
+            [-1, 6, -1, 0, -4, 0],
+            [-1, -1, 6, 0, 0, -4],
+            [-4, 0, 0, 32, 16, 16],
+            [0, -4, 0, 16, 32, 16],
+            [0, 0, -4, 16, 16, 32],
+        ],
+        dtype=float,
+    )
+    return area[:, None, None] * m[None] / 180.0
 
 
 # --- bonded (tie) connections -------------------------------------------------------

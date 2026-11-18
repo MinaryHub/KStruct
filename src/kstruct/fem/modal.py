@@ -60,7 +60,7 @@ def solve_modal(
 
     report(0.15, "강성·질량 행렬 조립 중")
     K = stiffness_matrix(mesh, materials)
-    K = K + c.penalty_matrix(n_dof, K.diagonal().max())
+    K = K + c.penalty_matrix(n_dof, K.diagonal().max()) + c.spring_matrix()
     K = K + bolt_stiffness_and_preload(build_bolts(project, mesh), n_dof)[0]
     M = mass_matrix(mesh, materials)
     free = np.flatnonzero(~c.fixed)

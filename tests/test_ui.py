@@ -799,3 +799,72 @@ def test_opening_a_model_on_the_result_step_goes_back_to_step_one(qtbot):
     assert window.nav.currentRow() == mw.STEP_OPEN
     assert window.stack.currentIndex() == mw.STEP_OPEN
     assert [p.name for p in window.project.parts] == ["아래 판", "위 판"]
+
+
+def test_new_supports_and_loads_from_the_panels(qtbot):
+    """Prescribed displacement and elastic support from the fixture panel, remote force
+    and moment from the load panel, all the way to a result."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, FixtureKind, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    window.warn = lambda text, *a, **k: pytest.fail(text)
+    shape = window.project.parts[0].shape
+    base = FaceRef(0, face_at(shape, (0, 30, 40)))  # the wall's back face, normal -X
+    top = FaceRef(0, face_at(shape, (90, 30, 8)))
+
+    window._go(mw.STEP_FIXTURE)
+    panel = window.panels[mw.STEP_FIXTURE]
+    for button in panel.kinds.buttons():
+        if button.property("kind") == FixtureKind.ELASTIC:
+            button.setChecked(True)
+    assert panel.stiffness.isVisible() and not panel.move_axes[0][1].isVisible()
+    panel.stiffness.setValue(50_000.0)
+    window.viewer.set_selection([base])
+    panel._add()
+    fx = window.project.fixtures[-1]
+    assert fx.kind == FixtureKind.ELASTIC and fx.stiffness == 50_000.0
+    for button in panel.kinds.buttons():
+        if button.property("kind") == FixtureKind.DISPLACEMENT:
+            button.setChecked(True)
+    assert panel.move_axes[0][1].isVisible() and not panel.stiffness.isVisible()
+    for check, spin in panel.move_axes:  # Y and Z held, X left to the springs
+        check.setChecked(True)
+        spin.setValue(0.0)
+    panel.move_axes[0][0].setChecked(False)
+    window.viewer.set_selection([base])
+    panel._add()
+    assert window.project.fixtures[-1].displacement == (None, 0.0, 0.0)
+    assert "강제 변위" in panel.items.item(1).text()
+
+    window._go(mw.STEP_LOAD)
+    loads = window.panels[mw.STEP_LOAD]
+    loads.kind.setCurrentIndex(loads.kind.findData(LoadKind.REMOTE))
+    assert loads.offset_row.isVisible()
+    loads.value.setValue(300.0)
+    loads.direction.setCurrentIndex(loads.direction.count() - 1)  # -Z
+    window.viewer.set_selection([top])
+    loads._add()
+    remote = window.project.loads[-1]
+    assert remote.kind == LoadKind.REMOTE and remote.vector == (0.0, 0.0, -300.0)
+    from kstruct.geometry import faces_of
+    from kstruct.geometry.face_info import faces_centroid
+
+    centre = faces_centroid([faces_of(shape)[top.face_index]])
+    assert remote.point == pytest.approx(tuple(centre + [100.0, 0, 0]))  # centre + 100 in X
+    loads.kind.setCurrentIndex(loads.kind.findData(LoadKind.MOMENT))
+    assert not loads.offset_row.isVisible()
+    window.viewer.set_selection([top])
+    loads._add()
+    assert window.project.loads[-1].kind == LoadKind.MOMENT
+
+    window.project.mesh_quality = "coarse"
+    window._go(mw.STEP_SOLVE)
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    assert len(window.result.reactions) == 2
+    # the displacement fixture holds Z: it carries the 300 N; the springs only X
+    reactions = window.result.reactions
+    assert sum(reactions)[2] == pytest.approx(300.0, rel=1e-6)
+    assert reactions[0][1:] == pytest.approx([0.0, 0.0], abs=1e-6)

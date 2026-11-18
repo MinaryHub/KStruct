@@ -83,11 +83,15 @@ LOAD_QUANTITY = {
     LoadKind.TORQUE: "torque",
     LoadKind.BEARING: "force",
     LoadKind.CENTRIFUGAL: "speed",
+    LoadKind.REMOTE: "force",
+    LoadKind.MOMENT: "torque",
 }
 FIXTURE_LABELS = {
     FixtureKind.FIXED: ("완전 고정", "fixture.fixed"),
     FixtureKind.ROLLER: ("미끄럼 지지", "fixture.roller"),
     FixtureKind.PIN: ("핀 지지 (구멍·축)", "fixture.pin"),
+    FixtureKind.DISPLACEMENT: ("강제 변위 (정해진 만큼 움직임)", "fixture.displacement"),
+    FixtureKind.ELASTIC: ("탄성 지지 (고무·스프링 받침)", "fixture.elastic"),
 }
 LOAD_LABELS = {
     LoadKind.FORCE: ("힘", "load.force"),
@@ -101,6 +105,8 @@ LOAD_LABELS = {
     LoadKind.TORQUE: ("토크 (비틀림)", "load.torque"),
     LoadKind.BEARING: ("베어링 하중 (구멍에 끼운 축·핀)", "load.bearing"),
     LoadKind.CENTRIFUGAL: ("원심력 (회전)", "load.centrifugal"),
+    LoadKind.REMOTE: ("원격 하중 (떨어진 곳에서 미는 힘)", "load.remote"),
+    LoadKind.MOMENT: ("모멘트 (굽히거나 비트는 힘)", "load.moment"),
 }
 FACE_LOADS = (
     LoadKind.FORCE,
@@ -111,7 +117,11 @@ FACE_LOADS = (
     LoadKind.RADIATION,
     LoadKind.TORQUE,
     LoadKind.BEARING,
+    LoadKind.REMOTE,
+    LoadKind.MOMENT,
 )
+# loads whose direction must be a global axis (no "normal to the face" choices)
+AXIS_DIRECTION_LOADS = (LoadKind.BEARING, LoadKind.REMOTE, LoadKind.MOMENT)
 AXES = [
     ("선택한 원통면의 축", None),
     ("X 축", (1.0, 0.0, 0.0)),
@@ -586,11 +596,72 @@ class FixtureStep(_FaceListStep):
             self.kinds.addButton(radio, i)
             radio.setProperty("kind", kind)
             self.add(with_help(radio, key))
+        self.kinds.buttonToggled.connect(lambda *_: self._kind_changed())
+        self._build_value_box()
         self.add_btn = _primary(QPushButton("선택한 면을 고정"))
         self.add_btn.clicked.connect(self._add)
         self.add(self.add_btn)
         self.finish_layout()
         self._build_bolt_box()
+        self._kind_changed()
+
+    def _build_value_box(self) -> None:
+        """Inputs of the two fixtures that carry a value: the movement of a prescribed
+        displacement (per axis, unticked = free) and the stiffness of an elastic support."""
+        self.value_box = QGroupBox("값")
+        form = QFormLayout(self.value_box)
+        self.move_axes: list[tuple[QCheckBox, QDoubleSpinBox]] = []
+        for axis in "XYZ":
+            check = QCheckBox(f"{axis} 방향")
+            spin = QDoubleSpinBox()
+            spin.setRange(-1e4, 1e4)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.01)
+            check.toggled.connect(spin.setEnabled)
+            check.setChecked(axis == "Z")
+            spin.setEnabled(axis == "Z")
+            self.move_axes.append((check, spin))
+            form.addRow(check, spin)
+        self.move_hint = _hint(
+            "체크한 방향만 그 값만큼 움직이고, 체크하지 않은 방향은 자유롭게 움직입니다. "
+            "0을 넣으면 그 방향으로 고정됩니다."
+        )
+        form.addRow(self.move_hint)
+        self.stiffness = QDoubleSpinBox()
+        self.stiffness.setRange(1e-6, 1e12)
+        self.stiffness.setDecimals(1)
+        self.stiffness.setValue(10_000.0)
+        self.stiffness_label = QLabel("강성")
+        form.addRow(self.stiffness_label, self.stiffness)
+        self.stiffness_hint = _hint(
+            "고른 면 전체를 1만큼 누르는 데 드는 힘입니다. 면에 수직인 방향으로만 받칩니다."
+        )
+        form.addRow(self.stiffness_hint)
+        self.add(self.value_box)
+
+    def _current_kind(self) -> FixtureKind:
+        return self.kinds.checkedButton().property("kind")
+
+    def _kind_changed(self) -> None:
+        kind = self._current_kind()
+        moving, elastic = kind == FixtureKind.DISPLACEMENT, kind == FixtureKind.ELASTIC
+        self.value_box.setVisible(moving or elastic)
+        for check, spin in self.move_axes:
+            check.setVisible(moving)
+            spin.setVisible(moving)
+        self.move_hint.setVisible(moving)
+        for w in (self.stiffness, self.stiffness_label, self.stiffness_hint):
+            w.setVisible(elastic)
+        self._update_units()
+
+    def _update_units(self) -> None:
+        if self.app.project is None:
+            return
+        system = system_of(self.app.project)
+        length, stiffness = quantity(system, "length"), quantity(system, "stiffness")
+        for _, spin in self.move_axes:
+            spin.setSuffix(f" {length.unit}")
+        self.stiffness.setSuffix(f" {stiffness.unit}")
 
     # --- bolts ---------------------------------------------------------------------
 
@@ -682,6 +753,7 @@ class FixtureStep(_FaceListStep):
 
     def refresh(self) -> None:
         super().refresh()
+        self._update_units()
         self.bolt_list.clear()
         for b in self.app.project.bolts:
             self.bolt_list.addItem(
@@ -721,7 +793,23 @@ class FixtureStep(_FaceListStep):
                         "핀 지지는 원통면(구멍 안쪽이나 축 바깥면)에만 지정할 수 있습니다."
                     )
                     return
-        self.app.project.fixtures.append(Fixture(kind, refs))
+        if not refs:
+            self.app.warn("3D 화면에서 면을 먼저 고르세요.")
+            return
+        system = system_of(self.app.project)
+        fixture = Fixture(kind, refs)
+        if kind == FixtureKind.DISPLACEMENT:
+            length = quantity(system, "length")
+            fixture.displacement = tuple(
+                length.parse(spin.value()) if check.isChecked() else None
+                for check, spin in self.move_axes
+            )
+            if all(d is None for d in fixture.displacement):
+                self.app.warn("움직일 방향을 하나 이상 체크하세요.")
+                return
+        elif kind == FixtureKind.ELASTIC:
+            fixture.stiffness = quantity(system, "stiffness").parse(self.stiffness.value())
+        self.app.project.fixtures.append(fixture)
         self.app.viewer.set_selection([])
         self.changed.emit()
         self.refresh()
@@ -780,6 +868,14 @@ class LoadStep(_FaceListStep):
         self.ambient.setValue(20)
         self.ambient_label = QLabel("주변 공기 온도 (°C)")
         form.addRow(self.ambient_label, self.ambient)
+        self.offset = [QDoubleSpinBox() for _ in range(3)]
+        for spin in self.offset:
+            spin.setRange(-1e6, 1e6)
+            spin.setDecimals(2)
+        self.offset[0].setValue(100.0)
+        self.offset_label = QLabel("작용점 위치")
+        self.offset_row = with_help(_row(*self.offset), "load.remote_offset")
+        form.addRow(self.offset_label, self.offset_row)
         box = QWidget()
         box.setLayout(form)
         self.add(box)
@@ -803,13 +899,20 @@ class LoadStep(_FaceListStep):
         self.selection_label.setVisible(kind in FACE_LOADS)
         # each control sits in a wrapper with its "?" button: hide the wrapper too, or the
         # button of a hidden row stays behind on its own
-        show_direction = kind in (LoadKind.FORCE, LoadKind.GRAVITY, LoadKind.BEARING)
+        show_direction = kind in (LoadKind.FORCE, LoadKind.GRAVITY) + AXIS_DIRECTION_LOADS
+        for widget in (self.offset_label, self.offset_row):
+            widget.setVisible(kind == LoadKind.REMOTE)
+        if self.app.project is not None:
+            unit = quantity(system_of(self.app.project), "length").unit
+            for spin, axis in zip(self.offset, "XYZ", strict=True):
+                spin.setPrefix(f"{axis} ")
+                spin.setSuffix(f" {unit}")
         for widget in (self.direction, self.direction.parentWidget(), self.direction_label):
             widget.setVisible(show_direction)
         for widget in (self.axis, self.axis.parentWidget(), self.axis_label):
             widget.setVisible(kind in AXIS_LOADS)
-        if kind == LoadKind.BEARING:
-            # a pin pushes along a fixed direction: no "normal to the face" choices
+        if kind in AXIS_DIRECTION_LOADS:
+            # along a fixed global direction only: no "normal to the face" choices
             for i in range(2):
                 self.direction.model().item(i).setEnabled(False)
             if self.direction.currentIndex() < 2:
@@ -832,6 +935,8 @@ class LoadStep(_FaceListStep):
             LoadKind.TORQUE: ("토크", 10_000.0),  # N·mm = 10 N·m
             LoadKind.BEARING: ("힘", 1000.0),
             LoadKind.CENTRIFUGAL: ("회전 속도", 3000 * 2 * 3.141592653589793 / 60),  # rad/s
+            LoadKind.REMOTE: ("힘", 1000.0),
+            LoadKind.MOMENT: ("모멘트", 100_000.0),  # N·mm = 100 N·m
         }
         label, default = defaults[kind]
         q = self._quantity(kind)
@@ -933,6 +1038,14 @@ class LoadStep(_FaceListStep):
             LoadKind.CENTRIFUGAL: (
                 f"= {v:,.1f} rad/s. 모든 부품에 회전축에서 바깥쪽으로 ρω²r의 힘이 걸립니다."
             ),
+            LoadKind.REMOTE: (
+                "작용점까지 떨어진 거리만큼 굽히는 힘이 함께 걸립니다. 고른 면은 단단한 "
+                "연결판에 묶인 것처럼 하중을 나눠 받습니다."
+            ),
+            LoadKind.MOMENT: (
+                "방향은 회전축입니다(오른손 법칙). 면 중심에서 멀수록 크게, 직선으로 나뉘어 "
+                "걸립니다."
+            ),
         }
         self.value_hint.setText(hints[kind])
 
@@ -1014,6 +1127,21 @@ class LoadStep(_FaceListStep):
                 return
             _, axis, _ = DIRECTIONS[self.direction.currentIndex()]
             load = Load(LoadKind.BEARING, refs, vector=tuple(v * c + 0.0 for c in axis))
+        elif kind in (LoadKind.REMOTE, LoadKind.MOMENT):
+            faces = self._selected_faces(refs)
+            if not faces:
+                self.app.warn("하중을 전달할 면을 3D 화면에서 먼저 고르세요.")
+                return
+            _, axis, _ = DIRECTIONS[self.direction.currentIndex()]
+            vector = tuple(v * c + 0.0 for c in axis)
+            if kind == LoadKind.MOMENT:
+                load = Load(LoadKind.MOMENT, refs, vector=vector)
+            else:
+                length = quantity(system_of(project), "length")
+                center = np.asarray(faces_centroid(faces), dtype=float)
+                offset = np.array([length.parse(spin.value()) for spin in self.offset])
+                point = tuple(float(c) for c in center + offset)
+                load = Load(LoadKind.REMOTE, refs, vector=vector, point=point)
         elif kind == LoadKind.CENTRIFUGAL:
             axis = self._axis_for(kind, refs)
             if axis is None:

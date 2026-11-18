@@ -54,12 +54,18 @@ class FixtureKind(Enum):
     FIXED = "fixed"  # no translation at all
     ROLLER = "roller"  # can slide along the face, not move through it
     PIN = "pin"  # cylindrical face: can rotate about its axis, nothing else
+    DISPLACEMENT = "displacement"  # faces moved by a given amount (per axis, mm)
+    ELASTIC = "elastic"  # faces resting on a spring foundation (normal direction)
 
 
 @dataclass
 class Fixture:
     kind: FixtureKind
     faces: list[FaceRef]
+    # DISPLACEMENT: prescribed movement per global axis in mm, None = that axis is free
+    displacement: tuple[float | None, float | None, float | None] = (None, None, None)
+    # ELASTIC: total spring stiffness of the faces in the normal direction (N/mm)
+    stiffness: float = 0.0
 
 
 class LoadKind(Enum):
@@ -76,6 +82,9 @@ class LoadKind(Enum):
     TORQUE = "torque"  # magnitude N·mm about the axis (vector = unit direction, point on axis)
     BEARING = "bearing"  # force vector (N) on a cylindrical hole, cosine distribution
     CENTRIFUGAL = "centrifugal"  # magnitude = ω rad/s about the axis (vector, point); all parts
+    # loads carried to the faces as if through a rigid fitting
+    REMOTE = "remote"  # force vector (N) acting at `point` away from the faces
+    MOMENT = "moment"  # moment vector (N·mm) on the faces (right-hand rule)
 
 
 THERMAL_LOADS = (

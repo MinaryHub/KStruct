@@ -25,6 +25,8 @@ FIXTURE_COLORS = {
     FixtureKind.FIXED: "#2e9e5b",
     FixtureKind.ROLLER: "#2aa1b3",
     FixtureKind.PIN: "#7b5cc4",
+    FixtureKind.DISPLACEMENT: "#3c6fd6",
+    FixtureKind.ELASTIC: "#8bb04a",
 }
 LOAD_COLOR = "#e8743b"
 BOLT_COLOR = "#4a4f57"
@@ -229,6 +231,31 @@ class ModelViewer(QWidget):
         if load.kind == LoadKind.GRAVITY:
             center = np.mean([m.center for m in self._meshes.values()], axis=0)
             direction = np.asarray(load.vector, dtype=float)
+        elif load.kind == LoadKind.REMOTE and load.faces and load.point is not None:
+            # the arrow at the point the force acts on, and a line to the faces
+            face_center, _ = self._face_center_normal(load.faces)
+            center = np.asarray(load.point, dtype=float)
+            direction = np.asarray(load.vector, dtype=float)
+            link = pv.Line(face_center, center)
+            self._overlay.append(
+                self.plotter.add_mesh(link, color=LOAD_COLOR, line_width=2, pickable=False)
+            )
+        elif load.kind == LoadKind.MOMENT and load.faces:
+            # moment vector as a double-headed arrow (engineering convention)
+            center, _ = self._face_center_normal(load.faces)
+            direction = np.asarray(load.vector, dtype=float)
+            norm = np.linalg.norm(direction)
+            if norm == 0:
+                return
+            direction = direction / norm
+            for back in (0.0, 0.25):
+                tip = pv.Arrow(
+                    start=center + direction * length * back,
+                    direction=direction,
+                    scale=0.75 * length,
+                )
+                self._overlay.append(self.plotter.add_mesh(tip, color=LOAD_COLOR, pickable=False))
+            return
         elif load.kind in (LoadKind.FORCE, LoadKind.PRESSURE, LoadKind.BEARING) and load.faces:
             center, normal = self._face_center_normal(load.faces)
             if load.kind == LoadKind.PRESSURE:

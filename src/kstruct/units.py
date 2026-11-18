@@ -33,6 +33,7 @@ SI = {
     "power": Quantity("W", 1.0),
     "torque": Quantity("N·m", 1e-3),  # internal N·mm
     "speed": Quantity("rpm", 60.0 / (2 * 3.141592653589793)),  # internal rad/s
+    "stiffness": Quantity("N/mm", 1.0),
 }
 US = {
     "length": Quantity("in", 1 / MM_PER_IN),
@@ -43,6 +44,7 @@ US = {
     "power": Quantity("W", 1.0),
     "torque": Quantity("lbf·in", 1 / (N_PER_LBF * MM_PER_IN)),
     "speed": Quantity("rpm", 60.0 / (2 * 3.141592653589793)),
+    "stiffness": Quantity("lbf/in", MM_PER_IN / N_PER_LBF),
 }
 SYSTEMS = {"SI": SI, "US": US}
 

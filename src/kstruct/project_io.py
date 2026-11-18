@@ -104,7 +104,15 @@ def to_document(project: Project) -> dict:
             {"id": p.id, "name": p.name, "material_id": p.material_id, "visible": p.visible}
             for p in project.parts
         ],
-        "fixtures": [{"kind": f.kind.value, "faces": _refs(f.faces)} for f in project.fixtures],
+        "fixtures": [
+            {
+                "kind": f.kind.value,
+                "faces": _refs(f.faces),
+                "displacement": list(f.displacement),
+                "stiffness": f.stiffness,
+            }
+            for f in project.fixtures
+        ],
         "active_case": project.active_case,
         "cases": [
             {
@@ -268,7 +276,13 @@ def from_document(doc: dict, shapes: dict) -> Project:
             )
         )
     project.fixtures = [
-        Fixture(FixtureKind(f["kind"]), _unrefs(f["faces"])) for f in doc["fixtures"]
+        Fixture(
+            FixtureKind(f["kind"]),
+            _unrefs(f["faces"]),
+            tuple(None if d is None else float(d) for d in f.get("displacement", [None] * 3)),
+            float(f.get("stiffness", 0.0)),
+        )
+        for f in doc["fixtures"]
     ]
 
     def load(ld: dict) -> Load:

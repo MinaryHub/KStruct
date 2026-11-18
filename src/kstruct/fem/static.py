@@ -28,7 +28,12 @@ from kstruct.fem.bolts import (
 )
 from kstruct.fem.constraints import Constraints, build_constraints
 from kstruct.fem.contact import ContactSolver, build_contact
-from kstruct.fem.loads import bearing_forces, centrifugal_forces, torque_forces
+from kstruct.fem.loads import (
+    bearing_forces,
+    centrifugal_forces,
+    rigid_face_forces,
+    torque_forces,
+)
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.thermal import ThermalResult, has_thermal_loads, solve_thermal
 from kstruct.model import ConnectionKind, LoadKind, Material, Project, with_case
@@ -138,6 +143,12 @@ def _load_vector(project: Project, mesh: FEMesh, materials: dict[int, Material])
             f += bearing_forces(project, mesh, load)
         elif load.kind == LoadKind.CENTRIFUGAL:
             f += centrifugal_forces(project, mesh, materials, load)
+        elif load.kind == LoadKind.REMOTE:
+            f += rigid_face_forces(
+                mesh, load.faces, np.asarray(load.vector), np.zeros(3), load.point
+            )
+        elif load.kind == LoadKind.MOMENT:
+            f += rigid_face_forces(mesh, load.faces, np.zeros(3), np.asarray(load.vector))
     return f.ravel()
 
 
@@ -228,6 +239,8 @@ def _stiffness(
     K = stiffness_matrix(mesh, materials)
     if connectors:
         K = K + bolt_stiffness_and_preload(connectors, n_dof)[0]
+    if c.springs:
+        K = K + c.spring_matrix()  # elastic supports are stiffness, not constraints
     scale = K.diagonal().max()
     free = np.flatnonzero(~c.fixed)
     return _Stiffness(
@@ -318,7 +331,9 @@ def solve_static(
     f = f_mech if dT is None else f_mech + _thermal_load(mesh, materials, dT)
     pulls = np.zeros(len(connectors))
     unit_solver = None
-    if not np.any(f) and not any(c.bolt.preload for c in connectors):
+    u_set = c.prescribed()  # displacement imposed by DISPLACEMENT fixtures (else zero)
+    moved = bool(np.any(u_set))
+    if not np.any(f) and not moved and not any(c.bolt.preload for c in connectors):
         raise SolverError("하중이 없습니다. 힘, 압력, 중력 또는 온도 하중을 추가하세요.")
 
     report(0.4, "연립방정식 푸는 중")
@@ -379,14 +394,15 @@ def solve_static(
         f = f + f_preload
     if contact_solver is not None:
         report(0.5, "접촉 상태 계산 중 (반복)")
-        u = contact_solver.solve_path(f_preload, f)[0]
+        u = contact_solver.solve_path(f_preload, f, u_set if moved else None)[0]
         # only the stabilising springs hold a part that slid or lifted off
         if np.abs(u).max() > 0.2 * size:
             raise SolverError("contact unstable")
-    elif unit_solver is not None:
-        u = unit_solver(f)  # the preload stage already factorized this matrix
     else:
-        u = linear_solver()(f)
+        # the preload stage may already have factorized this matrix
+        solve = unit_solver if unit_solver is not None else linear_solver()
+        # imposed displacements: solve for the rest with their forces moved to the right
+        u = u_set + solve(f - Kp @ u_set) if moved else solve(f)
     if np.abs(u).max() > 1e3 * size:
         raise SolverError("unstable")
 
@@ -400,9 +416,14 @@ def solve_static(
     if needs and multipliers is None:
         raise SolverError("not converged")
     reactions = []
-    for dofs, equations in zip(c.fixture_dofs, c.fixture_equations, strict=True):
+    spring_force = {i: -(Ks @ u) for i, Ks in c.springs}  # what each support pushes with
+    for i, (dofs, equations) in enumerate(zip(c.fixture_dofs, c.fixture_equations, strict=True)):
         r = np.zeros(3)
         np.add.at(r, dofs % 3, residual[dofs])
+        if i in spring_force:
+            r += spring_force[i].reshape(-1, 3).sum(axis=0)
+            reactions.append(r)
+            continue
         if len(equations) == 0:
             reactions.append(r)
         elif multipliers is not None:
