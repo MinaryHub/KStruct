@@ -70,6 +70,7 @@ def material_from_record(m: dict) -> Material:
         max_service_temperature=m.get("tmax"),
         ductile=bool(m["ductile"]),
         compressive_strength=m.get("ucs"),
+        tangent_modulus=m.get("Et"),
         designations=dict(m.get("names", {})),
     )
 
@@ -93,6 +94,7 @@ def material_record(m: Material) -> dict:
         "tmax": m.max_service_temperature,
         "ductile": m.ductile,
         "ucs": m.compressive_strength,
+        "Et": m.tangent_modulus,
         "names": dict(m.designations),
     }
 

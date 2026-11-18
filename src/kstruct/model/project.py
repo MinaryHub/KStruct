@@ -47,6 +47,9 @@ class Material:
     ductile: bool = True
     # brittle materials: strength in compression (MPa); None = assume the tensile strength
     compressive_strength: float | None = None
+    # slope of the stress–strain curve beyond yield (MPa) for the elastic–plastic
+    # analysis; None = estimated from yield and tensile strength (fem/plasticity.py)
+    tangent_modulus: float | None = None
     designations: dict[str, str] = field(default_factory=dict, hash=False, compare=False)
 
 
@@ -183,6 +186,9 @@ class Project:
     # heat transfer over time: duration in s (0 = steady state) and starting temperature
     thermal_duration: float = 0.0
     initial_temperature: float = 20.0
+    # strength analysis beyond the linear model (fem/nonlinear.py)
+    plasticity: bool = False  # material may yield (elastic–plastic)
+    large_deformation: bool = False  # geometry changes under load (large rotations)
     operating_frequency: float = 0.0  # Hz, excitation to compare natural frequencies with
     n_modes: int = 6
     load_cycle: str = "none"  # fem.fatigue.LoadCycle value

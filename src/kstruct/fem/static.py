@@ -64,6 +64,7 @@ class StaticResult:
     contact_converged: bool = True  # False: the contact/friction iteration did not settle
     bolts: list | None = None  # fem.bolts.BoltResult per bolt
     bolt_nodes: np.ndarray | None = None  # nodes under bolt heads / nuts
+    nonlinear: object | None = None  # fem.nonlinear.NonlinearInfo for yield / large runs
 
     @property
     def von_mises(self) -> np.ndarray:
@@ -469,6 +470,17 @@ def solve_cases(
     report = progress or (lambda frac, msg: None)
     n = len(project.cases)
     results = []
+    if project.plasticity or project.large_deformation:
+        from kstruct.fem.nonlinear import solve_nonlinear
+
+        for i, case in enumerate(project.cases):
+            prefix = f"[{case.name}] " if n > 1 else ""
+
+            def sub(frac, msg, i=i, prefix=prefix):
+                report((i + frac) / n, prefix + msg)
+
+            results.append(solve_nonlinear(with_case(project, i), mesh, materials, sub))
+        return results
     shared = _stiffness(project, mesh, materials) if project.cases else None
     for i, case in enumerate(project.cases):
         prefix = f"[{case.name}] " if n > 1 else ""
