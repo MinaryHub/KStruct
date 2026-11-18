@@ -1219,9 +1219,9 @@ class MainWindow(QMainWindow):
             return ResultField(thermal.heat_flux_magnitude, "열 흐름 (W/m²)", "magma", None, "W/m²")
         if key == "peeq":
             values = r.nonlinear.plastic_strain * 100
-            return ResultField(
-                values, "소성 변형률 (%)", "YlOrRd", (0, max(values.max(), 0.2)), "%"
-            )
+            # scale to the peak so a small yielded spot still stands out
+            top = float(values.max()) if values.max() > 0 else 0.2
+            return ResultField(values, "소성 변형률 (%)", "YlOrRd", (0, top), "%")
         if key == "perm":
             return ResultField(
                 np.linalg.norm(r.nonlinear.permanent, axis=1), "남는 변형 (mm)", unit="mm"
@@ -1378,6 +1378,10 @@ class MainWindow(QMainWindow):
                         f"<br>&nbsp;특이점({p.singular_kind}) 제외: 응력 "
                         f"{fmt(us, 'stress', p.hotspot_stress, ',.1f')}, 안전율 "
                         f"<b>{p.hotspot_fos:.2f}</b>"
+                    )
+                if p.plastic_strain is not None:
+                    lines[-1] += f"<br>&nbsp;소성 변형률 <b>{p.plastic_strain * 100:.2g}%</b>" + (
+                        " (안전율 1 미만 = 항복한 곳)" if p.plastic_strain > 0 else ""
                     )
                 if p.fatigue_fos is not None:
                     life = "무한" if p.fatigue_life >= 1e9 else f"{p.fatigue_life:,.0f}회"

@@ -153,6 +153,11 @@ def _static_html(
             f"<td><b>{s.min_fos:.2f}</b> / {s.target:.1f}</td><td>{fmt(us, 'length', s.max_disp)}</td>"
             f"<td>{VERDICT_STYLE[s.verdict][0]}</td></tr>"
         )
+        if s.plastic_strain is not None:
+            rows.append(
+                f"<tr><td colspan='2' align='right'>소성 변형률(항복 정도)</td>"
+                f"<td colspan='5'>{s.plastic_strain * 100:.2g}%</td></tr>"
+            )
         if s.hotspot_fos is not None:
             rows.append(
                 f"<tr><td colspan='2' align='right'>특이점({esc(s.singular_kind)}) 제외</td>"

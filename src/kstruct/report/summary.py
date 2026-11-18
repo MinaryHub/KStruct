@@ -55,6 +55,7 @@ class PartSummary:
     fatigue_life: float | None = None  # cycles at the weakest node
     fatigue_verdict: Verdict | None = None
     fatigue_excludes_singularity: bool = False  # fatigue values taken outside the zone
+    plastic_strain: float | None = None  # nonlinear run with yielding: governing peeq
 
     @property
     def governing_fos(self) -> float:
@@ -375,6 +376,13 @@ def _judge_nonlinear(summary: Summary, project: Project, result, singular, us: s
             outside = nodes[~zone[nodes]]
             if len(outside):
                 governing = float(nl.plastic_strain[outside].max())
+        if nl.plasticity:
+            part.plastic_strain = governing
+            if part.ductile and governing > 0:
+                # judged on how far it yielded, not on the (sub-1) elastic safety factor
+                part.verdict = Verdict.WARN if governing <= LOCAL_YIELD_STRAIN else Verdict.FAIL
+        if not nl.completed:
+            part.verdict = Verdict.FAIL
         if governing >= worst_strain:
             worst_part, worst_strain, raw_strain = part, governing, part_raw
     applied = np.linalg.norm(result.applied_load)
