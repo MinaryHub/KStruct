@@ -66,6 +66,8 @@ CI(`.github/workflows/build.yml`)가 Windows/macOS/Linux에서 테스트 → PyI
 
 `packaging/kstruct.spec`: delvewheel `*.libs` 폴더와 `netgen-occt`의 DLL(venv의 bin에 설치됨)을 직접 포함하고, Netgen이 런타임에 잘못된 경로를 찾지 않도록 `netgen_occt-*.dist-info`는 번들에서 제외한다. matplotlib은 PyVista가 import하므로 제외하면 안 된다.
 
+서명·공증은 선택 사항이다: `packaging/build.py`가 `KSTRUCT_SIGN_PFX`/`KSTRUCT_SIGN_COMMAND`(Windows, 설치 파일 안의 KStruct.exe와 설치 파일 둘 다), `KSTRUCT_MACOS_IDENTITY`(+`KSTRUCT_NOTARY_PROFILE`, `packaging/macos/entitlements.plist`)가 있을 때만 서명하고 없으면 예전처럼 서명 없이 만든다. 매 빌드 `dist/SHA256SUMS.txt`. CI는 저장소 비밀값으로 이 변수를 채우고, 태그 `v*`를 푸시하면 `release` 작업이 GitHub Release에 설치 파일과 체크섬을 올린다(`docs/RELEASE.md`).
+
 ## 결과물 원칙
 
 결과 화면·보고서에는 "참고용, 최종 판단은 자격 있는 기술자" 고지를 유지한다. 새 해석 기능은 이론해와 비교하는 테스트를 함께 추가한다(`tests/test_fem_*.py` 참고).
