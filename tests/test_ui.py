@@ -868,3 +868,42 @@ def test_new_supports_and_loads_from_the_panels(qtbot):
     reactions = window.result.reactions
     assert sum(reactions)[2] == pytest.approx(300.0, rel=1e-6)
     assert reactions[0][1:] == pytest.approx([0.0, 0.0], abs=1e-6)
+
+
+def test_transient_heat_run(qtbot):
+    """Heat over time from the solve panel: the result offers the moments to look at and
+    the colour scale stays the same for all of them."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import AnalysisKind, FaceRef, Load, LoadKind
+    from kstruct.report.pdf import build_html
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    window.warn = lambda text, *a, **k: pytest.fail(text)
+    shape = window.project.parts[0].shape
+    window.project.analysis = AnalysisKind.THERMAL
+    window.project.loads = [
+        Load(LoadKind.HEAT_FLOW, [FaceRef(0, face_at(shape, (0, 30, 40)))], magnitude=20.0)
+    ]
+    window.project.mesh_quality = "coarse"
+    window._go(mw.STEP_SOLVE)
+    panel = window.panels[mw.STEP_SOLVE]
+    panel.refresh()
+    assert panel.thermal_box.isVisible() and not panel.duration.isVisible()
+    assert not all(ok for ok, _ in window.readiness())  # steady: no temperature reference
+    panel.transient.setChecked(True)
+    assert panel.duration.isVisible() and window.project.thermal_duration == 600.0
+    assert all(ok for ok, _ in window.readiness())  # over time heat input alone is enough
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    result = window.result
+    assert result.transient
+    view = window.panels[mw.STEP_RESULT]
+    assert view.mode_label.text() == "시각" and view.mode.count() == len(result.times)
+    last = window.result_field("temp")
+    view.mode.setCurrentIndex(1)
+    early = window.result_field("temp")
+    assert early.values.max() < last.values.max() and early.clim == last.clim
+    assert "10분 후" in window.summary.headline
+    html = build_html(window.project, result, window.summary, [], window.materials)
+    assert "시간에 따른 열전도 해석" in html

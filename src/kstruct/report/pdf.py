@@ -312,6 +312,17 @@ def _thermal_html(project, result, summary, images, materials) -> str:
             f"<td>{limit}</td></tr>"
         )
     notes = _list(summary.notes)
+    if result.transient:
+        from kstruct.report.summary import format_duration
+
+        kind_note = (
+            f"시간에 따른 열전도 해석: 처음 온도 "
+            f"{fmt(us, 'temperature', project.initial_temperature, '.1f')}에서 "
+            f"{format_duration(float(result.times[-1]))} 동안 (후진 오일러 "
+            f"{result.iterations}단계). 표의 온도는 마지막 시점, 판정은 그동안의 최고 온도 기준"
+        )
+    else:
+        kind_note = "정상상태 열전도 해석 (충분한 시간이 지나 온도가 더 이상 변하지 않는 상태)"
     has_radiation = any(ld.kind == LoadKind.RADIATION for ld in project.loads)
     has_table = any(m.conductivity_table for m in materials.values())
     method_note = "; ".join(
@@ -339,7 +350,7 @@ def _thermal_html(project, result, summary, images, materials) -> str:
 <h2>3. 결과 그림</h2>
 {_pictures(images)}
 <h2>4. 해석 방법과 한계</h2>
-<ul><li>정상상태 열전도 해석 (충분한 시간이 지나 온도가 더 이상 변하지 않는 상태)</li>
+<ul><li>{kind_note}</li>
 <li>{method_note}</li>
 <li>권장 최고 사용온도는 대략적인 값이며 재료 등급에 따라 다름</li></ul>
 """

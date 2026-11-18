@@ -180,6 +180,9 @@ class Project:
     standard: str = "iso"  # standards pack id
     analysis: AnalysisKind = AnalysisKind.STATIC
     reference_temperature: float = 20.0  # °C, stress-free temperature for thermal stress
+    # heat transfer over time: duration in s (0 = steady state) and starting temperature
+    thermal_duration: float = 0.0
+    initial_temperature: float = 20.0
     operating_frequency: float = 0.0  # Hz, excitation to compare natural frequencies with
     n_modes: int = 6
     load_cycle: str = "none"  # fem.fatigue.LoadCycle value

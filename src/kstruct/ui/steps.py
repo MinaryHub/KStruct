@@ -1344,6 +1344,31 @@ class SolveStep(StepPanel):
         form.addRow(self.speed_label, self.speed_row)
         self.add(self.modal_box)
 
+        self.thermal_box = QGroupBox("열 해석 설정")
+        hform = QFormLayout(self.thermal_box)
+        self.transient = QCheckBox("시간에 따른 변화 보기 (데워지고 식는 과정)")
+        self.transient.toggled.connect(self._thermal_changed)
+        hform.addRow(with_help(self.transient, "analysis.transient"))
+        self.duration = QDoubleSpinBox()
+        self.duration.setRange(1, 1e7)
+        self.duration.setDecimals(0)
+        self.duration_unit = QComboBox()
+        self.duration_unit.addItem("초", 1.0)
+        self.duration_unit.addItem("분", 60.0)
+        self.duration_unit.addItem("시간", 3600.0)
+        self.duration.valueChanged.connect(self._thermal_changed)
+        self.duration_unit.currentIndexChanged.connect(self._thermal_changed)
+        self.duration_label = QLabel("계산할 시간")
+        self.duration_row = _row(self.duration, self.duration_unit)
+        hform.addRow(self.duration_label, self.duration_row)
+        self.initial = QDoubleSpinBox()
+        self.initial.setRange(-200, 3000)
+        self.initial.setDecimals(1)
+        self.initial.valueChanged.connect(self._thermal_changed)
+        self.initial_label = QLabel("처음 온도")
+        hform.addRow(self.initial_label, self.initial)
+        self.add(self.thermal_box)
+
         self.static_box = QGroupBox("강도 해석 설정")
         sform = QFormLayout(self.static_box)
         self.cycle = QComboBox()
@@ -1418,6 +1443,7 @@ class SolveStep(StepPanel):
             b.setChecked(b.property("kind") == project.analysis)
         self.modal_box.setVisible(project.analysis == AnalysisKind.MODAL)
         self.static_box.setVisible(project.analysis == AnalysisKind.STATIC)
+        self._show_thermal(project)
         self.modal_box.setTitle(
             "좌굴 해석 설정" if project.analysis == AnalysisKind.BUCKLING else "진동 해석 설정"
         )
@@ -1512,6 +1538,42 @@ class SolveStep(StepPanel):
             project.target_overrides = {}
         else:
             project.target_overrides = {k: spin.value() for k, spin in self.targets.items()}
+        self.changed.emit()
+        self.refresh()
+
+    def _show_thermal(self, project) -> None:
+        self.thermal_box.setVisible(project.analysis == AnalysisKind.THERMAL)
+        over_time = project.thermal_duration > 0
+        temperature = quantity(system_of(project), "temperature")
+        widgets = (self.transient, self.duration, self.duration_unit, self.initial)
+        for w in widgets:
+            w.blockSignals(True)
+        self.transient.setChecked(over_time)
+        if over_time:
+            seconds = project.thermal_duration
+            unit = 2 if seconds >= 3600 and seconds % 3600 == 0 else 1 if seconds >= 60 else 0
+            self.duration_unit.setCurrentIndex(unit)
+            self.duration.setValue(seconds / self.duration_unit.currentData())
+        elif self.duration.value() <= 1:
+            self.duration_unit.setCurrentIndex(1)
+            self.duration.setValue(10)  # a sensible start: 10 minutes
+        self.initial.setSuffix(f" {temperature.unit}")
+        self.initial.setValue(temperature.show(project.initial_temperature))
+        for w in widgets:
+            w.blockSignals(False)
+        for w in (self.duration_label, self.duration_row, self.initial_label, self.initial):
+            w.setVisible(over_time)
+
+    def _thermal_changed(self) -> None:
+        project = self.app.project
+        temperature = quantity(system_of(project), "temperature")
+        project.thermal_duration = (
+            self.duration.value() * self.duration_unit.currentData()
+            if self.transient.isChecked()
+            else 0.0
+        )
+        project.initial_temperature = temperature.parse(self.initial.value())
+        self._show_thermal(project)
         self.changed.emit()
         self.refresh()
 
@@ -1656,10 +1718,13 @@ class ResultStep(StepPanel):
             self.case.setCurrentIndex(min(current, len(labels) - 1))
         self.case.blockSignals(False)
 
-    def set_modes(self, frequencies, labels: list[str] | None = None) -> None:
+    def set_modes(self, frequencies, labels: list[str] | None = None, title="진동 모드") -> None:
+        """Fill the mode selector (vibration / buckling modes, or the moments of a
+        transient heat run); None hides it."""
         visible = frequencies is not None
         self.mode_box.setVisible(visible)
         self.mode_label.setVisible(visible)
+        self.mode_label.setText(title)
         if not visible:
             return
         current = max(0, self.mode.currentIndex())

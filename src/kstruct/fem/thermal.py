@@ -60,6 +60,22 @@ class ThermalResult:
     heat_in: float  # W through heat-flow faces
     heat_out: float  # W leaving through convection, radiation and fixed-temperature faces
     iterations: int = 1  # fixed-point iterations (1: linear problem)
+    # transient runs: output times (s) and the temperature field at each, (frames, N);
+    # `temperature` is then the field at the end
+    times: np.ndarray | None = None
+    history: np.ndarray | None = None
+
+    @property
+    def transient(self) -> bool:
+        return self.times is not None
+
+    def peak(self) -> tuple[float, float]:
+        """(highest temperature reached anywhere, the time it was reached; 0 for steady)."""
+        if not self.transient:
+            return float(self.temperature.max()), 0.0
+        per_frame = self.history.max(axis=1)
+        i = int(np.argmax(per_frame))
+        return float(per_frame[i]), float(self.times[i])
 
     @property
     def heat_flux_magnitude(self) -> np.ndarray:
@@ -120,6 +136,30 @@ def _thermal_groups(project: Project, part_ids: list[int]) -> list[set[int]]:
     return out
 
 
+TRANSIENT_STEPS = 60  # backward-Euler steps over the requested duration
+TRANSIENT_FRAMES = 20  # stored output times (plus the start)
+
+
+def capacity_matrix(mesh: FEMesh, materials: dict[int, Material]) -> sp.csr_matrix:
+    """C = ∫ ρ c N Nᵀ dV (consistent, Keast rule; N·mm/K in the internal units: ρ in
+    t/mm³ times c in mm²/(s²·K))."""
+    from kstruct.fem.assembly import part_property
+
+    rho_c = part_property(mesh, materials, "density") * part_property(
+        mesh, materials, "specific_heat"
+    )
+    X = mesh.nodes[mesh.tets]
+    Ce = np.zeros((len(mesh.tets), 10, 10))
+    for p, w in zip(tet10._KEAST_POINTS, tet10._KEAST_WEIGHTS, strict=True):
+        _, det = tet10.gradients(X, p)
+        N = tet10.shape_functions(p)
+        Ce += np.einsum("e,i,j->eij", rho_c * det * w, N, N)
+    rows = np.repeat(mesh.tets, 10, axis=1).ravel()
+    cols = np.tile(mesh.tets, (1, 10)).ravel()
+    n = mesh.n_nodes
+    return sp.csr_matrix((Ce.ravel(), (rows, cols)), shape=(n, n))
+
+
 def _conductivity_matrix(mesh: FEMesh, k: np.ndarray) -> sp.csr_matrix:
     X = mesh.nodes[mesh.tets]
     Ke = np.zeros((len(mesh.tets), 10, 10))
@@ -154,7 +194,15 @@ def solve_thermal(
     report = progress or (lambda frac, msg: None)
     n = mesh.n_nodes
     loads = [ld for ld in project.loads if ld.kind in THERMAL_LOADS]
-    if not any(ld.kind in TEMPERATURE_REFERENCES for ld in loads):
+    duration = float(getattr(project, "thermal_duration", 0.0) or 0.0)
+    transient = duration > 0
+    if transient:
+        missing = [m.name for m in materials.values() if m.specific_heat <= 0 or m.density <= 0]
+        if missing:
+            raise SolverError(
+                f"시간에 따른 온도 변화를 계산하려면 비열과 밀도가 필요합니다: {', '.join(missing)}"
+            )
+    if not transient and not any(ld.kind in TEMPERATURE_REFERENCES for ld in loads):
         raise SolverError(
             "온도의 기준이 없습니다. '고정 온도', '대류 냉각', '복사 냉각' 중 하나 이상을 "
             "지정하세요."
@@ -162,8 +210,9 @@ def solve_thermal(
     # every group of connected parts needs its own temperature reference: without one its
     # conduction matrix is singular and the solve used to return 0 °C for it, silently
     referenced = {r.part_id for ld in loads if ld.kind in TEMPERATURE_REFERENCES for r in ld.faces}
+    # (a transient run starts from a known temperature and needs no reference)
     for group in _thermal_groups(project, [int(p) for p in np.unique(mesh.tet_part)]):
-        if not group & referenced:
+        if not transient and not group & referenced:
             names = ", ".join(f"'{project.part(pid).name}'" for pid in sorted(group))
             raise SolverError(
                 f"{names} 부품에 온도의 기준이 없습니다. 이 부품에 '고정 온도'·'대류 냉각'·"
@@ -238,9 +287,17 @@ def solve_thermal(
         T[free] = solve_spd(Kp[free][:, free].tocsr(), rhs[free], np.ones((len(free), 1)))
         return T, fixed, films
 
-    report(0.5, "온도 계산 중")
-    T, fixed, films = solve_once(None)
-    iterations = 1
+    if transient:
+        T, fixed, films, times, history = _march(
+            assemble, capacity_matrix(mesh, materials), project, duration, nonlinear, report
+        )
+        iterations = TRANSIENT_STEPS
+        nonlinear = False  # already handled step by step
+    else:
+        report(0.5, "온도 계산 중")
+        T, fixed, films = solve_once(None)
+        times = history = None
+        iterations = 1
     if nonlinear:
         for iterations in range(2, MAX_ITERATIONS + 1):
             report(0.5 + 0.3 * iterations / MAX_ITERATIONS, f"온도 계산 중 (반복 {iterations})")
@@ -269,7 +326,41 @@ def solve_thermal(
     heat_in = sum(q for q in flows if q > 0) / WATT
     heat_out = -sum(q for q in flows if q < 0) / WATT
     report(1.0, "완료")
-    return ThermalResult(mesh, T, flux, heat_in, heat_out, iterations)
+    return ThermalResult(mesh, T, flux, heat_in, heat_out, iterations, times, history)
+
+
+def _march(assemble, C, project: Project, duration: float, nonlinear: bool, report):
+    """Backward Euler from the initial temperature: (K + C/Δt) Tₙ₊₁ = f + C/Δt Tₙ with the
+    fixed-temperature faces held from the first step on. Linear problems factorize once;
+    radiation and temperature-dependent conductivity are linearised at the previous
+    step's temperatures (one solve per step)."""
+    from kstruct.fem.assembly import make_solver
+
+    n = C.shape[0]
+    T = np.full(n, float(getattr(project, "initial_temperature", 20.0)))
+    dt = duration / TRANSIENT_STEPS
+    every = max(TRANSIENT_STEPS // TRANSIENT_FRAMES, 1)
+    times, history = [0.0], [T.copy()]
+    solver = None
+    fixed, films = np.zeros(n, dtype=bool), []
+    for step in range(1, TRANSIENT_STEPS + 1):
+        report(
+            0.5 + 0.35 * step / TRANSIENT_STEPS,
+            f"시간에 따른 온도 계산 중 ({step}/{TRANSIENT_STEPS})",
+        )
+        if solver is None or nonlinear:
+            Kp, f, fixed, T_fix, films = assemble(T if nonlinear else None)
+            A = (Kp + C / dt).tocsr()
+            free = np.flatnonzero(~fixed)
+            solver = make_solver(A[free][:, free].tocsr(), np.ones((len(free), 1)))
+        T_next = T_fix.copy()
+        rhs = f + C @ T / dt - A @ T_fix
+        T_next[free] = solver(rhs[free])
+        T = T_next
+        if step % every == 0 or step == TRANSIENT_STEPS:
+            times.append(step * dt)
+            history.append(T.copy())
+    return T, fixed, films, np.array(times), np.array(history)
 
 
 def _nodal_flux(mesh: FEMesh, k: np.ndarray, T: np.ndarray) -> np.ndarray:

@@ -67,6 +67,7 @@ from kstruct.report.summary import (
     CaseOverview,
     Summary,
     compare_cases,
+    format_duration,
     summarize,
     summarize_buckling,
     summarize_modal,
@@ -915,6 +916,15 @@ class MainWindow(QMainWindow):
                     else "고정 없음: 공중에 떠 있는 상태의 진동수를 구합니다",
                 )
             )
+        elif p.thermal_duration > 0:  # over time: any heat condition will do
+            checks.append(
+                (
+                    bool(thermal_bcs),
+                    f"열 조건: {len(thermal_bcs)}개 · {format_duration(p.thermal_duration)} 동안"
+                    if thermal_bcs
+                    else "4단계에서 열 입력·고정 온도·대류·복사 중 하나 이상을 지정하세요",
+                )
+            )
         else:
             has_ref = any(ld.kind in TEMPERATURE_REFERENCES for ld in thermal_bcs)
             checks.append(
@@ -1071,7 +1081,12 @@ class MainWindow(QMainWindow):
             panel.animate.setChecked(True)
         elif isinstance(r, ThermalResult):
             panel.set_fields(THERMAL_FIELDS)
-            panel.set_modes(None)
+            if r.transient:  # the "mode" selector picks the moment to show
+                labels = [format_duration(t) for t in r.times]
+                panel.set_modes(r.times, labels, "시각")
+                panel.mode.setCurrentIndex(len(labels) - 1)
+            else:
+                panel.set_modes(None)
             panel.animate.setChecked(False)
         elif isinstance(r, BucklingResult):
             panel.set_fields([("mode", "좌굴 모양 (상대 크기)")])
@@ -1183,7 +1198,13 @@ class MainWindow(QMainWindow):
         if key in ("temp", "flux"):
             thermal = r if isinstance(r, ThermalResult) else r.thermal
             if key == "temp":
-                return ResultField(thermal.temperature, "온도 (°C)", cmap="inferno", unit="°C")
+                values = thermal.temperature
+                clim = None
+                if isinstance(r, ThermalResult) and r.transient:
+                    frame = self.panels[STEP_RESULT].mode.currentIndex()
+                    values = r.history[frame if frame >= 0 else -1]
+                    clim = (float(r.history.min()), float(r.history.max()))  # one scale
+                return ResultField(values, "온도 (°C)", "inferno", clim, "°C")
             return ResultField(thermal.heat_flux_magnitude, "열 흐름 (W/m²)", "magma", None, "W/m²")
         if key in ("ffos", "life"):
             fatigue = self.summary.fatigue

@@ -450,16 +450,18 @@ class ThermalSummary:
 def summarize_thermal(project: Project, result, materials: dict) -> ThermalSummary:
     T = result.temperature
     mesh = result.mesh
+    # over time the verdict follows the hottest moment, not just the end
+    hottest = result.history.max(axis=0) if result.transient else T
     worst, worst_ratio, limit_text = None, -np.inf, ""
     for pid, m in materials.items():
         if m.max_service_temperature is None:
             continue
-        t_max = float(T[mesh.part_nodes(pid)].max())
+        t_max = float(hottest[mesh.part_nodes(pid)].max())
         ratio = t_max / m.max_service_temperature
         if ratio > worst_ratio:
             worst, worst_ratio = (pid, m, t_max), ratio
     notes = _contact_note(project)
-    if result.heat_in > 0:
+    if result.heat_in > 0 and not result.transient:  # over time, heat is also stored
         balance = abs(result.heat_out - result.heat_in) / max(result.heat_in, result.heat_out)
         if balance > 0.02:
             notes.append(
@@ -473,6 +475,19 @@ def summarize_thermal(project: Project, result, materials: dict) -> ThermalSumma
         return fmt(us, "temperature", value, digits)
 
     headline = f"최고 {deg(T.max(), ',.1f')} · 최저 {deg(T.min(), ',.1f')}"
+    if result.transient:
+        end = format_duration(float(result.times[-1]))
+        headline = f"{end} 후 {headline}"
+        peak, when = result.peak()
+        if when < result.times[-1] and peak > T.max() + 0.5:
+            notes.append(
+                f"가장 뜨거웠던 때는 {format_duration(when)} 무렵으로, 최고 "
+                f"{deg(peak, ',.1f')}였습니다. 판정은 이 최고 온도로 했습니다."
+            )
+        notes.append(
+            f"시작 온도 {deg(project.initial_temperature, ',.1f')}에서 "
+            f"{end} 동안의 온도 변화를 계산했습니다. '시각'에서 중간 시점을 볼 수 있습니다."
+        )
     if worst is None:
         return ThermalSummary(None, headline, "온도 분포를 계산했습니다.", notes)
     pid, m, t_max = worst
@@ -497,6 +512,18 @@ def summarize_thermal(project: Project, result, materials: dict) -> ThermalSumma
         )
     title = VERDICT_STYLE[verdict][0]
     return ThermalSummary(verdict, f"{title} — {headline}", limit_text, notes)
+
+
+def format_duration(seconds: float) -> str:
+    """'45초', '12분 30초', '2시간 5분' — for times on screen and in reports."""
+    seconds = round(seconds)
+    if seconds < 60:
+        return f"{seconds}초"
+    if seconds < 3600:
+        m, s = divmod(seconds, 60)
+        return f"{m}분" + (f" {s}초" if s else "")
+    h, rest = divmod(seconds, 3600)
+    return f"{h}시간" + (f" {rest // 60}분" if rest // 60 else "")
 
 
 # --- buckling -------------------------------------------------------------------------
