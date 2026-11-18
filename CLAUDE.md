@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-KStruct: 기계 부품용 3D 유한요소해석 데스크톱 앱(비전문가 대상, 상용 배포 목표). 사용자와의 대화와 UI 문구는 한국어.
+KStruct: 기계 부품용 3D 유한요소해석 데스크톱 앱(비전문가 대상). 목표는 **상용 소프트웨어 수준의 품질**(정확도·안정성·사용성·성능)이며 판매·외부 배포용 제품은 아니다 — 코드 서명·EULA·릴리스 같은 배포 업무는 우선순위가 아니다. 사용자와의 대화와 UI 문구는 한국어.
 
 ## 명령어
 
