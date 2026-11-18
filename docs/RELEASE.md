@@ -32,6 +32,18 @@ git tag v0.2.0 && git push origin v0.2.0
 
 태그를 푸시하면 CI가 세 OS의 설치 파일을 만들고(서명·공증 포함), GitHub Release를 만들어 설치 파일과 `SHA256SUMS.txt`를 올립니다. 릴리스 노트는 커밋 목록으로 자동 작성되므로 필요하면 편집합니다.
 
+## 3-1. 앱 안의 자동 업데이트
+
+앱은 이 저장소의 최신 GitHub Release를 확인해 새 버전을 알려 주고(시작할 때 하루 한 번, 업데이트 창에서 끌 수 있음), '받아서 설치'를 누르면 설치 파일을 받아 `SHA256SUMS.txt`로 검증한 뒤 설치합니다. 그래서 릴리스에는 반드시
+
+- 태그 이름 = `v` + `RELEASE_VERSION`(예: `v0.2.0`; `pyproject.toml`의 버전과 같게 올린 뒤 태그),
+- 설치 파일 이름은 `packaging/build.py`가 만드는 그대로(`KStruct-Setup-<버전>.exe`, `KStruct-<버전>-macOS.dmg`, `KStruct-<버전>-linux-<arch>.tar.gz`),
+- `SHA256SUMS.txt`
+
+가 있어야 합니다(CI의 `release` 작업이 이렇게 올립니다). 초안·프리릴리스는 `/releases/latest`에 나오지 않으므로 앱이 무시합니다.
+
+저장소가 비공개이므로 각 PC에 **읽기 전용 토큰**이 필요합니다. GitHub → Settings → Developer settings → Fine-grained personal access tokens에서 저장소를 KStruct로 한정하고 권한은 "Contents: Read-only"만 준 토큰을 만들어, 업데이트 창의 'GitHub 토큰'에 붙여 넣거나 환경 변수 `KSTRUCT_GITHUB_TOKEN`으로 배포합니다.
+
 ## 4. 로컬에서 서명하며 빌드
 
 ```

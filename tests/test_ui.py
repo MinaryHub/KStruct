@@ -964,3 +964,55 @@ def test_nonlinear_run_from_the_panel(qtbot):
     assert "비선형 정적해석" in html and "재료 항복 고려" in html
     names = [name for name, _ in result_columns(window.project, result, window.summary)]
     assert "equivalent plastic strain [-]" in names
+
+
+def test_contact_sponsor_and_update_from_the_toolbar(qtbot, monkeypatch, tmp_path):
+    """문의하기 opens a pre-filled GitHub issue, 후원하기 the sponsor page, and an update
+    found at start-up shows the toolbar button whose dialog offers the installer."""
+    from kstruct import update
+    from kstruct.ui import updates
+
+    monkeypatch.setenv("KSTRUCT_DATA_DIR", str(tmp_path))
+    opened = []
+    monkeypatch.setattr(updates, "open_url", lambda url: opened.append(url) or True)
+    window = _window(qtbot)
+    actions = {a.text(): a for a in window.findChildren(type(window.update_action))}
+    actions["문의하기"].trigger()
+    actions["후원하기"].trigger()
+    assert opened[0].startswith("https://github.com/knoxxr/KStruct/issues/new?")
+    assert "KStruct" in opened[0] and opened[1] == "https://github.com/sponsors/minarhub"
+
+    release = update.Release(
+        "v99.0.0",
+        "99.0.0",
+        "- 새 기능",
+        "https://github.com/knoxxr/KStruct/releases/tag/v99.0.0",
+        [
+            update.Asset(n, f"api/{n}")
+            for n in (
+                "KStruct-Setup-99.0.0.1.exe",
+                "KStruct-99.0.0.1-macOS.dmg",
+                "KStruct-99.0.0.1-linux-x86_64.tar.gz",
+            )
+        ],
+    )
+    monkeypatch.setattr(update, "check", lambda tok=None, current=None: release)
+    checker = updates.UpdateChecker(window)
+    checker.available.connect(window._update_available)
+    assert checker.start(force=True)
+    qtbot.waitUntil(lambda: window.update_action.isVisible(), timeout=5000)
+    assert window.update_action.text() == "업데이트 99.0.0"
+
+    dialog = updates.UpdateDialog(window, window._pending_release)
+    qtbot.addWidget(dialog)
+    assert "99.0.0" in dialog.status.text() and dialog.install_button.isEnabled()
+    assert "새 기능" in dialog.notes.toPlainText()
+
+    def missing(tok=None):
+        raise update.UpdateError("릴리스를 찾을 수 없습니다. 토큰이 필요합니다.")
+
+    monkeypatch.setattr(update, "latest_release", missing)
+    dialog.token.setText("")
+    dialog.check()
+    qtbot.waitUntil(lambda: "확인하지 못했습니다" in dialog.status.text(), timeout=5000)
+    assert not dialog.install_button.isEnabled()

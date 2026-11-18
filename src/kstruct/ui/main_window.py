@@ -77,6 +77,7 @@ from kstruct.report.summary import (
 from kstruct.ui import prefs, steps, theme
 from kstruct.ui.dialogs import AboutDialog, save_bug_report
 from kstruct.ui.help import HelpDialog, topic
+from kstruct.ui.updates import UpdateChecker, UpdateDialog, open_contact, open_sponsor
 from kstruct.ui.viewer import ModelViewer, ResultField
 from kstruct.ui.worker import Cancelled, JobHandle, run_job
 from kstruct.units import fmt, quantity, system_of
@@ -409,10 +410,58 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
-        action("사용 안내", lambda: HelpDialog("help.mode", self).exec(), "help.mode", "F1", "help")
-        action("문제 보고", self.report_problem, "help.report", icon="report")
+        # shown only when the start-up check found a newer release
+        self.update_action = action("업데이트", self.show_update, "help.update", icon="update")
+        self.update_action.setVisible(False)
+        self._pending_release = None
+        action(
+            "사용 안내",
+            lambda: HelpDialog("help.mode", self).exec(),
+            "help.mode",
+            "F1",
+            "help",
+            True,
+        )
+        action(
+            "문의하기", lambda: open_contact(self), "help.contact", icon="contact", icon_only=True
+        )
+        action("문제 보고", self.report_problem, "help.report", icon="report", icon_only=True)
+        action("후원하기", lambda: open_sponsor(self), "help.sponsor", icon="heart", icon_only=True)
         action("화면 색", self.toggle_theme, "view.theme", icon="theme", icon_only=True)
-        action("정보", lambda: AboutDialog(self).exec(), "help.about", icon="info", icon_only=True)
+        self.info_button = QToolButton()
+        self.info_button.setIcon(theme.icon("info"))
+        self._icons.append((self.info_button, "info"))
+        self.info_button.setToolTip(topic("help.about").short)
+        self.info_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        info_menu = QMenu(self.info_button)
+        info_menu.addAction("KStruct 정보", lambda: AboutDialog(self).exec())
+        info_menu.addAction("사용 안내", lambda: HelpDialog("help.mode", self).exec())
+        info_menu.addAction("업데이트 확인…", self.show_update)
+        info_menu.addSeparator()
+        info_menu.addAction("문의하기 (GitHub)", lambda: open_contact(self))
+        info_menu.addAction("문제 보고 (로그·프로젝트 묶기)", self.report_problem)
+        info_menu.addAction("후원하기 (GitHub Sponsors)", lambda: open_sponsor(self))
+        self.info_button.setMenu(info_menu)
+        bar.addWidget(self.info_button)
+
+    # --- updates ---------------------------------------------------------------------
+
+    def check_updates_quietly(self) -> None:
+        """Start-up check (once a day, can be turned off in the update dialog)."""
+        self._update_checker = UpdateChecker(self)
+        self._update_checker.available.connect(self._update_available)
+        self._update_checker.start()
+
+    def _update_available(self, release) -> None:
+        self._pending_release = release
+        self.update_action.setText(f"업데이트 {release.version}")
+        self.update_action.setVisible(True)
+        self.statusBar().showMessage(
+            f"새 버전 {release.version}이 있습니다. 툴바의 '업데이트'를 누르세요.", 15000
+        )
+
+    def show_update(self) -> None:
+        UpdateDialog(self, self._pending_release).exec()
 
     def toggle_theme(self) -> None:
         """Switch between the light and the dark look and remember the choice."""
@@ -534,14 +583,18 @@ class MainWindow(QMainWindow):
             box.setWindowTitle("예상하지 못한 오류")
             box.setText(
                 "프로그램 안에서 오류가 났습니다. 작업 내용은 '프로젝트 저장'으로 보관할 수 "
-                "있습니다.\n\n'문제 보고'를 누르면 로그와 프로젝트를 묶어 저장할 수 있습니다."
+                "있습니다.\n\n'문제 보고'를 누르면 로그와 프로젝트를 묶어 저장할 수 있고, "
+                "'문의하기'를 누르면 오류 내용을 채운 문의(GitHub 이슈)를 엽니다."
             )
             box.setDetailedText(detail)
             report = box.addButton("문제 보고", QMessageBox.ButtonRole.ActionRole)
+            contact = box.addButton("문의하기", QMessageBox.ButtonRole.ActionRole)
             box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
             box.exec()
             if box.clickedButton() is report:
                 self.report_problem(detail)
+            elif box.clickedButton() is contact:
+                open_contact(self, detail)
 
         sys.excepthook = hook
 
