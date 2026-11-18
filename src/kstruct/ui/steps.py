@@ -1398,6 +1398,12 @@ class SolveStep(StepPanel):
         self.reliability_label = QLabel("신뢰도")
         self.reliability_box = with_help(self.reliability, "fatigue.reliability")
         sform.addRow(self.reliability_label, self.reliability_box)
+        self.plasticity = QCheckBox("항복한 뒤까지 계산 (영구 변형·붕괴 하중)")
+        self.plasticity.toggled.connect(self._nonlinear_changed)
+        sform.addRow(with_help(self.plasticity, "analysis.plasticity"))
+        self.large = QCheckBox("큰 변형 고려 (얇고 많이 휘는 부품)")
+        self.large.toggled.connect(self._nonlinear_changed)
+        sform.addRow(with_help(self.large, "analysis.large_deformation"))
         self.add(self.static_box)
 
         self.target_box = QGroupBox("권장 안전율")
@@ -1461,6 +1467,13 @@ class SolveStep(StepPanel):
         self.cycle.blockSignals(True)
         self.cycle.setCurrentIndex(max(0, self.cycle.findData(project.load_cycle)))
         self.cycle.blockSignals(False)
+        for box, value in (
+            (self.plasticity, project.plasticity),
+            (self.large, project.large_deformation),
+        ):
+            box.blockSignals(True)
+            box.setChecked(value)
+            box.blockSignals(False)
         repeated = project.load_cycle != "none"
         for w in (
             self.surface_label,
@@ -1526,6 +1539,13 @@ class SolveStep(StepPanel):
 
     def _kind_changed(self) -> None:
         self.app.project.analysis = self.kinds.checkedButton().property("kind")
+        self.changed.emit()
+        self.refresh()
+
+    def _nonlinear_changed(self) -> None:
+        project = self.app.project
+        project.plasticity = self.plasticity.isChecked()
+        project.large_deformation = self.large.isChecked()
         self.changed.emit()
         self.refresh()
 

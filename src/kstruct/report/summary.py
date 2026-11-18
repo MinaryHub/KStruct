@@ -141,6 +141,12 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
 
     fatigue = None
     cycle = LoadCycle(project.load_cycle)
+    nonlinear = getattr(result, "nonlinear", None)
+    if cycle != LoadCycle.NONE and nonlinear is not None:
+        cycle = LoadCycle.NONE  # stresses beyond yield: the fatigue model does not apply
+        skipped_fatigue = True
+    else:
+        skipped_fatigue = False
     if cycle != LoadCycle.NONE:
         settings = FatigueSettings(project.fatigue_surface, project.fatigue_reliability)
         fatigue = fatigue_check(result, cycle, settings)
@@ -304,7 +310,18 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
             )
     size = float(np.ptp(mesh.nodes, axis=0).max())
     max_node = int(np.argmax(disp))
-    if disp[max_node] > 0.05 * size:
+    if skipped_fatigue:
+        notes.append(
+            "반복 하중(피로) 판정은 선형 해석에서만 합니다. 항복·큰 변형 계산을 끄고 다시 "
+            "해석하면 피로 안전율을 볼 수 있습니다."
+        )
+    if disp[max_node] > 0.05 * size and nonlinear is not None:
+        if not nonlinear.large_deformation:
+            notes.append(
+                "변형이 부품 크기의 5%를 넘습니다. 6단계에서 '큰 변형 고려'를 켜고 다시 "
+                "계산하면 더 정확합니다."
+            )
+    elif disp[max_node] > 0.05 * size:
         notes.append(
             "변형이 부품 크기의 5%를 넘습니다. 이 프로그램의 선형 해석은 작은 변형을 가정하므로 "
             "실제 거동과 차이가 클 수 있습니다."
@@ -318,7 +335,7 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
         label = "볼트 안전율"
     elif worst.hotspot_fos is not None and worst_fos == worst.hotspot_fos:
         label = f"최소 안전율 {worst.min_fos:.2f}, 특이점 제외"
-    return Summary(
+    summary = Summary(
         parts=parts,
         verdict=worst_verdict,
         headline=f"{title} — {label} {worst_fos:.2f}",
@@ -331,6 +348,111 @@ def summarize(project: Project, result: StaticResult, pack: StandardPack) -> Sum
         bolts=list(result.bolts or []),
         governing_fos=float(worst_fos),
     )
+    if nonlinear is not None:
+        _judge_nonlinear(summary, project, result, singular, us)
+    return summary
+
+
+# beyond this equivalent plastic strain a part is permanently bent for practical purposes;
+# up to it the yielding is local and the permanent set small (the 0.2 % of a proof stress)
+LOCAL_YIELD_STRAIN = 0.002
+
+
+def _judge_nonlinear(summary: Summary, project: Project, result, singular, us: str) -> None:
+    """Verdict of a run with yielding / large deformation: did the part carry the whole
+    load, did it yield, how much deformation remains after unloading."""
+    nl = result.nonlinear
+    mesh = result.mesh
+    worst_part, worst_strain, raw_strain = None, 0.0, 0.0
+    for part in summary.parts:
+        nodes = mesh.part_nodes(part.part_id)
+        peeq = nl.plastic_strain[nodes]
+        part_raw = float(peeq.max()) if len(peeq) else 0.0
+        governing = part_raw
+        if part.ductile and part.singular_kind is not None:
+            # a sharp corner concentrates the plastic strain without bound as well
+            zone = singular.zone(mesh, part.part_id)
+            outside = nodes[~zone[nodes]]
+            if len(outside):
+                governing = float(nl.plastic_strain[outside].max())
+        if governing >= worst_strain:
+            worst_part, worst_strain, raw_strain = part, governing, part_raw
+    applied = np.linalg.norm(result.applied_load)
+    permanent = (
+        float(np.linalg.norm(nl.permanent, axis=1).max()) if nl.permanent is not None else 0.0
+    )
+    perm_text = (
+        f" 하중을 빼도 최대 {fmt(us, 'length', permanent, '.3g')}의 변형이 남습니다."
+        if permanent > 0
+        else ""
+    )
+    kind = []
+    if nl.plasticity:
+        kind.append("항복")
+    if nl.large_deformation:
+        kind.append("큰 변형")
+    summary.notes.insert(
+        0,
+        f"비선형 해석({'·'.join(kind)} 고려): 하중을 {nl.increments}단계로 나눠 걸며 계산했습니다"
+        + (
+            ". 재료는 항복강도까지 탄성, 인장강도까지 직선으로 단단해지고 그 뒤로는 거의 "
+            "늘어나기만 한다고 가정했습니다."
+            if nl.plasticity
+            else "."
+        )
+        + (" 하중 방향은 변형 뒤에도 처음 그대로입니다." if nl.large_deformation else ""),
+    )
+    if worst_strain > 0 and raw_strain > worst_strain * 1.5:
+        summary.notes.append(
+            f"날카로운 모서리 바로 옆의 소성 변형률({raw_strain * 100:.2g}%)은 메시에 따라 "
+            "계속 커지므로 판정은 그 주변을 제외한 값으로 했습니다."
+        )
+    if not nl.completed:
+        reached = nl.load_factor * 100
+        carried = fmt(us, "force", applied, ",.0f") if applied > 0 else ""
+        summary.verdict = Verdict.FAIL
+        if nl.plasticity:
+            summary.headline = f"❌ 위험 — 하중의 약 {reached:.0f}%에서 무너짐"
+            summary.explanation = (
+                f"부품이 하중을 끝까지 버티지 못합니다. 약 {reached:.0f}%"
+                + (f"({carried})" if carried else "")
+                + "에서 재료가 넓게 항복해 변형이 걷잡을 수 없이 커집니다(소성 붕괴). "
+                "단면을 키우거나 더 강한 재료를 쓰세요."
+            )
+        else:
+            summary.headline = f"❌ 위험 — 하중의 약 {reached:.0f}%에서 불안정"
+            summary.explanation = (
+                f"약 {reached:.0f}%의 하중에서 형상이 갑자기 크게 바뀌어(좌굴·뒤집힘) 더 "
+                "버티지 못합니다. 좌굴 해석으로 확인하고, 두께를 늘리거나 받침을 더하세요."
+            )
+        summary.governing_fos = nl.load_factor
+        return
+    if worst_part is None or worst_strain <= 0:
+        if nl.plasticity:
+            summary.notes.append("어느 곳도 항복하지 않았습니다(재료가 탄성 범위 안에 있음).")
+        return
+    name = worst_part.name
+    # ductile parts are judged on their plastic strain here, not on the linear safety
+    # factor (which is below 1 wherever the material yielded); brittle parts keep theirs
+    brittle = [p.verdict for p in summary.parts if not p.ductile]
+    floor = max(brittle, key=lambda v: _RANK[v]) if brittle else Verdict.OK
+    if worst_strain <= LOCAL_YIELD_STRAIN:
+        summary.verdict = max(floor, Verdict.WARN, key=lambda v: _RANK[v])
+        summary.headline = (
+            f"{VERDICT_STYLE[summary.verdict][0]} — 국부 항복 (소성 변형률 "
+            f"{worst_strain * 100:.2g}%)"
+        )
+        summary.explanation = (
+            f"하중은 모두 견디지만 {name}의 일부가 항복합니다. 항복한 범위가 작아 영구 변형은 "
+            f"작습니다.{perm_text} 반복해서 걸리는 하중이라면 항복하지 않도록 보강하세요."
+        )
+    else:
+        summary.verdict = Verdict.FAIL
+        summary.headline = f"❌ 위험 — 영구 변형 (소성 변형률 {worst_strain * 100:.2g}%)"
+        summary.explanation = (
+            f"하중은 견디지만 {name}이(가) 크게 항복해 영구적으로 휘어집니다.{perm_text} "
+            "두께를 늘리거나, 모서리를 둥글게 하거나, 더 강한 재료를 검토하세요."
+        )
 
 
 @dataclass

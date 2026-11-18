@@ -39,6 +39,7 @@ from kstruct.fem import ConstraintError, MeshingError, SolverError, generate_mes
 from kstruct.fem.buckling import BucklingResult, solve_buckling
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.modal import ModalResult, solve_modal
+from kstruct.fem.nonlinear import unsupported as nonlinear_unsupported
 from kstruct.fem.static import StaticResult, solve_cases
 from kstruct.fem.thermal import ThermalResult, solve_thermal
 from kstruct.geometry import GeometryImportError, load_cad
@@ -935,6 +936,11 @@ class MainWindow(QMainWindow):
                     else "4단계에서 '고정 온도', '대류 냉각', '복사 냉각' 중 하나 이상을 지정하세요",
                 )
             )
+        if p.analysis == AnalysisKind.STATIC and (p.plasticity or p.large_deformation):
+            reason = nonlinear_unsupported(p)
+            checks.append(
+                (reason is None, reason or "비선형 계산: 하중을 나눠 걸며 반복합니다(더 오래 걸림)")
+            )
         excluded = excluded_by_hidden_parts(self.project)
         if excluded:
             checks.append((True, f"숨긴 부품에 지정된 {', '.join(excluded)}는 해석에서 제외합니다"))
@@ -1100,6 +1106,10 @@ class MainWindow(QMainWindow):
                 fields += THERMAL_FIELDS
             if self.summary.fatigue is not None:
                 fields += [("ffos", "피로 안전율"), ("life", "예상 수명 (반복 횟수)")]
+            if r.nonlinear is not None and r.nonlinear.plasticity:
+                fields += [("peeq", "소성 변형률 (영구 변형 정도)")]
+            if r.nonlinear is not None and r.nonlinear.permanent is not None:
+                fields += [("perm", "하중을 뺀 뒤 남는 변형")]
             panel.set_fields(fields)
             panel.set_modes(None)
             panel.animate.setChecked(False)
@@ -1178,6 +1188,7 @@ class MainWindow(QMainWindow):
             "uy": "length",
             "uz": "length",
             "temp": "temperature",
+            "perm": "length",
         }.get(key)
         if kind is None:
             return field
@@ -1206,6 +1217,15 @@ class MainWindow(QMainWindow):
                     clim = (float(r.history.min()), float(r.history.max()))  # one scale
                 return ResultField(values, "온도 (°C)", "inferno", clim, "°C")
             return ResultField(thermal.heat_flux_magnitude, "열 흐름 (W/m²)", "magma", None, "W/m²")
+        if key == "peeq":
+            values = r.nonlinear.plastic_strain * 100
+            return ResultField(
+                values, "소성 변형률 (%)", "YlOrRd", (0, max(values.max(), 0.2)), "%"
+            )
+        if key == "perm":
+            return ResultField(
+                np.linalg.norm(r.nonlinear.permanent, axis=1), "남는 변형 (mm)", unit="mm"
+            )
         if key in ("ffos", "life"):
             fatigue = self.summary.fatigue
             target = max(

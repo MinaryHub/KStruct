@@ -907,3 +907,60 @@ def test_transient_heat_run(qtbot):
     assert "10분 후" in window.summary.headline
     html = build_html(window.project, result, window.summary, [], window.materials)
     assert "시간에 따른 열전도 해석" in html
+
+
+def test_nonlinear_run_from_the_panel(qtbot):
+    """'항복한 뒤까지 계산' in the solve panel: the run reports plastic strain and the
+    shape left after unloading, and the report names the method."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import (
+        Connection,
+        ConnectionKind,
+        FaceRef,
+        Fixture,
+        FixtureKind,
+        Load,
+        LoadKind,
+    )
+    from kstruct.report.export import result_columns
+    from kstruct.report.pdf import build_html
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    window.warn = lambda text, *a, **k: pytest.fail(text)
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    top = FaceRef(0, face_at(shape, (90, 30, 8)))
+    window.project.loads = [Load(LoadKind.FORCE, [top], vector=(0, 0, -6000.0))]
+    window.project.mesh_quality = "coarse"
+    panel = window.panels[mw.STEP_SOLVE]
+    panel.refresh()
+    assert panel.plasticity.isVisible() and not panel.plasticity.isChecked()
+    panel.plasticity.setChecked(True)
+    assert window.project.plasticity and not window.project.large_deformation
+    assert all(ok for ok, _ in window.readiness()), window.readiness()
+    # contact is not supported yet: the checklist says so instead of failing mid-run
+    window.project.connections.append(Connection(ConnectionKind.CONTACT, [top], [top]))
+    blocked = [text for ok, text in window.readiness() if not ok]
+    assert blocked and "접촉" in blocked[0]
+    window.project.connections.pop()
+    panel.large.setChecked(True)  # both switches together
+    assert window.project.large_deformation
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=180_000)
+    result = window.result
+    assert result.nonlinear is not None and result.nonlinear.yielded
+    view = window.panels[mw.STEP_RESULT]
+    keys = [view.field.itemData(i) for i in range(view.field.count())]
+    assert "peeq" in keys and "perm" in keys
+    peeq = window.result_field("peeq")
+    assert peeq.values.max() > 0 and peeq.unit == "%"
+    perm = window.result_field("perm")
+    assert perm.values.max() > 0
+    assert "비선형 해석" in window.summary.notes[0]
+    html = build_html(window.project, result, window.summary, [], window.materials)
+    assert "비선형 정적해석" in html and "재료 항복 고려" in html
+    names = [name for name, _ in result_columns(window.project, result, window.summary)]
+    assert "equivalent plastic strain [-]" in names

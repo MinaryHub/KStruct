@@ -202,6 +202,21 @@ def _static_html(
         )
     notes = _list(summary.notes)
     at = [fmt(us, "length", float(v), ".1f") for v in summary.max_disp_at]
+    nl = result.nonlinear
+    if nl is None:
+        method = "선형 탄성 정적해석 (작은 변형, 재료는 항복 전까지 선형으로 가정)"
+    else:
+        parts = []
+        if nl.plasticity:
+            parts.append(
+                "재료 항복 고려(폰 미세스 소성, 항복강도 → 인장강도까지 직선 경화, 그 뒤 거의 일정)"
+            )
+        if nl.large_deformation:
+            parts.append("큰 변형 고려(전체 라그랑주, 하중 방향은 처음 그대로)")
+        method = (
+            f"비선형 정적해석: {', '.join(parts)}. 하중 {nl.increments}단계, 뉴턴 반복 "
+            f"{nl.iterations}회, 도달 하중 {nl.load_factor * 100:.0f}%"
+        )
     body = f"""
 {f"<p><b>참고</b></p><ul>{notes}</ul>" if notes else ""}
 {_cases_html(project, overview, us)}
@@ -226,7 +241,7 @@ def _static_html(
 
 <h2>4. 해석 방법과 한계</h2>
 <ul>
-<li>선형 탄성 정적해석 (작은 변형, 재료는 항복 전까지 선형으로 가정)</li>
+<li>{method}</li>
 <li>연성재는 폰 미세스 응력과 항복강도로, 취성재는 최대 주응력과 인장강도로 안전율을 계산</li>
 <li>권장 안전율은 하중을 잘 아는 정적 조건의 일반적 기계설계 권장값이며, 피로·충격·고온 조건은 별도 검토 필요</li>
 <li>참고 기준: {esc(", ".join(pack.references))}</li>
@@ -240,7 +255,7 @@ def _static_html(
         summary.verdict,
         body,
         result.mesh,
-        "선형 정적 유한요소해석",
+        "비선형 정적 유한요소해석" if result.nonlinear is not None else "선형 정적 유한요소해석",
     )
 
 
