@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-    { name = "Kwang Beom Kim", email = "knoxxr@gmail.com" }
+    { name = "MinaryHub" }
 ]
 requires-python = ">=3.12,<3.13"
 dependencies = [

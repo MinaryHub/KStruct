@@ -9,7 +9,7 @@
 AppId={{6E0F3C9B-6C1E-4C55-9A0E-4B2E5C1F7A11}
 AppName=KStruct
 AppVersion={#AppVersion}
-AppPublisher=KStruct
+AppPublisher=MinaryHub
 DefaultDirName={autopf}\KStruct
 DefaultGroupName=KStruct
 OutputDir=..\..\dist

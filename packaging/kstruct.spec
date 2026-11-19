@@ -74,4 +74,4 @@ exe = EXE(
 coll = COLLECT(exe, a.binaries, a.datas, name="KStruct")
 
 if sys.platform == "darwin":
-    app = BUNDLE(coll, name="KStruct.app", bundle_identifier="kr.smic.kstruct")
+    app = BUNDLE(coll, name="KStruct.app", bundle_identifier="io.github.minaryhub.kstruct")
