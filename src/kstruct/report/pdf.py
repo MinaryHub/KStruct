@@ -15,7 +15,7 @@ from PySide6.QtGui import QPageLayout, QPageSize, QPdfWriter, QTextDocument
 from kstruct import __version__, standards
 from kstruct.fem.mesh import MESH_PRESETS
 from kstruct.fem.static import StaticResult
-from kstruct.model import THERMAL_LOADS, Project
+from kstruct.model import THERMAL_LOADS, LoadKind, Project, active_project
 from kstruct.report.describe import describe_connection, describe_fixture, describe_load
 from kstruct.report.summary import VERDICT_STYLE, Summary
 from kstruct.units import fmt, system_of
@@ -153,6 +153,11 @@ def _static_html(
             f"<td><b>{s.min_fos:.2f}</b> / {s.target:.1f}</td><td>{fmt(us, 'length', s.max_disp)}</td>"
             f"<td>{VERDICT_STYLE[s.verdict][0]}</td></tr>"
         )
+        if s.plastic_strain is not None:
+            rows.append(
+                f"<tr><td colspan='2' align='right'>소성 변형률(항복 정도)</td>"
+                f"<td colspan='5'>{s.plastic_strain * 100:.2g}%</td></tr>"
+            )
         if s.hotspot_fos is not None:
             rows.append(
                 f"<tr><td colspan='2' align='right'>특이점({esc(s.singular_kind)}) 제외</td>"
@@ -202,6 +207,21 @@ def _static_html(
         )
     notes = _list(summary.notes)
     at = [fmt(us, "length", float(v), ".1f") for v in summary.max_disp_at]
+    nl = result.nonlinear
+    if nl is None:
+        method = "선형 탄성 정적해석 (작은 변형, 재료는 항복 전까지 선형으로 가정)"
+    else:
+        parts = []
+        if nl.plasticity:
+            parts.append(
+                "재료 항복 고려(폰 미세스 소성, 항복강도 → 인장강도까지 직선 경화, 그 뒤 거의 일정)"
+            )
+        if nl.large_deformation:
+            parts.append("큰 변형 고려(전체 라그랑주, 하중 방향은 처음 그대로)")
+        method = (
+            f"비선형 정적해석: {', '.join(parts)}. 하중 {nl.increments}단계, 뉴턴 반복 "
+            f"{nl.iterations}회, 도달 하중 {nl.load_factor * 100:.0f}%"
+        )
     body = f"""
 {f"<p><b>참고</b></p><ul>{notes}</ul>" if notes else ""}
 {_cases_html(project, overview, us)}
@@ -226,7 +246,7 @@ def _static_html(
 
 <h2>4. 해석 방법과 한계</h2>
 <ul>
-<li>선형 탄성 정적해석 (작은 변형, 재료는 항복 전까지 선형으로 가정)</li>
+<li>{method}</li>
 <li>연성재는 폰 미세스 응력과 항복강도로, 취성재는 최대 주응력과 인장강도로 안전율을 계산</li>
 <li>권장 안전율은 하중을 잘 아는 정적 조건의 일반적 기계설계 권장값이며, 피로·충격·고온 조건은 별도 검토 필요</li>
 <li>참고 기준: {esc(", ".join(pack.references))}</li>
@@ -240,7 +260,7 @@ def _static_html(
         summary.verdict,
         body,
         result.mesh,
-        "선형 정적 유한요소해석",
+        "비선형 정적 유한요소해석" if result.nonlinear is not None else "선형 정적 유한요소해석",
     )
 
 
@@ -312,13 +332,36 @@ def _thermal_html(project, result, summary, images, materials) -> str:
             f"<td>{limit}</td></tr>"
         )
     notes = _list(summary.notes)
+    if result.transient:
+        from kstruct.report.summary import format_duration
+
+        kind_note = (
+            f"시간에 따른 열전도 해석: 처음 온도 "
+            f"{fmt(us, 'temperature', project.initial_temperature, '.1f')}에서 "
+            f"{format_duration(float(result.times[-1]))} 동안 (후진 오일러 "
+            f"{result.iterations}단계). 표의 온도는 마지막 시점, 판정은 그동안의 최고 온도 기준"
+        )
+    else:
+        kind_note = "정상상태 열전도 해석 (충분한 시간이 지나 온도가 더 이상 변하지 않는 상태)"
+    has_radiation = any(ld.kind == LoadKind.RADIATION for ld in project.loads)
+    has_table = any(m.conductivity_table for m in materials.values())
+    method_note = "; ".join(
+        [
+            "복사는 '복사 냉각'을 지정한 면에서만 고려(반복 계산)"
+            if has_radiation
+            else "복사 열전달은 지정하지 않아 고려하지 않음",
+            "온도에 따른 열전도율 변화를 반영(재료의 열전도율 표)"
+            if has_table
+            else "열전도율은 온도와 무관한 상수로 가정",
+        ]
+    )
     body = f"""
 {f"<ul>{notes}</ul>" if notes else ""}
 <h2>1. 부품별 온도</h2>
 <table width="100%" border="1" cellspacing="0" cellpadding="4">
 <tr style="background:#eef1f5;"><th>부품</th><th>최저</th><th>최고</th><th>권장 최고 사용온도</th></tr>
 {"".join(rows)}</table>
-<p>들어온 열 {result.heat_in:.3g} W · 빠져나간 열 {result.heat_out:.3g} W</p>
+<p>들어온 열 {fmt(us, "power", result.heat_in)} · 빠져나간 열 {fmt(us, "power", result.heat_out)}</p>
 <h2>2. 해석 조건</h2>
 <p><b>재료</b></p><ul>{_materials_list(project, materials)}</ul>
 <p><b>열 조건</b></p><ul>{loads}</ul>
@@ -327,8 +370,8 @@ def _thermal_html(project, result, summary, images, materials) -> str:
 <h2>3. 결과 그림</h2>
 {_pictures(images)}
 <h2>4. 해석 방법과 한계</h2>
-<ul><li>정상상태 열전도 해석 (충분한 시간이 지나 온도가 더 이상 변하지 않는 상태)</li>
-<li>복사 열전달과 온도에 따른 물성 변화는 고려하지 않음</li>
+<ul><li>{kind_note}</li>
+<li>{method_note}</li>
 <li>권장 최고 사용온도는 대략적인 값이며 재료 등급에 따라 다름</li></ul>
 """
     return _page(
@@ -392,6 +435,10 @@ def build_html(
     from kstruct.fem.modal import ModalResult
     from kstruct.fem.thermal import ThermalResult
 
+    # the result was computed on the visible parts and the conditions that refer only to
+    # them: report exactly that (a hidden part's fixture used to crash the report, its
+    # loads were listed although they were not applied)
+    project = active_project(project)
     if isinstance(result, BucklingResult):
         return _buckling_html(project, result, summary, images, materials or {})
     if isinstance(result, ModalResult):

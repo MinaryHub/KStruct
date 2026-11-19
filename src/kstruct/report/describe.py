@@ -24,6 +24,8 @@ FIXTURE_NAMES = {
     FixtureKind.FIXED: "완전 고정",
     FixtureKind.ROLLER: "미끄럼 지지",
     FixtureKind.PIN: "핀 지지",
+    FixtureKind.DISPLACEMENT: "강제 변위",
+    FixtureKind.ELASTIC: "탄성 지지",
 }
 CONNECTION_NAMES = {
     ConnectionKind.BONDED: "접합",
@@ -49,7 +51,18 @@ def plain_faces(project: Project) -> FaceNamer:
 
 def describe_fixture(project: Project, fx: Fixture, faces: FaceNamer | None = None) -> str:
     faces = faces or plain_faces(project)
-    return f"{FIXTURE_NAMES[fx.kind]}: {faces(fx.faces)}"
+    system = system_of(project)
+    detail = ""
+    if fx.kind == FixtureKind.DISPLACEMENT:
+        parts = [
+            f"{axis} {fmt(system, 'length', d, '+.4g')}"
+            for axis, d in zip("XYZ", fx.displacement, strict=True)
+            if d is not None
+        ]
+        detail = f" ({', '.join(parts)})" if parts else ""
+    elif fx.kind == FixtureKind.ELASTIC:
+        detail = f" ({fmt(system, 'stiffness', fx.stiffness)})"
+    return f"{FIXTURE_NAMES[fx.kind]}{detail}: {faces(fx.faces)}"
 
 
 def describe_connection(project: Project, c: Connection, faces: FaceNamer | None = None) -> str:
@@ -74,7 +87,7 @@ def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) ->
         g = (sum(c * c for c in ld.vector) ** 0.5) / GRAVITY
         return f"자중 {g:.2g} g"
     if ld.kind == LoadKind.TORQUE:
-        return f"토크 {fmt(system, 'torque', ld.magnitude, ',.4g')}{_axis(ld)}: {faces(ld.faces)}"
+        return f"토크 {fmt(system, 'torque', ld.magnitude)}{_axis(ld)}: {faces(ld.faces)}"
     if ld.kind == LoadKind.BEARING:
         fq = quantity(system, "force")
         fx, fy, fz = (fq.show(c) for c in ld.vector)
@@ -82,12 +95,27 @@ def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) ->
         return (
             f"베어링 하중 {mag:,.1f} {fq.unit} ({fx:+.0f}, {fy:+.0f}, {fz:+.0f}): {faces(ld.faces)}"
         )
+    if ld.kind == LoadKind.REMOTE:
+        fq = quantity(system, "force")
+        fx, fy, fz = (fq.show(c) for c in ld.vector)
+        mag = (fx**2 + fy**2 + fz**2) ** 0.5
+        lq = quantity(system, "length")
+        px, py, pz = (lq.show(c) for c in (ld.point or (0.0, 0.0, 0.0)))
+        return (
+            f"원격 하중 {mag:,.1f} {fq.unit} ({fx:+.0f}, {fy:+.0f}, {fz:+.0f}), "
+            f"작용점 ({px:.4g}, {py:.4g}, {pz:.4g}) {lq.unit}: {faces(ld.faces)}"
+        )
+    if ld.kind == LoadKind.MOMENT:
+        mq = quantity(system, "torque")
+        mx, my, mz = (mq.show(c) for c in ld.vector)
+        mag = (mx**2 + my**2 + mz**2) ** 0.5
+        return f"모멘트 {mag:,.4g} {mq.unit} ({mx:+.4g}, {my:+.4g}, {mz:+.4g}): {faces(ld.faces)}"
     if ld.kind == LoadKind.CENTRIFUGAL:
         return f"원심력 {fmt(system, 'speed', ld.magnitude, ',.0f')}{_axis(ld)}"
     if ld.kind == LoadKind.FACE_TEMPERATURE:
         return f"고정 온도 {fmt(system, 'temperature', ld.magnitude, '.1f')}: {faces(ld.faces)}"
     if ld.kind == LoadKind.HEAT_FLOW:
-        return f"열 입력 {ld.magnitude:.3g} W: {faces(ld.faces)}"
+        return f"열 입력 {fmt(system, 'power', ld.magnitude)}: {faces(ld.faces)}"
     if ld.kind == LoadKind.CONVECTION:
         air = fmt(system, "temperature", ld.ambient, ".0f")
         return f"대류 h={ld.magnitude:.3g} W/m²K, 공기 {air}: {faces(ld.faces)}"
@@ -98,10 +126,12 @@ def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) ->
 
 
 def _axis(ld: Load) -> str:
-    names = {(1, 0, 0): "X", (0, 1, 0): "Y", (0, 0, 1): "Z"}
-    key = tuple(int(round(c)) for c in ld.vector)
-    if key in names:
-        return f", {names[key]} 축"
-    if key in {tuple(-c for c in k) for k in names}:
-        return f", −{names[tuple(-c for c in key)]} 축"
-    return ", 원통면의 축"
+    norm = sum(c * c for c in ld.vector) ** 0.5
+    if norm == 0:
+        return ", 원통면의 축"
+    for i, name in enumerate("XYZ"):
+        c = ld.vector[i] / norm
+        if abs(c) > 1 - 1e-6:  # rounding the components called (0.9, 0.44, 0) "X"
+            return f", {name} 축" if c > 0 else f", −{name} 축"
+    x, y, z = (c / norm for c in ld.vector)
+    return f", 축 방향 ({x:+.2f}, {y:+.2f}, {z:+.2f})"

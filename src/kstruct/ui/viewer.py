@@ -25,6 +25,8 @@ FIXTURE_COLORS = {
     FixtureKind.FIXED: "#2e9e5b",
     FixtureKind.ROLLER: "#2aa1b3",
     FixtureKind.PIN: "#7b5cc4",
+    FixtureKind.DISPLACEMENT: "#3c6fd6",
+    FixtureKind.ELASTIC: "#8bb04a",
 }
 LOAD_COLOR = "#e8743b"
 BOLT_COLOR = "#4a4f57"
@@ -68,7 +70,10 @@ class ModelViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.plotter)
 
-        self.plotter.set_background("#f4f6f8", top="#dfe5ec")
+        from kstruct.ui import theme
+
+        self._theme = theme.current()
+        self.plotter.set_background(self._theme.viewer_bottom, top=self._theme.viewer_top)
         self.plotter.add_axes()
         self.plotter.enable_anti_aliasing("ssaa")
 
@@ -108,6 +113,23 @@ class ModelViewer(QWidget):
 
     # --- CAD model -----------------------------------------------------------------
 
+    def apply_theme(self, t) -> None:
+        """Recolour the background, the part edges and the scalar bar text (ui.theme.Theme)."""
+        self._theme = t
+        self.plotter.set_background(t.viewer_bottom, top=t.viewer_top)
+        for actors in self._actors.values():
+            if len(actors) > 1:
+                actors[1].prop.color = t.viewer_text
+        for bar in self.plotter.scalar_bars.values():
+            for prop in (bar.GetTitleTextProperty(), bar.GetLabelTextProperty()):
+                prop.SetColor(*pv.Color(t.viewer_text).float_rgb)
+        self.plotter.render()
+
+    def set_project(self, project: Project) -> None:
+        """Swap in another project object with the same parts (undo/redo) without
+        rebuilding the scene."""
+        self._project = project
+
     def load_project(self, project: Project) -> None:
         self.plotter.clear_actors()
         self._project = project
@@ -136,7 +158,7 @@ class ModelViewer(QWidget):
                     manifold_edges=False,
                     non_manifold_edges=False,
                 ),
-                color="#2b3440",
+                color=self._theme.viewer_text,
                 line_width=1.5,
                 pickable=False,
             )
@@ -209,6 +231,31 @@ class ModelViewer(QWidget):
         if load.kind == LoadKind.GRAVITY:
             center = np.mean([m.center for m in self._meshes.values()], axis=0)
             direction = np.asarray(load.vector, dtype=float)
+        elif load.kind == LoadKind.REMOTE and load.faces and load.point is not None:
+            # the arrow at the point the force acts on, and a line to the faces
+            face_center, _ = self._face_center_normal(load.faces)
+            center = np.asarray(load.point, dtype=float)
+            direction = np.asarray(load.vector, dtype=float)
+            link = pv.Line(face_center, center)
+            self._overlay.append(
+                self.plotter.add_mesh(link, color=LOAD_COLOR, line_width=2, pickable=False)
+            )
+        elif load.kind == LoadKind.MOMENT and load.faces:
+            # moment vector as a double-headed arrow (engineering convention)
+            center, _ = self._face_center_normal(load.faces)
+            direction = np.asarray(load.vector, dtype=float)
+            norm = np.linalg.norm(direction)
+            if norm == 0:
+                return
+            direction = direction / norm
+            for back in (0.0, 0.25):
+                tip = pv.Arrow(
+                    start=center + direction * length * back,
+                    direction=direction,
+                    scale=0.75 * length,
+                )
+                self._overlay.append(self.plotter.add_mesh(tip, color=LOAD_COLOR, pickable=False))
+            return
         elif load.kind in (LoadKind.FORCE, LoadKind.PRESSURE, LoadKind.BEARING) and load.faces:
             center, normal = self._face_center_normal(load.faces)
             if load.kind == LoadKind.PRESSURE:
@@ -262,7 +309,11 @@ class ModelViewer(QWidget):
                 algorithm="dataset_surface", nonlinear_subdivision=0
             )
             self._mesh_actor = self.plotter.add_mesh(
-                surf, style="wireframe", color="#1f3a5a", line_width=0.6, pickable=False
+                surf,
+                style="wireframe",
+                color=self._theme.viewer_text,
+                line_width=0.6,
+                pickable=False,
             )
         self.plotter.render()
 
@@ -311,7 +362,7 @@ class ModelViewer(QWidget):
                 "position_y": 0.15,
                 "height": 0.7,
                 "fmt": "%.3g",
-                "color": "#2b3440",
+                "color": self._theme.viewer_text,
             },
         )
         _use_korean_font(self.plotter.scalar_bars[field.title])

@@ -80,14 +80,25 @@ def _mark_concave_edges(mesh: FEMesh, kind: np.ndarray) -> None:
     b = np.concatenate([corners[:, 1], corners[:, 2], corners[:, 0]])
     mids = np.concatenate([tris[:, 5], tris[:, 3], tris[:, 4]])  # (0,1) (1,2) (2,0)
     tri_of = np.tile(np.arange(len(tris)), 3)
+    # The surface normal of each triangle *at the shared edge*, from its quadratic shape.
+    # Flat facet normals differ by the angle an element spans on any curved face, which
+    # marked the seam of a split cylinder and the tangent line of a fillet as sharp
+    # corners (and so excused a real stress concentration as a singularity).
+    edge_normal = np.concatenate(
+        [
+            _tri6_normal(mesh.nodes[tris], L)
+            for L in ((0.5, 0.5, 0.0), (0.0, 0.5, 0.5), (0.5, 0.0, 0.5))
+        ]
+    )
     lo, hi = np.minimum(a, b), np.maximum(a, b)
     order = np.lexsort((hi, lo))
     lo, hi, mids, tri_of = lo[order], hi[order], mids[order], tri_of[order]
+    edge_normal = edge_normal[order]
     same = (lo[1:] == lo[:-1]) & (hi[1:] == hi[:-1])
     i = np.flatnonzero(same)  # pairs (i, i+1) share an edge
     t1, t2 = tri_of[i], tri_of[i + 1]
     sharp = (mesh.tri_face[t1] != mesh.tri_face[t2]) | (mesh.tri_part[t1] != mesh.tri_part[t2])
-    bend = np.einsum("ij,ij->i", normals[t1], normals[t2]) < MIN_BEND
+    bend = np.einsum("ij,ij->i", edge_normal[i], edge_normal[i + 1]) < MIN_BEND
     # the neighbour's centre lies outside the first triangle's plane -> the solid bends
     # inward (re-entrant); for a convex edge it lies behind the plane
     edge_len = np.linalg.norm(mesh.nodes[hi[i]] - mesh.nodes[lo[i]], axis=1)
@@ -96,6 +107,16 @@ def _mark_concave_edges(mesh: FEMesh, kind: np.ndarray) -> None:
     pick = sharp & bend & concave & (mesh.tri_part[t1] == mesh.tri_part[t2])
     for nodes in (lo[i][pick], hi[i][pick], mids[i][pick]):
         kind[nodes] = CONCAVE_EDGE
+
+
+def _tri6_normal(X: np.ndarray, L: tuple[float, float, float]) -> np.ndarray:
+    """Unit normals of quadratic triangles X (S, 6, 3) at barycentric point L (same side
+    as the flat normal (B - A) x (C - A)). Midside nodes 3..5 sit on edges (1,2) (0,2) (0,1)."""
+    l0, l1, l2 = L
+    d1 = np.array([-(4 * l0 - 1), 4 * l1 - 1, 0.0, 4 * l2, -4 * l2, 4 * (l0 - l1)])
+    d2 = np.array([-(4 * l0 - 1), 0.0, 4 * l2 - 1, 4 * l1, 4 * (l0 - l2), -4 * l1])
+    n = np.cross(np.einsum("k,ski->si", d1, X), np.einsum("k,ski->si", d2, X))
+    return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-300)
 
 
 def _mark_fixture_edges(project: Project, mesh: FEMesh, kind: np.ndarray) -> None:

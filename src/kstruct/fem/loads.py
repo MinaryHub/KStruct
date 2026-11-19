@@ -79,7 +79,16 @@ def bearing_forces(project: Project, mesh: FEMesh, load: Load) -> np.ndarray:
     load direction (zero on the other half), scaled so the resultant equals load.vector."""
     origin, axis = load_axis(project, load)
     force = np.asarray(load.vector, dtype=float)
-    direction = _unit(force - (force @ axis) * axis)  # only the radial component bears
+    radial_force = force - (force @ axis) * axis  # only the radial component bears
+    if np.linalg.norm(radial_force) < 0.995 * np.linalg.norm(force):
+        # the part along the hole axis would be dropped silently while the condition
+        # list and the report still showed the full vector
+        raise SolverError(
+            "베어링 하중의 방향이 구멍 축과 수직이 아닙니다. 베어링(핀)은 구멍 벽을 옆으로만 "
+            "누를 수 있으므로, 축에 수직인 방향을 고르거나 축 방향 힘은 '힘' 하중으로 따로 "
+            "지정하세요."
+        )
+    direction = _unit(radial_force)
     tris = mesh.tris[mesh.face_tris(load.faces)]
     if len(tris) == 0:
         raise SolverError("하중을 줄 면이 메시에 없습니다. 메시를 다시 만들어 주세요.")
@@ -91,7 +100,7 @@ def bearing_forces(project: Project, mesh: FEMesh, load: Load) -> np.ndarray:
     denominator = float((area * cos**2).sum())
     if denominator <= 0:
         raise SolverError("베어링 하중 방향을 마주 보는 구멍 면이 없습니다.")
-    p0 = np.linalg.norm(force) / denominator
+    p0 = np.linalg.norm(radial_force) / denominator
     traction = (p0 * cos)[:, None] * rhat  # pushes the wall outward from the axis
     f = np.zeros((mesh.n_nodes, 3))
     np.add.at(f, tris.ravel(), (weights[:, :, None] * traction[:, None, :]).reshape(-1, 3))
@@ -100,7 +109,7 @@ def bearing_forces(project: Project, mesh: FEMesh, load: Load) -> np.ndarray:
     # over the loaded nodes so the resultant equals the requested force and the reported
     # reactions balance it
     loaded = np.linalg.norm(f, axis=1)
-    error = f.sum(axis=0) - force + (force @ axis) * axis
+    error = f.sum(axis=0) - radial_force
     f -= np.outer(loaded / loaded.sum(), error)
     return f
 
@@ -117,4 +126,44 @@ def centrifugal_forces(
     radial = _radial(X.reshape(-1, 3), origin, axis).reshape(X.shape)
     f = np.zeros((mesh.n_nodes, 3))
     np.add.at(f, mesh.tets.ravel(), (w[:, :, None] * omega**2 * radial).reshape(-1, 3))
+    return f
+
+
+def rigid_face_forces(
+    mesh: FEMesh, refs: list, force: np.ndarray, moment: np.ndarray, point=None
+) -> np.ndarray:
+    """Nodal forces on the faces that add up to `force` and, about `point` (default: the
+    faces' centroid), to `moment` — the load a rigid fitting bolted to those faces would
+    pass on.
+
+    Each node takes the share w_i of its area (TRI6 consistent weights): the force part
+    is w_i F / Σw, the moment part w_i (a × r_i) with r_i from the centroid and
+    a = J⁻¹ M, J = Σ w_i (|r_i|² I − r_i r_iᵀ). That reproduces M exactly, gives zero net
+    force, and is the linear (bending / torsion) distribution of beam theory.
+    """
+    tris = mesh.tris[mesh.face_tris(refs)]
+    if len(tris) == 0:
+        raise SolverError("하중을 줄 면이 메시에 없습니다. 메시를 다시 만들어 주세요.")
+    weights, _, _ = tet10.tri6_load_weights(mesh.nodes[tris])
+    w = np.zeros(mesh.n_nodes)
+    np.add.at(w, tris.ravel(), weights.ravel())
+    nodes = np.flatnonzero(w > 0)
+    w = w[nodes]
+    x = mesh.nodes[nodes]
+    centroid = (w[:, None] * x).sum(axis=0) / w.sum()
+    total_moment = np.asarray(moment, dtype=float).copy()
+    if point is not None:  # a force acting away from the faces adds (P - c) x F
+        total_moment += np.cross(np.asarray(point, dtype=float) - centroid, force)
+    f = np.zeros((mesh.n_nodes, 3))
+    f[nodes] = np.outer(w / w.sum(), force)
+    if np.any(total_moment):
+        r = x - centroid
+        J = (w[:, None, None] * ((r * r).sum(axis=1)[:, None, None] * np.eye(3)
+             - r[:, :, None] * r[:, None, :])).sum(axis=0)  # fmt: skip
+        if np.linalg.cond(J) > 1e12:
+            raise SolverError(
+                "고른 면이 한 줄로 늘어서 있어 모멘트를 전달할 수 없습니다. 넓은 면을 고르세요."
+            )
+        a = np.linalg.solve(J, total_moment)
+        f[nodes] += w[:, None] * np.cross(a, r)
     return f

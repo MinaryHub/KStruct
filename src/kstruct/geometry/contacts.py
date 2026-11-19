@@ -56,8 +56,20 @@ def _coincident(fa, fb, tol: float) -> bool:
     return False
 
 
-def _overlap_area(fa, fb) -> float:
-    common = BRepAlgoAPI_Common(fa, fb)
+def _overlap_area(fa, fb, tol: float) -> float:
+    """Area the two faces share. The boolean works within `tol` (fuzzy value): an exact
+    one found nothing for faces a micrometre apart, although every other check here
+    accepts gaps up to the tolerance."""
+    from OCP.collections import List_TopoDS_Shape
+
+    common = BRepAlgoAPI_Common()
+    args, tools = List_TopoDS_Shape(), List_TopoDS_Shape()
+    args.Append(fa)
+    tools.Append(fb)
+    common.SetArguments(args)
+    common.SetTools(tools)
+    common.SetFuzzyValue(tol)
+    common.Build()
     if not common.IsDone():
         return 0.0
     props = GProp_GProps()
@@ -92,7 +104,7 @@ def find_touching_faces(project: Project, tol: float | None = None) -> list[Conn
                     if not dist.IsDone() or dist.Value() > tol:
                         continue
                     area_a, area_b = face_info(fa).area, face_info(fb).area
-                    if _overlap_area(fa, fb) < 1e-3 * min(area_a, area_b):
+                    if _overlap_area(fa, fb, tol) < 1e-3 * min(area_a, area_b):
                         continue  # only an edge or corner touches
                     a, b = FaceRef(pa.id, ia), FaceRef(pb.id, ib)
                     if area_a < area_b:

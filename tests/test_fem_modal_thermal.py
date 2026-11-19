@@ -71,7 +71,9 @@ def test_linear_conduction():
     expected = 100.0 * (1 - mesh.nodes[:, 0] / L)
     assert r.temperature == pytest.approx(expected, abs=1e-8)
     q = 50.0 * 100e-6 * 100.0 / 0.1  # k A dT / L in W (A, L in metres)
-    assert r.heat_out == pytest.approx(0.0, abs=1e-6)  # what enters one end leaves the other
+    # what enters at the hot end leaves at the cold end (reported separately, not netted)
+    assert r.heat_in == pytest.approx(q, rel=1e-6)
+    assert r.heat_out == pytest.approx(q, rel=1e-6)
     assert r.heat_flux[:, 0] == pytest.approx(q / 100e-6, rel=1e-6)  # W/m²
 
 
@@ -168,7 +170,9 @@ def test_radiation_end_matches_the_stefan_boltzmann_balance():
     assert r.temperature[end] == pytest.approx(T2, abs=0.05)
     assert r.iterations > 1
     q = 50.0 * (T1 - T2) / (L / 1000) * 100e-6  # W through the bar
-    assert r.heat_out == pytest.approx(0.0, abs=1e-3 * q)  # in at the hot end, out by radiation
+    # in at the hot end, out by radiation
+    assert r.heat_in == pytest.approx(q, rel=1e-3)
+    assert r.heat_out == pytest.approx(q, rel=1e-3)
 
 
 def test_temperature_dependent_conductivity_bends_the_profile():

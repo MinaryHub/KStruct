@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.sparse as sp
+import scipy.sparse.csgraph  # noqa: F401  (sp.csgraph)
+import scipy.sparse.linalg  # noqa: F401  (sp.linalg)
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
 from scipy.spatial import cKDTree
@@ -36,6 +38,22 @@ class Constraints:
     # per fixture, for reactions: DOFs it eliminated, and its range of penalty equations
     fixture_dofs: list[np.ndarray] = field(default_factory=list)
     fixture_equations: list[range] = field(default_factory=list)
+    # prescribed displacement of the fixed DOFs (mm); zero for ordinary fixed DOFs
+    values: np.ndarray | None = None
+    # elastic supports: (fixture index, stiffness matrix 3N x 3N) per support
+    springs: list[tuple[int, sp.csr_matrix]] = field(default_factory=list)
+
+    def prescribed(self) -> np.ndarray:
+        """(3N,) displacement imposed on the fixed DOFs (all zero without DISPLACEMENT)."""
+        return self.values if self.values is not None else np.zeros(len(self.fixed))
+
+    def spring_matrix(self) -> sp.csr_matrix:
+        """Sum of the elastic supports' stiffness (added to K, not a constraint)."""
+        n = len(self.fixed)
+        total = sp.csr_matrix((n, n))
+        for _, K in self.springs:
+            total = total + K
+        return total
 
     def add_equation(self, dofs: np.ndarray, coefs: np.ndarray) -> None:
         """Penalty-enforce sum(coefs * u[dofs]) == 0."""
@@ -51,6 +69,129 @@ class Constraints:
             force = -alpha * c * (c @ u[dofs])
             np.add.at(total, dofs % 3, force)
         return total
+
+    def equation_matrix(self) -> sp.csr_matrix:
+        """(m, 3N) one row per penalty equation, with the fixed DOFs' columns zeroed."""
+        n_dof = len(self.fixed)
+        if not self.penalty_rows:
+            return sp.csr_matrix((0, n_dof))
+        sizes = np.array([len(d) for d in self.penalty_rows])
+        rows = np.repeat(np.arange(len(sizes)), sizes)
+        cols = np.concatenate(self.penalty_rows)
+        vals = np.concatenate(self.penalty_coefs) * ~self.fixed[cols]
+        C = sp.csr_matrix((vals, (rows, cols)), shape=(len(sizes), n_dof))
+        C.eliminate_zeros()
+        return C
+
+    def elimination(self) -> tuple[sp.csr_matrix, np.ndarray] | None:
+        """(T, unknowns): T (3N, k) with u = T û satisfying every constraint exactly, and
+        the DOF each û stands for. Fixed DOFs are zero rows, each equation removes one
+        slave DOF (u_s = -Σ c_j u_j / c_s), the other free DOFs are the unknowns.
+        Tᵀ K T is then positive definite without penalty terms, which iterative solvers
+        need.
+
+        Returns None when the equations cannot be untangled cheaply (a slave of one tie
+        is the master of another over a large area, or dependent equations); the caller
+        then keeps the penalty formulation.
+        """
+        n_dof = len(self.fixed)
+        free = ~self.fixed
+        values = self.prescribed()
+        if np.any(values) and self.penalty_rows:
+            moved = np.flatnonzero(values)
+            if any(np.isin(dofs, moved).any() for dofs in self.penalty_rows):
+                return None  # an equation through a moved DOF is not homogeneous
+        C = self.equation_matrix()
+        kept = np.flatnonzero(np.diff(C.indptr) > 0)  # equations on fixed DOFs only: void
+        C = C[kept]
+        m = C.shape[0]
+        if m == 0:
+            masters = np.flatnonzero(free)
+            T = sp.csr_matrix(
+                (np.ones(len(masters)), (masters, np.arange(len(masters)))),
+                shape=(n_dof, len(masters)),
+            )
+            return T, masters
+        # pivot: the DOF the equation was written for (listed first: the tied node's own
+        # DOF) when it is free, unused and not small; otherwise the largest coefficient
+        is_slave = np.zeros(n_dof, dtype=bool)
+        slave = np.empty(m, dtype=np.int64)
+        for i, eq in enumerate(kept):
+            lo, hi = C.indptr[i], C.indptr[i + 1]
+            cols, vals = C.indices[lo:hi], np.abs(C.data[lo:hi])
+            vals = np.where(is_slave[cols], -1.0, vals)
+            k = int(np.argmax(vals))
+            if vals[k] < 1e-8:
+                return None
+            first = self.penalty_rows[eq][0]
+            at = np.flatnonzero(cols == first)
+            if len(at) and vals[at[0]] >= 0.5 * vals[k]:
+                k = int(at[0])
+            slave[i] = cols[k]
+            is_slave[cols[k]] = True
+        masters = np.flatnonzero(free & ~is_slave)
+        Css = C[:, slave].tocsc()  # (m, m): identity-like unless equations share slaves
+        Csm = C[:, masters].tocsr()
+        pattern = (Css != 0).astype(np.int8)
+        n_comp, label = sp.csgraph.connected_components(pattern, directed=False)
+        diag = Css.diagonal()
+        if n_comp == m:  # every equation has its own slave: plain division
+            X = sp.diags(1.0 / diag) @ Csm
+        else:
+            order = np.argsort(label, kind="stable")
+            bounds = np.flatnonzero(np.diff(label[order])) + 1
+            groups = np.split(order, bounds)
+            if max(len(g) for g in groups) > 12:
+                return None
+            # block-diagonal inverse, one small dense block per coupled group
+            rows, cols, vals = [], [], []
+            dense = Css.tocsr()
+            for g in groups:
+                if len(g) == 1:
+                    block = np.array([[1.0 / diag[g[0]]]])
+                else:
+                    block = dense[g][:, g].toarray()
+                    if np.linalg.cond(block) > 1e6:
+                        return None
+                    block = np.linalg.inv(block)
+                rows.append(np.repeat(g, len(g)))
+                cols.append(np.tile(g, len(g)))
+                vals.append(block.ravel())
+            inv = sp.csr_matrix(
+                (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(m, m)
+            )
+            X = inv @ Csm
+        if X.nnz and np.abs(X.data).max() > 1e3:
+            return None
+        k = len(masters)
+        identity = sp.csr_matrix((np.ones(k), (masters, np.arange(k))), shape=(n_dof, k))
+        X = X.tocoo()
+        slaves = sp.csr_matrix((-X.data, (slave[X.row], X.col)), shape=(n_dof, k))
+        return (identity + slaves).tocsr(), masters
+
+    def multiplier_forces(self, residual: np.ndarray) -> np.ndarray | None:
+        """(m, 3) force each penalty equation exerts on the structure when the constraints
+        hold exactly: K u - f = Cᵀ μ on the free DOFs, solved for μ in the least-squares
+        sense. None when the equations are dependent."""
+        C = self.equation_matrix()
+        m = C.shape[0]
+        if m == 0:
+            return np.zeros((0, 3))
+        r = residual * ~self.fixed
+        G = (C @ C.T).tocsc()
+        used = G.diagonal() > 0
+        mu = np.zeros(m)
+        try:
+            idx = np.flatnonzero(used)
+            mu[idx] = sp.linalg.spsolve(G[idx][:, idx], (C @ r)[idx])
+        except RuntimeError:
+            return None
+        if not np.all(np.isfinite(mu)):
+            return None
+        forces = np.zeros((m, 3))
+        Cc = C.tocoo()
+        np.add.at(forces, (Cc.row, Cc.col % 3), Cc.data * mu[Cc.row])
+        return forces
 
     def penalty_matrix(self, n_dof: int, stiffness_scale: float) -> sp.csr_matrix:
         if not self.penalty_rows:
@@ -102,6 +243,26 @@ def build_constraints(
         if fixture.kind == FixtureKind.FIXED:
             c.fixed[(nodes[:, None] * 3 + np.arange(3)).ravel()] = True
 
+        elif fixture.kind == FixtureKind.DISPLACEMENT:
+            if all(d is None for d in fixture.displacement):
+                raise ConstraintError("강제 변위에 움직일 방향(X·Y·Z 중 하나 이상)을 지정하세요.")
+            if c.values is None:
+                c.values = np.zeros(mesh.n_nodes * 3)
+            for axis, d in enumerate(fixture.displacement):
+                if d is None:
+                    continue
+                dofs = nodes * 3 + axis
+                fresh = dofs[~c.fixed[dofs]]  # a DOF already held keeps its first value
+                c.fixed[fresh] = True
+                c.values[fresh] = float(d)
+
+        elif fixture.kind == FixtureKind.ELASTIC:
+            if fixture.stiffness <= 0:
+                raise ConstraintError("탄성 지지의 강성은 0보다 커야 합니다.")
+            c.springs.append(
+                (len(c.fixture_dofs), elastic_support(mesh, fixture.faces, fixture.stiffness))
+            )
+
         elif fixture.kind == FixtureKind.ROLLER:
             for ref in fixture.faces:
                 surf = _surface_kind(project, ref)
@@ -141,6 +302,47 @@ def build_constraints(
             continue
         add_bonded(c, mesh, connection)
     return c
+
+
+def elastic_support(mesh: FEMesh, refs: list[FaceRef], stiffness: float) -> sp.csr_matrix:
+    """Spring foundation on the faces, acting along each triangle's normal: a total
+    stiffness `stiffness` (N/mm) spread evenly over the area. Consistent matrix
+    k/A · ∫ N_i N_j dA · n nᵀ, so a uniform push of the faces by δ costs exactly k·δ."""
+    tri_idx = mesh.face_tris(refs)
+    if len(tri_idx) == 0:
+        raise ConstraintError("탄성 지지할 면이 메시에 없습니다. 메시를 다시 만들어 주세요.")
+    tris = mesh.tris[tri_idx]
+    X = mesh.nodes[tris]
+    _, normal, area = tet10.tri6_load_weights(X)
+    per_area = stiffness / area.sum()
+    # ∫ N_i N_j dA on a flat TRI6 (exact): degree-4 integrand, 6-point rule
+    M = _tri6_mass(area)  # (S, 6, 6)
+    nn = np.einsum("si,sj->sij", normal, normal)  # (S, 3, 3)
+    blocks = per_area * np.einsum("sab,sij->saibj", M, nn).reshape(len(tris), 18, 18)
+    dofs = (tris[:, :, None] * 3 + np.arange(3)).reshape(len(tris), 18)
+    rows = np.repeat(dofs, 18, axis=1).ravel()
+    cols = np.tile(dofs, (1, 18)).ravel()
+    n = mesh.n_nodes * 3
+    return sp.csr_matrix((blocks.ravel(), (rows, cols)), shape=(n, n))
+
+
+def _tri6_mass(area: np.ndarray) -> np.ndarray:
+    """∫ N_i N_j dA for flat TRI6 triangles of the given areas (S, 6, 6), node order
+    corners 0..2 then midsides (1,2) (0,2) (0,1)."""
+    # standard result for the quadratic triangle (corner-corner 6, corner-own-opposite
+    # midside -4, corner-corner off -1, midside 32, midside off 16) / 180
+    m = np.array(
+        [
+            [6, -1, -1, -4, 0, 0],
+            [-1, 6, -1, 0, -4, 0],
+            [-1, -1, 6, 0, 0, -4],
+            [-4, 0, 0, 32, 16, 16],
+            [0, -4, 0, 16, 32, 16],
+            [0, 0, -4, 16, 16, 32],
+        ],
+        dtype=float,
+    )
+    return area[:, None, None] * m[None] / 180.0
 
 
 # --- bonded (tie) connections -------------------------------------------------------

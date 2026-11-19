@@ -45,3 +45,5 @@ Root: HKA; Subkey: "Software\Classes\KStruct.Project\shell\open\command"; ValueT
 
 [Run]
 Filename: "{app}\KStruct.exe"; Description: "{cm:LaunchProgram,KStruct}"; Flags: nowait postinstall skipifsilent
+; in-app update (setup run with /SILENT): start the new version again when done
+Filename: "{app}\KStruct.exe"; Flags: nowait skipifnotsilent

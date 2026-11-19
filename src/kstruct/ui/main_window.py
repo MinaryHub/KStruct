@@ -2,25 +2,31 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
-    QListWidget,
+    QLabel,
     QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QToolButton,
@@ -33,6 +39,7 @@ from kstruct.fem import ConstraintError, MeshingError, SolverError, generate_mes
 from kstruct.fem.buckling import BucklingResult, solve_buckling
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.modal import ModalResult, solve_modal
+from kstruct.fem.nonlinear import unsupported as nonlinear_unsupported
 from kstruct.fem.static import StaticResult, solve_cases
 from kstruct.fem.thermal import ThermalResult, solve_thermal
 from kstruct.geometry import GeometryImportError, load_cad
@@ -50,23 +57,27 @@ from kstruct.model import (
 from kstruct.project_io import (
     SUFFIX,
     ProjectFileError,
+    from_document,
     load_project,
     load_project_mesh,
     save_project,
+    to_document,
 )
 from kstruct.report.summary import (
     VERDICT_STYLE,
     CaseOverview,
     Summary,
     compare_cases,
+    format_duration,
     summarize,
     summarize_buckling,
     summarize_modal,
     summarize_thermal,
 )
-from kstruct.ui import prefs, steps
+from kstruct.ui import prefs, steps, theme
 from kstruct.ui.dialogs import AboutDialog, save_bug_report
-from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
+from kstruct.ui.help import HelpDialog, topic
+from kstruct.ui.updates import UpdateChecker, UpdateDialog, open_contact, open_sponsor
 from kstruct.ui.viewer import ModelViewer, ResultField
 from kstruct.ui.worker import Cancelled, JobHandle, run_job
 from kstruct.units import fmt, quantity, system_of
@@ -78,7 +89,13 @@ CAD_FILTER = (
     "모든 파일 (*)"
 )
 PROJECT_FILTER = f"KStruct 프로젝트 (*{SUFFIX})"
+MAX_UNDO = 50  # steps kept in the undo history
 SAMPLES = {"bracket": l_bracket, "two_plates": two_plates, "bolted": bolted_plates}
+SAMPLE_PART_NAMES = {
+    "bracket": ["브래킷"],
+    "two_plates": ["아래 판", "위 판"],
+    "bolted": ["아래 판", "위 판"],
+}
 
 log = logging.getLogger("kstruct.ui")
 STEP_OPEN, STEP_MATERIAL, STEP_FIXTURE, STEP_LOAD, STEP_MESH, STEP_SOLVE, STEP_RESULT = range(7)
@@ -147,8 +164,17 @@ class MainWindow(QMainWindow):
         self.materials: dict = {}
         self._busy = False
         self._job: JobHandle | None = None  # the running mesh / solve job
+        # undo history: project documents (project_io.to_document as JSON text; the part
+        # shapes never change and stay with the parts). _baseline is the current state.
+        self._history: list[str] = []
+        self._future: list[str] = []
+        self._baseline: str | None = None
+        self._restoring = False
 
+        app = QApplication.instance()
+        self.theme = theme.apply(app, prefs.theme()) if app is not None else theme.current()
         self.viewer = ModelViewer()
+        self.viewer.apply_theme(self.theme)
         self.viewer.selection_changed.connect(self._selection_changed)
         self.viewer.probed.connect(lambda text: self.panels[STEP_RESULT].probe.setText(text))
 
@@ -166,9 +192,14 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_side())
-        splitter.addWidget(self.viewer)
+        # right pane: a welcome page until a model is open, then the 3D view
+        self.pane = QStackedWidget()
+        self.pane.addWidget(self._build_welcome())
+        self.pane.addWidget(self.viewer)
+        splitter.addWidget(self.pane)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([380, 1060])
+        splitter.setSizes([400, 1040])
+        splitter.setHandleWidth(1)
         self.setCentralWidget(splitter)
         self._build_toolbar()
         self._restore_window_state(splitter)
@@ -183,69 +214,269 @@ class MainWindow(QMainWindow):
 
     def _build_side(self) -> QWidget:
         side = QWidget()
+        side.setObjectName("sidePanel")
+        side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        side.setMinimumWidth(340)
         layout = QVBoxLayout(side)
-        self.nav = QListWidget()
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(0)
+
+        # the seven steps in a row: number badge, tick when done (theme.StepNav)
+        self.nav = theme.StepNav()
         for name, key in zip(STEP_NAMES, STEP_KEYS, strict=True):
             item = QListWidgetItem(name)
-            item.setToolTip(topic(key).short)
+            item.setToolTip(f"{name} — {topic(key).short}")
             self.nav.addItem(item)
-        self.nav.setMaximumHeight(7 * 22 + 8)
         self.nav.currentRowChanged.connect(self._nav_changed)
-        layout.addWidget(with_help(self.nav, "help.mode"))
+        nav_box = QWidget()
+        nav_layout = QHBoxLayout(nav_box)
+        nav_layout.setContentsMargins(6, 0, 6, 4)
+        nav_layout.addWidget(self.nav)
+        layout.addWidget(nav_box)
+        rule = QFrame()
+        rule.setFrameShape(QFrame.Shape.HLine)
+        rule.setStyleSheet(f"color: {self.theme.border};")
+        self._rule = rule
+        layout.addWidget(rule)
 
         self.stack = QStackedWidget()
         for panel in self.panels:
+            panel.layout_.setContentsMargins(16, 14, 12, 12)
+            panel.layout_.setSpacing(8)
+            # long option texts must not push the panel wider than the side bar
+            for combo in panel.findChildren(QComboBox):
+                combo.setSizeAdjustPolicy(
+                    QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+                )
+                combo.setMinimumContentsLength(6)
             scroll = QScrollArea()
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             scroll.setWidget(panel)
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.Shape.NoFrame)
             self.stack.addWidget(scroll)
         layout.addWidget(self.stack, 1)
 
-        buttons = QHBoxLayout()
-        self.prev_btn = QPushButton("◀ 이전")
-        self.next_btn = QPushButton("다음 ▶")
+        footer = QWidget()
+        footer.setObjectName("stepFooter")
+        footer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        buttons = QHBoxLayout(footer)
+        buttons.setContentsMargins(16, 10, 16, 10)
+        self.prev_btn = QPushButton("이전")
+        self.next_btn = QPushButton("다음 단계")
+        theme.mark(self.next_btn, primary="true")
         self.prev_btn.clicked.connect(lambda: self._go(self.nav.currentRow() - 1))
         self.next_btn.clicked.connect(lambda: self._go(self.nav.currentRow() + 1))
         buttons.addWidget(self.prev_btn)
-        buttons.addWidget(self.next_btn)
-        layout.addLayout(buttons)
+        buttons.addWidget(self.next_btn, 1)
+        layout.addWidget(footer)
         return side
+
+    def _build_welcome(self) -> QWidget:
+        """Shown instead of an empty 3D view: what the program does and how to start."""
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = QFrame()
+        card.setObjectName("welcomeCard")
+        card.setFixedWidth(560)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(36, 32, 36, 28)
+        box.setSpacing(10)
+        title = QLabel("부품이 견디는지 확인해 보세요")
+        title.setObjectName("welcomeTitle")
+        box.addWidget(title)
+        intro = QLabel(
+            "CAD에서 만든 부품을 열고 재료·고정·하중을 고르면, 안전한지와 얼마나 휘는지를 "
+            "색과 쉬운 말로 알려 드립니다. 왼쪽의 7단계를 차례로 따라가면 됩니다."
+        )
+        intro.setWordWrap(True)
+        intro.setProperty("role", "hint")
+        box.addWidget(intro)
+        box.addSpacing(8)
+        row = QHBoxLayout()
+        open_model = QPushButton("모델 열기…")
+        theme.mark(open_model, primary="true")
+        open_model.setMinimumHeight(36)
+        open_model.clicked.connect(self.open_file)
+        open_project = QPushButton("프로젝트 열기…")
+        open_project.setMinimumHeight(36)
+        open_project.clicked.connect(self.open_project)
+        row.addWidget(open_model, 1)
+        row.addWidget(open_project, 1)
+        box.addLayout(row)
+        formats = QLabel("STEP · IGES · STL · OBJ · FBX · glTF · 3MF 파일을 열 수 있습니다.")
+        formats.setProperty("role", "hint")
+        box.addWidget(formats)
+
+        box.addSpacing(10)
+        section = QLabel("예제로 시작하기")
+        section.setProperty("role", "section")
+        box.addWidget(section)
+        samples = QHBoxLayout()
+        for label, name, tip in (
+            ("브래킷", "bracket", "부품 하나의 강도 확인"),
+            ("판 2장", "two_plates", "여러 부품: 접합과 접촉"),
+            ("볼트 체결", "bolted", "볼트 체결력과 안전율"),
+        ):
+            b = QPushButton(label)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, n=name: self.open_sample(n))
+            samples.addWidget(b)
+        box.addLayout(samples)
+
+        self._welcome_recent_title = QLabel("최근 파일")
+        self._welcome_recent_title.setProperty("role", "section")
+        box.addWidget(self._welcome_recent_title)
+        self._welcome_recent = QVBoxLayout()
+        self._welcome_recent.setSpacing(0)
+        box.addLayout(self._welcome_recent)
+        outer.addWidget(card)
+        self._fill_welcome_recent()
+        return page
+
+    def _fill_welcome_recent(self) -> None:
+        while self._welcome_recent.count():
+            item = self._welcome_recent.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        files = prefs.recent_files()[:5]
+        self._welcome_recent_title.setVisible(bool(files))
+        for path in files:
+            link = QPushButton(path.name)
+            link.setFlat(True)
+            link.setToolTip(str(path))
+            link.setCursor(Qt.CursorShape.PointingHandCursor)
+            link.clicked.connect(lambda _=False, p=path: self.load(p))
+            self._welcome_recent.addWidget(link)
+
+    def _show_pane(self) -> None:
+        """Welcome page without a project, the 3D view with one."""
+        if self.project is None:
+            self._fill_welcome_recent()
+        self.pane.setCurrentIndex(0 if self.project is None else 1)
 
     def _build_toolbar(self) -> None:
         bar = self.addToolBar("기본")
         bar.setMovable(False)
+        bar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
+        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        bar.setIconSize(QSize(18, 18))
+        name = QLabel("KStruct")
+        name.setObjectName("appName")
+        bar.addWidget(name)
+        self._icons: list[tuple[object, str]] = []  # (action or button, icon name)
 
-        def action(text, slot, key=None, shortcut=None):
+        def action(text, slot, key=None, shortcut=None, icon=None, icon_only=False):
             a = QAction(text, self)
             if shortcut:
                 a.setShortcut(shortcut)
             if key:
                 a.setToolTip(topic(key).short)
+            if icon:
+                a.setIcon(theme.icon(icon))
+                self._icons.append((a, icon))
             a.triggered.connect(slot)
             bar.addAction(a)
+            if icon_only:
+                bar.widgetForAction(a).setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             return a
 
-        action("새로 시작", self.new_project, "project.new")
-        action("모델 열기", self.open_file, "step.open", QKeySequence.StandardKey.Open)
-        action("프로젝트 열기", self.open_project, "project.open")
-        action("프로젝트 저장", self.save_project, "project.save", QKeySequence.StandardKey.Save)
+        action("새로 시작", self.new_project, "project.new", icon="new")
+        action("모델 열기", self.open_file, "step.open", QKeySequence.StandardKey.Open, "open")
+        action("프로젝트 열기", self.open_project, "project.open", icon="project")
+        action("저장", self.save_project, "project.save", QKeySequence.StandardKey.Save, "save")
+        self.undo_action = action(
+            "실행 취소", self.undo, "project.undo", QKeySequence.StandardKey.Undo, "undo", True
+        )
+        self.redo_action = action(
+            "다시 실행", self.redo, "project.undo", QKeySequence.StandardKey.Redo, "redo", True
+        )
+        self._update_undo_actions()
         self.recent_button = QToolButton()
         self.recent_button.setText("최근 파일")
+        self.recent_button.setIcon(theme.icon("recent"))
+        self.recent_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._icons.append((self.recent_button, "recent"))
         self.recent_button.setToolTip(topic("project.recent").short)
         self.recent_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.recent_menu = QMenu(self.recent_button)
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
         self.recent_button.setMenu(self.recent_menu)
         bar.addWidget(self.recent_button)
-        bar.addWidget(HelpButton("project.save"))
         bar.addSeparator()
-        action("화면 맞춤", self.viewer.fit, "view.fit", "F")
-        bar.addWidget(HelpButton("view.fit"))
-        bar.addSeparator()
-        action("사용 안내", lambda: HelpDialog("help.mode", self).exec(), "help.mode", "F1")
-        action("문제 보고", self.report_problem, "help.report")
-        action("정보", lambda: AboutDialog(self).exec(), "help.about")
+        action("화면 맞춤", self.viewer.fit, "view.fit", "F", "fit")
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        bar.addWidget(spacer)
+        # shown only when the start-up check found a newer release
+        self.update_action = action("업데이트", self.show_update, "help.update", icon="update")
+        self.update_action.setVisible(False)
+        self._pending_release = None
+        action(
+            "사용 안내",
+            lambda: HelpDialog("help.mode", self).exec(),
+            "help.mode",
+            "F1",
+            "help",
+            True,
+        )
+        action(
+            "문의하기", lambda: open_contact(self), "help.contact", icon="contact", icon_only=True
+        )
+        action("문제 보고", self.report_problem, "help.report", icon="report", icon_only=True)
+        action("후원하기", lambda: open_sponsor(self), "help.sponsor", icon="heart", icon_only=True)
+        action("화면 색", self.toggle_theme, "view.theme", icon="theme", icon_only=True)
+        self.info_button = QToolButton()
+        self.info_button.setIcon(theme.icon("info"))
+        self._icons.append((self.info_button, "info"))
+        self.info_button.setToolTip(topic("help.about").short)
+        self.info_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        info_menu = QMenu(self.info_button)
+        info_menu.addAction("KStruct 정보", lambda: AboutDialog(self).exec())
+        info_menu.addAction("사용 안내", lambda: HelpDialog("help.mode", self).exec())
+        info_menu.addAction("업데이트 확인…", self.show_update)
+        info_menu.addSeparator()
+        info_menu.addAction("문의하기 (GitHub)", lambda: open_contact(self))
+        info_menu.addAction("문제 보고 (로그·프로젝트 묶기)", self.report_problem)
+        info_menu.addAction("후원하기 (GitHub Sponsors)", lambda: open_sponsor(self))
+        self.info_button.setMenu(info_menu)
+        bar.addWidget(self.info_button)
+
+    # --- updates ---------------------------------------------------------------------
+
+    def check_updates_quietly(self) -> None:
+        """Start-up check (once a day, can be turned off in the update dialog)."""
+        self._update_checker = UpdateChecker(self)
+        self._update_checker.available.connect(self._update_available)
+        self._update_checker.start()
+
+    def _update_available(self, release) -> None:
+        self._pending_release = release
+        self.update_action.setText(f"업데이트 {release.version}")
+        self.update_action.setVisible(True)
+        self.statusBar().showMessage(
+            f"새 버전 {release.version}이 있습니다. 툴바의 '업데이트'를 누르세요.", 15000
+        )
+
+    def show_update(self) -> None:
+        UpdateDialog(self, self._pending_release).exec()
+
+    def toggle_theme(self) -> None:
+        """Switch between the light and the dark look and remember the choice."""
+        name = "dark" if self.theme.name == "light" else "light"
+        prefs.set_theme(name)
+        self.theme = theme.apply(QApplication.instance(), name)
+        for holder, icon_name in self._icons:
+            holder.setIcon(theme.icon(icon_name))
+        self._rule.setStyleSheet(f"color: {self.theme.border};")
+        self.viewer.apply_theme(self.theme)
+        self.nav.viewport().update()
+        if self.project is not None:
+            self.panels[self.nav.currentRow()].refresh()
+        if self.result is not None and self.nav.currentRow() == STEP_RESULT:
+            self.show_result()
 
     def _fill_recent_menu(self) -> None:
         self.recent_menu.clear()
@@ -352,14 +583,18 @@ class MainWindow(QMainWindow):
             box.setWindowTitle("예상하지 못한 오류")
             box.setText(
                 "프로그램 안에서 오류가 났습니다. 작업 내용은 '프로젝트 저장'으로 보관할 수 "
-                "있습니다.\n\n'문제 보고'를 누르면 로그와 프로젝트를 묶어 저장할 수 있습니다."
+                "있습니다.\n\n'문제 보고'를 누르면 로그와 프로젝트를 묶어 저장할 수 있고, "
+                "'문의하기'를 누르면 오류 내용을 채운 문의(GitHub 이슈)를 엽니다."
             )
             box.setDetailedText(detail)
             report = box.addButton("문제 보고", QMessageBox.ButtonRole.ActionRole)
+            contact = box.addButton("문의하기", QMessageBox.ButtonRole.ActionRole)
             box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
             box.exec()
             if box.clickedButton() is report:
                 self.report_problem(detail)
+            elif box.clickedButton() is contact:
+                open_contact(self, detail)
 
         sys.excepthook = hook
 
@@ -386,6 +621,24 @@ class MainWindow(QMainWindow):
             return self.result is not None
         return True
 
+    def _step_done(self, step: int) -> bool:
+        """Whether the step's input is complete (ticked in the navigator)."""
+        p = self.project
+        if p is None:
+            return False
+        if step == STEP_OPEN:
+            return bool(p.parts)
+        if step == STEP_MATERIAL:
+            visible = p.visible_parts()
+            return bool(visible) and all(part.material_id for part in visible)
+        if step == STEP_FIXTURE:
+            return bool(p.fixtures)
+        if step == STEP_LOAD:
+            return bool(p.loads) or any(b.preload for b in p.bolts)
+        if step == STEP_MESH:
+            return self.mesh is not None
+        return self.result is not None
+
     def _update_nav(self) -> None:
         for i in range(self.nav.count()):
             item = self.nav.item(i)
@@ -394,6 +647,7 @@ class MainWindow(QMainWindow):
                 item.setFlags(flags | Qt.ItemFlag.ItemIsEnabled)
             else:
                 item.setFlags(flags & ~Qt.ItemFlag.ItemIsEnabled)
+            item.setData(theme.STEP_DONE, self._step_done(i))
         row = self.nav.currentRow()
         self.prev_btn.setEnabled(row > 0)
         self.next_btn.setEnabled(row < STEP_RESULT and self._step_available(row + 1))
@@ -436,6 +690,13 @@ class MainWindow(QMainWindow):
         self._annotate()
         self.panels[STEP_OPEN].refresh()
         self._update_nav()
+        # a new model starts at step 1: staying on step 7 left the previous model's verdict
+        # card on screen while the navigator had already disabled the result step
+        if self.nav.currentRow() != STEP_OPEN:
+            self._go(STEP_OPEN)
+        self.stack.setCurrentIndex(STEP_OPEN)
+        self._show_pane()
+        self._reset_history()
         name = path.name if path else (project.source_path.name if project.source_path else "")
         self.setWindowTitle(f"KStruct — {name}" if name else "KStruct — 부품 강도 해석")
 
@@ -453,6 +714,9 @@ class MainWindow(QMainWindow):
         self.panels[STEP_OPEN].parts.clear()
         self._go(STEP_OPEN)
         self._update_nav()
+        self._show_pane()
+        self._reset_history()
+        self.setWindowTitle("KStruct — 부품 강도 해석")
 
     def open_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "모델 열기", prefs.last_dir(), CAD_FILTER)
@@ -463,6 +727,12 @@ class MainWindow(QMainWindow):
         path = write_step(SAMPLES[name](), Path(tempfile.gettempdir()) / f"kstruct_{name}.step")
         self._sample_files.add(path)
         self.load(path)
+        names = SAMPLE_PART_NAMES.get(name, [])
+        if self.project is not None and len(names) == len(self.project.parts):
+            for part, label in zip(self.project.parts, names, strict=True):
+                part.name = label  # not the temporary file's name "kstruct_bracket"
+            self.panels[STEP_OPEN].refresh()
+            self._reset_history()
 
     def load(self, path: Path) -> None:
         if path.suffix.lower() == SUFFIX:
@@ -478,6 +748,7 @@ class MainWindow(QMainWindow):
         self._set_project(project)
         if len(project.parts) > 1:
             self.detect_connections(quiet=True)
+        self._reset_history()  # the automatic connections are part of the opened state
         self._dirty = True  # a fresh import has no project file yet
         if path not in self._sample_files:  # built-in samples are not "recent files"
             prefs.remember_file(path)
@@ -541,6 +812,7 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self.mesh = None
         self._invalidate_result()
+        self._record()
 
     def _invalidate_result(self) -> None:
         if self.summary is not None:  # remember what the run being discarded came to
@@ -553,6 +825,93 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self._invalidate_result()
         self._annotate()
+        self._record()
+
+    # --- undo / redo -----------------------------------------------------------------
+
+    def _document(self) -> str:
+        return json.dumps(to_document(self.project), ensure_ascii=False, sort_keys=True)
+
+    def _reset_history(self) -> None:
+        """A project was opened or closed: nothing to undo yet."""
+        self._history.clear()
+        self._future.clear()
+        self._baseline = self._document() if self.project is not None else None
+        self._update_undo_actions()
+
+    def _record(self) -> None:
+        """Remember the state before the change that just happened (called after every
+        edit; edits that did not change the project document are ignored)."""
+        if self.project is None or self._restoring:
+            return
+        doc = self._document()
+        if doc == self._baseline:
+            return
+        if self._baseline is not None:
+            self._history.append(self._baseline)
+            del self._history[:-MAX_UNDO]
+        self._future.clear()
+        self._baseline = doc
+        self._update_undo_actions()
+
+    def _update_undo_actions(self) -> None:
+        if hasattr(self, "undo_action"):
+            self.undo_action.setEnabled(bool(self._history))
+            self.redo_action.setEnabled(bool(self._future))
+
+    def undo(self) -> None:
+        self._step_history(self._history, self._future, "실행 취소했습니다.")
+
+    def redo(self) -> None:
+        self._step_history(self._future, self._history, "다시 실행했습니다.")
+
+    def _step_history(self, source: list[str], target: list[str], message: str) -> None:
+        if self.project is None or self._busy:
+            return
+        self._record()  # an edit that has not reported itself yet
+        if not source:
+            return
+        target.append(self._baseline)
+        self._restore(source.pop())
+        self.statusBar().showMessage(message)
+
+    def _restore(self, doc: str) -> None:
+        """Make the project what the document says (fixtures, loads, materials, settings,
+        hidden parts); the mesh survives when nothing it depends on changed."""
+        old = self.project
+        project = from_document(json.loads(doc), {p.id: p.shape for p in old.parts})
+
+        def mesh_inputs(p: Project):
+            return (
+                p.mesh_quality,
+                [(r.faces, r.size) for r in p.mesh_refinements],
+                [part.id for part in p.parts if part.visible],
+            )
+
+        self._restoring = True
+        try:
+            self.project = project
+            self.viewer.set_project(project)
+            for part in project.parts:
+                self.viewer.set_part_visible(part.id, part.visible)
+            if mesh_inputs(old) != mesh_inputs(project):
+                self.mesh = None
+            self._dirty = True
+            self._invalidate_result()
+            self._annotate()
+            self.panels[STEP_OPEN].refresh()
+            row = self.nav.currentRow()
+            if row == STEP_RESULT:
+                self._go(STEP_SOLVE)  # the result is gone
+            elif row != STEP_OPEN:
+                self.panels[row].refresh()
+            if self.nav.currentRow() == STEP_MESH:
+                self.viewer.show_mesh(self.mesh)
+            self._update_nav()
+        finally:
+            self._restoring = False
+        self._baseline = self._document()  # a panel may normalise a value while refreshing
+        self._update_undo_actions()
 
     def _annotate(self) -> None:
         if self.project is not None:
@@ -611,6 +970,15 @@ class MainWindow(QMainWindow):
                     else "고정 없음: 공중에 떠 있는 상태의 진동수를 구합니다",
                 )
             )
+        elif p.thermal_duration > 0:  # over time: any heat condition will do
+            checks.append(
+                (
+                    bool(thermal_bcs),
+                    f"열 조건: {len(thermal_bcs)}개 · {format_duration(p.thermal_duration)} 동안"
+                    if thermal_bcs
+                    else "4단계에서 열 입력·고정 온도·대류·복사 중 하나 이상을 지정하세요",
+                )
+            )
         else:
             has_ref = any(ld.kind in TEMPERATURE_REFERENCES for ld in thermal_bcs)
             checks.append(
@@ -620,6 +988,11 @@ class MainWindow(QMainWindow):
                     if has_ref
                     else "4단계에서 '고정 온도', '대류 냉각', '복사 냉각' 중 하나 이상을 지정하세요",
                 )
+            )
+        if p.analysis == AnalysisKind.STATIC and (p.plasticity or p.large_deformation):
+            reason = nonlinear_unsupported(p)
+            checks.append(
+                (reason is None, reason or "비선형 계산: 하중을 나눠 걸며 반복합니다(더 오래 걸림)")
             )
         excluded = excluded_by_hidden_parts(self.project)
         if excluded:
@@ -690,6 +1063,12 @@ class MainWindow(QMainWindow):
             project.mesh_quality,
         )
         panel.set_progress(0.0, "시작")
+        started = time.perf_counter()
+
+        def show_progress(fraction: float, message: str) -> None:
+            seconds = time.perf_counter() - started
+            clock = f" · {seconds:.0f}초" if seconds >= 3 else ""
+            panel.set_progress(fraction, f"{message}{clock}")
 
         def job(progress):
             m = mesh
@@ -734,6 +1113,9 @@ class MainWindow(QMainWindow):
             self._configure_result_panel()
             self._update_nav()
             self._go(STEP_RESULT)
+            seconds = time.perf_counter() - started
+            log.info("solve finished in %.1f s", seconds)
+            self.statusBar().showMessage(f"해석을 마쳤습니다 ({seconds:.1f}초).")
 
         def failed(e):
             self._busy = False
@@ -745,7 +1127,7 @@ class MainWindow(QMainWindow):
             log.warning("solve failed: %s: %s", type(e).__name__, e)
             self.warn(friendly_error(e))
 
-        self._job = run_job(job, done, failed, lambda f, m: panel.set_progress(f, m))
+        self._job = run_job(job, done, failed, show_progress)
 
     # --- results ---------------------------------------------------------------------
 
@@ -758,7 +1140,12 @@ class MainWindow(QMainWindow):
             panel.animate.setChecked(True)
         elif isinstance(r, ThermalResult):
             panel.set_fields(THERMAL_FIELDS)
-            panel.set_modes(None)
+            if r.transient:  # the "mode" selector picks the moment to show
+                labels = [format_duration(t) for t in r.times]
+                panel.set_modes(r.times, labels, "시각")
+                panel.mode.setCurrentIndex(len(labels) - 1)
+            else:
+                panel.set_modes(None)
             panel.animate.setChecked(False)
         elif isinstance(r, BucklingResult):
             panel.set_fields([("mode", "좌굴 모양 (상대 크기)")])
@@ -772,6 +1159,10 @@ class MainWindow(QMainWindow):
                 fields += THERMAL_FIELDS
             if self.summary.fatigue is not None:
                 fields += [("ffos", "피로 안전율"), ("life", "예상 수명 (반복 횟수)")]
+            if r.nonlinear is not None and r.nonlinear.plasticity:
+                fields += [("peeq", "소성 변형률 (영구 변형 정도)")]
+            if r.nonlinear is not None and r.nonlinear.permanent is not None:
+                fields += [("perm", "하중을 뺀 뒤 남는 변형")]
             panel.set_fields(fields)
             panel.set_modes(None)
             panel.animate.setChecked(False)
@@ -850,6 +1241,7 @@ class MainWindow(QMainWindow):
             "uy": "length",
             "uz": "length",
             "temp": "temperature",
+            "perm": "length",
         }.get(key)
         if kind is None:
             return field
@@ -870,8 +1262,23 @@ class MainWindow(QMainWindow):
         if key in ("temp", "flux"):
             thermal = r if isinstance(r, ThermalResult) else r.thermal
             if key == "temp":
-                return ResultField(thermal.temperature, "온도 (°C)", cmap="inferno", unit="°C")
+                values = thermal.temperature
+                clim = None
+                if isinstance(r, ThermalResult) and r.transient:
+                    frame = self.panels[STEP_RESULT].mode.currentIndex()
+                    values = r.history[frame if frame >= 0 else -1]
+                    clim = (float(r.history.min()), float(r.history.max()))  # one scale
+                return ResultField(values, "온도 (°C)", "inferno", clim, "°C")
             return ResultField(thermal.heat_flux_magnitude, "열 흐름 (W/m²)", "magma", None, "W/m²")
+        if key == "peeq":
+            values = r.nonlinear.plastic_strain * 100
+            # scale to the peak so a small yielded spot still stands out
+            top = float(values.max()) if values.max() > 0 else 0.2
+            return ResultField(values, "소성 변형률 (%)", "YlOrRd", (0, top), "%")
+        if key == "perm":
+            return ResultField(
+                np.linalg.norm(r.nonlinear.permanent, axis=1), "남는 변형 (mm)", unit="mm"
+            )
         if key in ("ffos", "life"):
             fatigue = self.summary.fatigue
             target = max(
@@ -954,15 +1361,13 @@ class MainWindow(QMainWindow):
 
     def _fill_summary(self, panel: steps.ResultStep) -> None:
         s = self.summary
-        if s.verdict is None:
-            color, bg = "#2b5d8a", "#eaf2fa"
-        else:
-            _, color, bg = VERDICT_STYLE[s.verdict]
+        color, bg = self.theme.verdict(s.verdict)
         panel.card.setStyleSheet(
-            f"QFrame#verdictCard {{ background: {bg}; border: 2px solid {color}; border-radius: 6px; }}"
+            f"QFrame#verdictCard {{ background: {bg}; border: 1px solid {color}; "
+            f"border-left: 5px solid {color}; border-radius: 8px; }}"
         )
         panel.card_title.setText(
-            f"<span style='font-size:15pt; color:{color}'><b>{s.headline}</b></span>"
+            f"<span style='font-size:14pt; color:{color}'><b>{s.headline}</b></span>"
         )
         panel.card_body.setText(s.explanation)
         lines = []
@@ -999,7 +1404,10 @@ class MainWindow(QMainWindow):
                     f" ~ <b>{fmt(us, 'temperature', r.temperature[nodes].max(), '.1f')}</b>{limit}"
                 )
             if r.heat_in:
-                lines.append(f"들어온 열 {r.heat_in:.3g} W · 빠져나간 열 {r.heat_out:.3g} W")
+                lines.append(
+                    f"들어온 열 {fmt('SI', 'power', r.heat_in)} · "
+                    f"빠져나간 열 {fmt('SI', 'power', r.heat_out)}"
+                )
         else:
             if self.overview is not None:
                 o = self.overview
@@ -1024,6 +1432,10 @@ class MainWindow(QMainWindow):
                         f"{fmt(us, 'stress', p.hotspot_stress, ',.1f')}, 안전율 "
                         f"<b>{p.hotspot_fos:.2f}</b>"
                     )
+                if p.plastic_strain is not None:
+                    lines[-1] += f"<br>&nbsp;소성 변형률 <b>{p.plastic_strain * 100:.2g}%</b>" + (
+                        " (안전율 1 미만 = 항복한 곳)" if p.plastic_strain > 0 else ""
+                    )
                 if p.fatigue_fos is not None:
                     life = "무한" if p.fatigue_life >= 1e9 else f"{p.fatigue_life:,.0f}회"
                     lines[-1] += (
@@ -1042,7 +1454,7 @@ class MainWindow(QMainWindow):
                     f" (응력 없는 기준 온도 {self.project.reference_temperature:.0f} °C)"
                 )
         for note in s.notes:
-            lines.append(f"<span style='color:#8a6d3b'>※ {note}</span>")
+            lines.append(f"<span style='color:{self.theme.warn}'>※ {note}</span>")
         panel.summary.setText("<br><br>".join(lines))
 
     def save_report(self) -> None:

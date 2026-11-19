@@ -101,7 +101,7 @@ def solve_buckling(
     Kg = _geometric_stiffness(mesh, materials, u, dT)
     c = build_constraints(project, mesh)
     K = stiffness_matrix(mesh, materials)
-    K = K + c.penalty_matrix(n_dof, K.diagonal().max())
+    K = K + c.penalty_matrix(n_dof, K.diagonal().max()) + c.spring_matrix()
     K = K + bolt_stiffness_and_preload(build_bolts(project, mesh), n_dof)[0]
     free = np.flatnonzero(~c.fixed)
     Kf, Kgf = K[free][:, free].tocsc(), Kg[free][:, free].tocsc()

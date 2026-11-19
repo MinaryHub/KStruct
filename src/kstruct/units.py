@@ -33,6 +33,7 @@ SI = {
     "power": Quantity("W", 1.0),
     "torque": Quantity("N·m", 1e-3),  # internal N·mm
     "speed": Quantity("rpm", 60.0 / (2 * 3.141592653589793)),  # internal rad/s
+    "stiffness": Quantity("N/mm", 1.0),
 }
 US = {
     "length": Quantity("in", 1 / MM_PER_IN),
@@ -43,6 +44,7 @@ US = {
     "power": Quantity("W", 1.0),
     "torque": Quantity("lbf·in", 1 / (N_PER_LBF * MM_PER_IN)),
     "speed": Quantity("rpm", 60.0 / (2 * 3.141592653589793)),
+    "stiffness": Quantity("lbf/in", MM_PER_IN / N_PER_LBF),
 }
 SYSTEMS = {"SI": SI, "US": US}
 
@@ -60,6 +62,13 @@ def quantity(system: str, kind: str) -> Quantity:
     return SYSTEMS.get(system, SI)[kind]
 
 
-def fmt(system: str, kind: str, value: float, digits: str = ",.4g") -> str:
+def fmt(system: str, kind: str, value: float, digits: str | None = None) -> str:
+    """Value with its unit. Without `digits`: four significant digits, never in exponent
+    notation for ordinary magnitudes (",.4g" printed 14,500 psi as "1.45e+04 psi")."""
     q = quantity(system, kind)
-    return f"{q.show(value):{digits}} {q.unit}"
+    shown = q.show(value)
+    if digits is not None:
+        return f"{shown:{digits}} {q.unit}"
+    if abs(shown) >= 1000:
+        return f"{shown:,.0f} {q.unit}"
+    return f"{shown:,.4g} {q.unit}"

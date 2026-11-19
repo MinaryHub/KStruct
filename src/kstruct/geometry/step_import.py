@@ -53,12 +53,19 @@ def _decode_name(text: str) -> str:
     return text
 
 
+_PLACEHOLDER_NAMES = ("open cascade step translator", "unnamed", "none", "nauo", "=>[")
+
+
 def _label_name(label) -> str:
     from OCP.TDataStd import TDataStd_Name
 
     name = TDataStd_Name()
     if label.FindAttribute(TDataStd_Name.GetID_s(), name):
-        return _decode_name(name.Get().ToExtString()).strip()
+        text = _decode_name(name.Get().ToExtString()).strip()
+        # exporters that were given no name write their own: not a part name
+        if text.lower().startswith(_PLACEHOLDER_NAMES):
+            return ""
+        return text
     return ""
 
 

@@ -646,3 +646,373 @@ def test_solve_can_be_cancelled(qtbot):
     assert not panel.cancel.isVisible() and panel.run.isEnabled()
     window.solve()
     qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+
+
+def test_welcome_page_stepper_and_theme(qtbot, monkeypatch, tmp_path):
+    """Without a project the right pane is the welcome page; the navigator ticks the
+    steps whose input is complete; the dark/light choice is applied and remembered."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind
+    from kstruct.ui import main_window as mw
+    from kstruct.ui import prefs, theme
+
+    monkeypatch.setenv("KSTRUCT_DATA_DIR", str(tmp_path))
+    window = _window(qtbot)
+    assert window.pane.currentIndex() == 0  # welcome
+    assert not any(window.nav.item(i).data(theme.STEP_DONE) for i in range(7))
+
+    window.open_sample("bracket")
+    assert window.pane.currentWidget() is window.viewer
+
+    def done():
+        return [bool(window.nav.item(i).data(theme.STEP_DONE)) for i in range(7)]
+
+    assert done() == [True, False, False, False, False, False, False]
+    window._go(mw.STEP_MATERIAL)
+    window.panels[mw.STEP_MATERIAL].parts.setCurrentRow(0)
+    window.project.parts[0].material_id = "s235"
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    window._project_changed()
+    assert done()[:4] == [True, True, True, False]
+
+    assert window.theme.name == "light"
+    window.toggle_theme()
+    assert window.theme.name == "dark" and prefs.theme() == "dark"
+    assert theme.current().surface in window.styleSheet() or theme.current() is theme.DARK
+    window.toggle_theme()
+    assert window.theme.name == "light" and prefs.theme() == "light"
+
+    window.ask_before_close = False
+    monkeypatch.setattr(window, "_confirm", lambda *a, **k: True)
+    window.new_project()
+    assert window.pane.currentIndex() == 0
+
+
+def test_hidden_load_rows_take_their_help_button_along(qtbot):
+    """The "?" of a hidden row (rotation axis for a plain force) used to stay behind."""
+    from kstruct.model import LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    window._go(mw.STEP_LOAD)
+    panel = window.panels[mw.STEP_LOAD]
+    panel.kind.setCurrentIndex(panel.kind.findData(LoadKind.FORCE))
+    assert panel.direction.parentWidget().isVisible()
+    assert not panel.axis.parentWidget().isVisible()
+    panel.kind.setCurrentIndex(panel.kind.findData(LoadKind.TORQUE))
+    assert panel.axis.parentWidget().isVisible()
+    assert not panel.direction.parentWidget().isVisible()
+
+
+def test_undo_and_redo(qtbot):
+    """Edits to the project can be undone and redone; the mesh survives when nothing it
+    depends on changed; opening a file starts a fresh history."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind, Load, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _window(qtbot)
+    window.open_sample("bracket")
+    assert not window.undo_action.isEnabled()
+    shape = window.project.parts[0].shape
+    window._go(mw.STEP_FIXTURE)
+
+    window.project.parts[0].material_id = "s235"
+    window._project_changed()
+    fixture = Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    window.project.fixtures.append(fixture)
+    window._project_changed()
+    window._project_changed()  # nothing changed: no extra step
+    load = Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (90, 30, 8)))], vector=(0, 0, -500.0))
+    window.project.loads.append(load)
+    window._project_changed()
+    assert len(window._history) == 3 and window.undo_action.isEnabled()
+
+    window.project.mesh_quality = "coarse"
+    window.build_mesh()
+    qtbot.waitUntil(lambda: window.mesh is not None, timeout=60_000)
+    window._record()  # the mesh preset changed
+    mesh = window.mesh
+    # with a mesh the solve step says how big the run is; without one the line and its
+    # help button are both hidden
+    solve_panel = window.panels[mw.STEP_SOLVE]
+    window._go(mw.STEP_SOLVE)
+    assert solve_panel.estimate.isVisible() and "미지수" in solve_panel.estimate.text()
+    window._go(mw.STEP_FIXTURE)
+
+    window.undo()  # mesh preset back to normal: that mesh no longer fits
+    assert window.project.mesh_quality == "normal" and window.mesh is None
+    window.redo()
+    assert window.project.mesh_quality == "coarse"
+    window.mesh = mesh
+    window.undo()
+    window.undo()  # the load
+    assert window.project.loads == [] and len(window.project.fixtures) == 1
+    window.undo()  # the fixture
+    assert window.project.fixtures == [] and window.project.parts[0].material_id == "s235"
+    assert window.panels[mw.STEP_FIXTURE].items.count() == 0  # the panel follows
+    window.redo()
+    window.redo()
+    assert len(window.project.fixtures) == 1 and len(window.project.loads) == 1
+    assert window.redo_action.isEnabled()
+    # a new edit drops the redo branch
+    window.project.loads.clear()
+    window._project_changed()
+    assert not window.redo_action.isEnabled()
+    # hidden parts come back with their checkbox
+    window.project.parts[0].visible = False
+    window._project_changed()
+    window.undo()
+    assert window.project.parts[0].visible
+
+    window.open_sample("two_plates")
+    assert not window.undo_action.isEnabled() and window._history == []
+    window._go(mw.STEP_SOLVE)
+    assert not solve_panel.estimate.parentWidget().isVisible()
+
+
+def test_opening_a_model_on_the_result_step_goes_back_to_step_one(qtbot):
+    """Opening another model while a result was shown left the old verdict card on
+    screen (the navigator had disabled step 7 but the panel stayed)."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, Fixture, FixtureKind, Load, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    assert window.project.parts[0].name == "브래킷"
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    window.project.loads = [
+        Load(LoadKind.FORCE, [FaceRef(0, face_at(shape, (90, 30, 8)))], vector=(0, 0, -500.0))
+    ]
+    window.project.mesh_quality = "coarse"
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    assert window.nav.currentRow() == mw.STEP_RESULT
+    window.open_sample("two_plates")
+    assert window.nav.currentRow() == mw.STEP_OPEN
+    assert window.stack.currentIndex() == mw.STEP_OPEN
+    assert [p.name for p in window.project.parts] == ["아래 판", "위 판"]
+
+
+def test_new_supports_and_loads_from_the_panels(qtbot):
+    """Prescribed displacement and elastic support from the fixture panel, remote force
+    and moment from the load panel, all the way to a result."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import FaceRef, FixtureKind, LoadKind
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    window.warn = lambda text, *a, **k: pytest.fail(text)
+    shape = window.project.parts[0].shape
+    base = FaceRef(0, face_at(shape, (0, 30, 40)))  # the wall's back face, normal -X
+    top = FaceRef(0, face_at(shape, (90, 30, 8)))
+
+    window._go(mw.STEP_FIXTURE)
+    panel = window.panels[mw.STEP_FIXTURE]
+    for button in panel.kinds.buttons():
+        if button.property("kind") == FixtureKind.ELASTIC:
+            button.setChecked(True)
+    assert panel.stiffness.isVisible() and not panel.move_axes[0][1].isVisible()
+    panel.stiffness.setValue(50_000.0)
+    window.viewer.set_selection([base])
+    panel._add()
+    fx = window.project.fixtures[-1]
+    assert fx.kind == FixtureKind.ELASTIC and fx.stiffness == 50_000.0
+    for button in panel.kinds.buttons():
+        if button.property("kind") == FixtureKind.DISPLACEMENT:
+            button.setChecked(True)
+    assert panel.move_axes[0][1].isVisible() and not panel.stiffness.isVisible()
+    for check, spin in panel.move_axes:  # Y and Z held, X left to the springs
+        check.setChecked(True)
+        spin.setValue(0.0)
+    panel.move_axes[0][0].setChecked(False)
+    window.viewer.set_selection([base])
+    panel._add()
+    assert window.project.fixtures[-1].displacement == (None, 0.0, 0.0)
+    assert "강제 변위" in panel.items.item(1).text()
+
+    window._go(mw.STEP_LOAD)
+    loads = window.panels[mw.STEP_LOAD]
+    loads.kind.setCurrentIndex(loads.kind.findData(LoadKind.REMOTE))
+    assert loads.offset_row.isVisible()
+    loads.value.setValue(300.0)
+    loads.direction.setCurrentIndex(loads.direction.count() - 1)  # -Z
+    window.viewer.set_selection([top])
+    loads._add()
+    remote = window.project.loads[-1]
+    assert remote.kind == LoadKind.REMOTE and remote.vector == (0.0, 0.0, -300.0)
+    from kstruct.geometry import faces_of
+    from kstruct.geometry.face_info import faces_centroid
+
+    centre = faces_centroid([faces_of(shape)[top.face_index]])
+    assert remote.point == pytest.approx(tuple(centre + [100.0, 0, 0]))  # centre + 100 in X
+    loads.kind.setCurrentIndex(loads.kind.findData(LoadKind.MOMENT))
+    assert not loads.offset_row.isVisible()
+    window.viewer.set_selection([top])
+    loads._add()
+    assert window.project.loads[-1].kind == LoadKind.MOMENT
+
+    window.project.mesh_quality = "coarse"
+    window._go(mw.STEP_SOLVE)
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    assert len(window.result.reactions) == 2
+    # the displacement fixture holds Z: it carries the 300 N; the springs only X
+    reactions = window.result.reactions
+    assert sum(reactions)[2] == pytest.approx(300.0, rel=1e-6)
+    assert reactions[0][1:] == pytest.approx([0.0, 0.0], abs=1e-6)
+
+
+def test_transient_heat_run(qtbot):
+    """Heat over time from the solve panel: the result offers the moments to look at and
+    the colour scale stays the same for all of them."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import AnalysisKind, FaceRef, Load, LoadKind
+    from kstruct.report.pdf import build_html
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    window.warn = lambda text, *a, **k: pytest.fail(text)
+    shape = window.project.parts[0].shape
+    window.project.analysis = AnalysisKind.THERMAL
+    window.project.loads = [
+        Load(LoadKind.HEAT_FLOW, [FaceRef(0, face_at(shape, (0, 30, 40)))], magnitude=20.0)
+    ]
+    window.project.mesh_quality = "coarse"
+    window._go(mw.STEP_SOLVE)
+    panel = window.panels[mw.STEP_SOLVE]
+    panel.refresh()
+    assert panel.thermal_box.isVisible() and not panel.duration.isVisible()
+    assert not all(ok for ok, _ in window.readiness())  # steady: no temperature reference
+    panel.transient.setChecked(True)
+    assert panel.duration.isVisible() and window.project.thermal_duration == 600.0
+    assert all(ok for ok, _ in window.readiness())  # over time heat input alone is enough
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    result = window.result
+    assert result.transient
+    view = window.panels[mw.STEP_RESULT]
+    assert view.mode_label.text() == "시각" and view.mode.count() == len(result.times)
+    last = window.result_field("temp")
+    view.mode.setCurrentIndex(1)
+    early = window.result_field("temp")
+    assert early.values.max() < last.values.max() and early.clim == last.clim
+    assert "10분 후" in window.summary.headline
+    html = build_html(window.project, result, window.summary, [], window.materials)
+    assert "시간에 따른 열전도 해석" in html
+
+
+def test_nonlinear_run_from_the_panel(qtbot):
+    """'항복한 뒤까지 계산' in the solve panel: the run reports plastic strain and the
+    shape left after unloading, and the report names the method."""
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import (
+        Connection,
+        ConnectionKind,
+        FaceRef,
+        Fixture,
+        FixtureKind,
+        Load,
+        LoadKind,
+    )
+    from kstruct.report.export import result_columns
+    from kstruct.report.pdf import build_html
+    from kstruct.ui import main_window as mw
+
+    window = _bracket_with_material(qtbot)
+    window.warn = lambda text, *a, **k: pytest.fail(text)
+    shape = window.project.parts[0].shape
+    window.project.fixtures = [
+        Fixture(FixtureKind.FIXED, [FaceRef(0, face_at(shape, (0, 30, 40)))])
+    ]
+    top = FaceRef(0, face_at(shape, (90, 30, 8)))
+    window.project.loads = [Load(LoadKind.FORCE, [top], vector=(0, 0, -6000.0))]
+    window.project.mesh_quality = "coarse"
+    panel = window.panels[mw.STEP_SOLVE]
+    panel.refresh()
+    assert panel.plasticity.isVisible() and not panel.plasticity.isChecked()
+    panel.plasticity.setChecked(True)
+    assert window.project.plasticity and not window.project.large_deformation
+    assert all(ok for ok, _ in window.readiness()), window.readiness()
+    # contact is not supported yet: the checklist says so instead of failing mid-run
+    window.project.connections.append(Connection(ConnectionKind.CONTACT, [top], [top]))
+    blocked = [text for ok, text in window.readiness() if not ok]
+    assert blocked and "접촉" in blocked[0]
+    window.project.connections.pop()
+    panel.large.setChecked(True)  # both switches together
+    assert window.project.large_deformation
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=180_000)
+    result = window.result
+    assert result.nonlinear is not None and result.nonlinear.yielded
+    view = window.panels[mw.STEP_RESULT]
+    keys = [view.field.itemData(i) for i in range(view.field.count())]
+    assert "peeq" in keys and "perm" in keys
+    peeq = window.result_field("peeq")
+    assert peeq.values.max() > 0 and peeq.unit == "%"
+    perm = window.result_field("perm")
+    assert perm.values.max() > 0
+    assert "비선형 해석" in window.summary.notes[0]
+    html = build_html(window.project, result, window.summary, [], window.materials)
+    assert "비선형 정적해석" in html and "재료 항복 고려" in html
+    names = [name for name, _ in result_columns(window.project, result, window.summary)]
+    assert "equivalent plastic strain [-]" in names
+
+
+def test_contact_sponsor_and_update_from_the_toolbar(qtbot, monkeypatch, tmp_path):
+    """문의하기 opens a pre-filled GitHub issue, 후원하기 the sponsor page, and an update
+    found at start-up shows the toolbar button whose dialog offers the installer."""
+    from kstruct import update
+    from kstruct.ui import updates
+
+    monkeypatch.setenv("KSTRUCT_DATA_DIR", str(tmp_path))
+    opened = []
+    monkeypatch.setattr(updates, "open_url", lambda url: opened.append(url) or True)
+    window = _window(qtbot)
+    actions = {a.text(): a for a in window.findChildren(type(window.update_action))}
+    actions["문의하기"].trigger()
+    actions["후원하기"].trigger()
+    assert opened[0].startswith("https://github.com/knoxxr/KStruct/issues/new?")
+    assert "KStruct" in opened[0] and opened[1] == "https://github.com/sponsors/minarhub"
+
+    release = update.Release(
+        "v99.0.0",
+        "99.0.0",
+        "- 새 기능",
+        "https://github.com/knoxxr/KStruct/releases/tag/v99.0.0",
+        [
+            update.Asset(n, f"api/{n}")
+            for n in (
+                "KStruct-Setup-99.0.0.1.exe",
+                "KStruct-99.0.0.1-macOS.dmg",
+                "KStruct-99.0.0.1-linux-x86_64.tar.gz",
+            )
+        ],
+    )
+    monkeypatch.setattr(update, "check", lambda tok=None, current=None: release)
+    checker = updates.UpdateChecker(window)
+    checker.available.connect(window._update_available)
+    assert checker.start(force=True)
+    qtbot.waitUntil(lambda: window.update_action.isVisible(), timeout=5000)
+    assert window.update_action.text() == "업데이트 99.0.0"
+
+    dialog = updates.UpdateDialog(window, window._pending_release)
+    qtbot.addWidget(dialog)
+    assert "99.0.0" in dialog.status.text() and dialog.install_button.isEnabled()
+    assert "새 기능" in dialog.notes.toPlainText()
+
+    def missing(tok=None):
+        raise update.UpdateError("릴리스를 찾을 수 없습니다. 토큰이 필요합니다.")
+
+    monkeypatch.setattr(update, "latest_release", missing)
+    dialog.token.setText("")
+    dialog.check()
+    qtbot.waitUntil(lambda: "확인하지 못했습니다" in dialog.status.text(), timeout=5000)
+    assert not dialog.install_button.isEnabled()

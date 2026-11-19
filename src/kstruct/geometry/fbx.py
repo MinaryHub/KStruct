@@ -204,13 +204,23 @@ class FbxMesh:
 def read_fbx(path: str | Path) -> list[FbxMesh]:
     data = Path(path).read_bytes()
     try:
-        root = (
-            _read_binary(data)
-            if data.startswith(BINARY_MAGIC)
-            else _read_ascii(data.decode("utf-8", "replace"))
-        )
-    except (struct.error, zlib.error, IndexError, UnicodeDecodeError) as e:
+        return _read(data)
+    except FbxError as e:
+        if not any("\uac00" <= ch <= "\ud7a3" for ch in str(e)):  # an internal message
+            raise FbxError("FBX 파일이 손상되었거나 지원하지 않는 형식입니다.") from e
+        raise
+    except (struct.error, zlib.error, IndexError, ValueError, TypeError, KeyError) as e:
+        # malformed content: counts that do not divide by three, indices out of range,
+        # text where a number belongs
         raise FbxError("FBX 파일이 손상되었거나 지원하지 않는 형식입니다.") from e
+
+
+def _read(data: bytes) -> list[FbxMesh]:
+    root = (
+        _read_binary(data)
+        if data.startswith(BINARY_MAGIC)
+        else _read_ascii(data.decode("utf-8", "replace"))
+    )
 
     unit_cm = _properties70(root.find("GlobalSettings")).get("UnitScaleFactor", [1.0])[0]
     to_mm = 10.0 * float(unit_cm)
@@ -234,12 +244,15 @@ def read_fbx(path: str | Path) -> list[FbxMesh]:
         index = np.asarray(index_node.props[0], dtype=np.int64)
 
         world = np.eye(4)
-        node_id, name = parent.get(geom.props[0]), _object_name(geom)
+        # the name is that of the mesh's own node (the nearest named ancestor), not of
+        # the group at the top of the hierarchy, which every mesh under it shares
+        node_id, name, own = parent.get(geom.props[0]), _object_name(geom), ""
         while node_id in models:
             model = models[node_id]
-            name = _object_name(model) or name
+            own = own or _object_name(model)
             world = _local_matrix(model) @ world
             node_id = parent.get(node_id)
+        name = own or name
         verts = (np.c_[verts, np.ones(len(verts))] @ world.T)[:, :3] * to_mm
 
         tris, poly = [], []
@@ -251,7 +264,10 @@ def read_fbx(path: str | Path) -> list[FbxMesh]:
             else:
                 poly.append(idx)
         if tris:
-            meshes.append(FbxMesh(name or "Mesh", verts, np.array(tris, dtype=np.int64)))
+            tris = np.array(tris, dtype=np.int64)
+            if tris.min() < 0 or tris.max() >= len(verts):
+                raise FbxError("FBX 파일의 면이 없는 꼭짓점을 가리킵니다(파일 손상).")
+            meshes.append(FbxMesh(name or "Mesh", verts, tris))
     if not meshes:
         raise FbxError("FBX 파일에 메시 형상이 없습니다.")
     return meshes

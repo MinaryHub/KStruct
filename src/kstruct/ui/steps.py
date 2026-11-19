@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -52,6 +53,7 @@ from kstruct.model import (
     MeshRefinement,
 )
 from kstruct.report.describe import describe_connection, describe_fixture, describe_load
+from kstruct.ui import theme
 from kstruct.ui.dialogs import MaterialDialog, load_user_library, save_user_library
 from kstruct.ui.help import HelpButton, HelpDialog, topic, with_help
 from kstruct.units import quantity, system_of
@@ -81,11 +83,15 @@ LOAD_QUANTITY = {
     LoadKind.TORQUE: "torque",
     LoadKind.BEARING: "force",
     LoadKind.CENTRIFUGAL: "speed",
+    LoadKind.REMOTE: "force",
+    LoadKind.MOMENT: "torque",
 }
 FIXTURE_LABELS = {
     FixtureKind.FIXED: ("완전 고정", "fixture.fixed"),
     FixtureKind.ROLLER: ("미끄럼 지지", "fixture.roller"),
     FixtureKind.PIN: ("핀 지지 (구멍·축)", "fixture.pin"),
+    FixtureKind.DISPLACEMENT: ("강제 변위 (정해진 만큼 움직임)", "fixture.displacement"),
+    FixtureKind.ELASTIC: ("탄성 지지 (고무·스프링 받침)", "fixture.elastic"),
 }
 LOAD_LABELS = {
     LoadKind.FORCE: ("힘", "load.force"),
@@ -99,6 +105,8 @@ LOAD_LABELS = {
     LoadKind.TORQUE: ("토크 (비틀림)", "load.torque"),
     LoadKind.BEARING: ("베어링 하중 (구멍에 끼운 축·핀)", "load.bearing"),
     LoadKind.CENTRIFUGAL: ("원심력 (회전)", "load.centrifugal"),
+    LoadKind.REMOTE: ("원격 하중 (떨어진 곳에서 미는 힘)", "load.remote"),
+    LoadKind.MOMENT: ("모멘트 (굽히거나 비트는 힘)", "load.moment"),
 }
 FACE_LOADS = (
     LoadKind.FORCE,
@@ -109,7 +117,11 @@ FACE_LOADS = (
     LoadKind.RADIATION,
     LoadKind.TORQUE,
     LoadKind.BEARING,
+    LoadKind.REMOTE,
+    LoadKind.MOMENT,
 )
+# loads whose direction must be a global axis (no "normal to the face" choices)
+AXIS_DIRECTION_LOADS = (LoadKind.BEARING, LoadKind.REMOTE, LoadKind.MOMENT)
 AXES = [
     ("선택한 원통면의 축", None),
     ("X 축", (1.0, 0.0, 0.0)),
@@ -129,15 +141,29 @@ DIRECTIONS = [
 
 
 def _title(text: str, key: str) -> QWidget:
-    label = QLabel(f"<h3 style='margin:0'>{text}</h3>")
+    label = QLabel(text)
+    label.setObjectName("stepTitle")  # styled by ui/theme.py, like the roles below
     return with_help(label, key)
 
 
 def _hint(text: str) -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
-    label.setStyleSheet("color: palette(placeholder-text);")
+    label.setProperty("role", "hint")
     return label
+
+
+def _section(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setProperty("role", "section")
+    return label
+
+
+def _primary(button: QPushButton) -> QPushButton:
+    """The one main action of a panel (filled with the accent colour)."""
+    button.setProperty("primary", "true")
+    button.setMinimumHeight(34)
+    return button
 
 
 def _row(*widgets: QWidget) -> QWidget:
@@ -183,7 +209,7 @@ class StepPanel(QWidget):
 class OpenStep(StepPanel):
     def __init__(self, app: MainWindow) -> None:
         super().__init__(app, "1. 모델 열기", "step.open")
-        open_btn = QPushButton("파일 열기…")
+        open_btn = _primary(QPushButton("파일 열기…"))
         open_btn.clicked.connect(app.open_file)
         self.add(with_help(open_btn, "step.open"))
         cad_help = QPushButton("SolidWorks·Inventor·CATIA 파일은?")
@@ -208,7 +234,7 @@ class OpenStep(StepPanel):
         box.setLayout(samples)
         self.add(box)
 
-        self.add(with_help(QLabel("<b>부품</b>"), "view.parts"))
+        self.add(with_help(_section("부품"), "view.parts"))
         self.parts = QListWidget()
         self.parts.itemChanged.connect(self._toggled)
         self.add(self.parts, 1)
@@ -333,7 +359,7 @@ class MaterialStep(StepPanel):
         box.setLayout(form)
         self.add(box)
 
-        self.add(QLabel("<b>부품을 고르고 재료를 지정하세요</b>"))
+        self.add(_section("부품을 고르고 재료를 지정하세요"))
         self.parts = QListWidget()
         self.parts.setMaximumHeight(120)
         self.parts.currentRowChanged.connect(lambda _: self._show_part())
@@ -530,7 +556,7 @@ class _FaceListStep(StepPanel):
 
     def finish_layout(self) -> None:
         self.add(self.selection_label)
-        self.add(QLabel("<b>지정된 항목</b>"))
+        self.add(_section("지정된 항목"))
         self.add(self.items, 1)
         self.add(self.remove)
 
@@ -549,7 +575,9 @@ class _FaceListStep(StepPanel):
     def refresh(self) -> None:
         self.items.clear()
         for e in self.entries():
-            self.items.addItem(self.describe(e))
+            text = self.describe(e)
+            self.items.addItem(text)
+            self.items.item(self.items.count() - 1).setToolTip(text)  # long ones are cut off
         self.update_selection(self.app.viewer.selection)
 
     def _remove(self) -> None:
@@ -570,11 +598,72 @@ class FixtureStep(_FaceListStep):
             self.kinds.addButton(radio, i)
             radio.setProperty("kind", kind)
             self.add(with_help(radio, key))
-        self.add_btn = QPushButton("선택한 면을 고정")
+        self.kinds.buttonToggled.connect(lambda *_: self._kind_changed())
+        self._build_value_box()
+        self.add_btn = _primary(QPushButton("선택한 면을 고정"))
         self.add_btn.clicked.connect(self._add)
         self.add(self.add_btn)
         self.finish_layout()
         self._build_bolt_box()
+        self._kind_changed()
+
+    def _build_value_box(self) -> None:
+        """Inputs of the two fixtures that carry a value: the movement of a prescribed
+        displacement (per axis, unticked = free) and the stiffness of an elastic support."""
+        self.value_box = QGroupBox("값")
+        form = QFormLayout(self.value_box)
+        self.move_axes: list[tuple[QCheckBox, QDoubleSpinBox]] = []
+        for axis in "XYZ":
+            check = QCheckBox(f"{axis} 방향")
+            spin = QDoubleSpinBox()
+            spin.setRange(-1e4, 1e4)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.01)
+            check.toggled.connect(spin.setEnabled)
+            check.setChecked(axis == "Z")
+            spin.setEnabled(axis == "Z")
+            self.move_axes.append((check, spin))
+            form.addRow(check, spin)
+        self.move_hint = _hint(
+            "체크한 방향만 그 값만큼 움직이고, 체크하지 않은 방향은 자유롭게 움직입니다. "
+            "0을 넣으면 그 방향으로 고정됩니다."
+        )
+        form.addRow(self.move_hint)
+        self.stiffness = QDoubleSpinBox()
+        self.stiffness.setRange(1e-6, 1e12)
+        self.stiffness.setDecimals(1)
+        self.stiffness.setValue(10_000.0)
+        self.stiffness_label = QLabel("강성")
+        form.addRow(self.stiffness_label, self.stiffness)
+        self.stiffness_hint = _hint(
+            "고른 면 전체를 1만큼 누르는 데 드는 힘입니다. 면에 수직인 방향으로만 받칩니다."
+        )
+        form.addRow(self.stiffness_hint)
+        self.add(self.value_box)
+
+    def _current_kind(self) -> FixtureKind:
+        return self.kinds.checkedButton().property("kind")
+
+    def _kind_changed(self) -> None:
+        kind = self._current_kind()
+        moving, elastic = kind == FixtureKind.DISPLACEMENT, kind == FixtureKind.ELASTIC
+        self.value_box.setVisible(moving or elastic)
+        for check, spin in self.move_axes:
+            check.setVisible(moving)
+            spin.setVisible(moving)
+        self.move_hint.setVisible(moving)
+        for w in (self.stiffness, self.stiffness_label, self.stiffness_hint):
+            w.setVisible(elastic)
+        self._update_units()
+
+    def _update_units(self) -> None:
+        if self.app.project is None:
+            return
+        system = system_of(self.app.project)
+        length, stiffness = quantity(system, "length"), quantity(system, "stiffness")
+        for _, spin in self.move_axes:
+            spin.setSuffix(f" {length.unit}")
+        self.stiffness.setSuffix(f" {stiffness.unit}")
 
     # --- bolts ---------------------------------------------------------------------
 
@@ -666,6 +755,7 @@ class FixtureStep(_FaceListStep):
 
     def refresh(self) -> None:
         super().refresh()
+        self._update_units()
         self.bolt_list.clear()
         for b in self.app.project.bolts:
             self.bolt_list.addItem(
@@ -705,7 +795,23 @@ class FixtureStep(_FaceListStep):
                         "핀 지지는 원통면(구멍 안쪽이나 축 바깥면)에만 지정할 수 있습니다."
                     )
                     return
-        self.app.project.fixtures.append(Fixture(kind, refs))
+        if not refs:
+            self.app.warn("3D 화면에서 면을 먼저 고르세요.")
+            return
+        system = system_of(self.app.project)
+        fixture = Fixture(kind, refs)
+        if kind == FixtureKind.DISPLACEMENT:
+            length = quantity(system, "length")
+            fixture.displacement = tuple(
+                length.parse(spin.value()) if check.isChecked() else None
+                for check, spin in self.move_axes
+            )
+            if all(d is None for d in fixture.displacement):
+                self.app.warn("움직일 방향을 하나 이상 체크하세요.")
+                return
+        elif kind == FixtureKind.ELASTIC:
+            fixture.stiffness = quantity(system, "stiffness").parse(self.stiffness.value())
+        self.app.project.fixtures.append(fixture)
         self.app.viewer.set_selection([])
         self.changed.emit()
         self.refresh()
@@ -719,12 +825,15 @@ class LoadStep(_FaceListStep):
         super().__init__(app, "4. 하중", "step.load")
         self.case = QComboBox()
         self.case.currentIndexChanged.connect(self._case_chosen)
+        self.case.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         case_add = QPushButton("추가")
         case_add.clicked.connect(self._add_case)
         case_rename = QPushButton("이름")
         case_rename.clicked.connect(self._rename_case)
         self.case_remove = QPushButton("삭제")
         self.case_remove.clicked.connect(self._remove_case)
+        for button in (case_add, case_rename, self.case_remove):
+            button.setProperty("compact", "true")
         self.add(
             with_help(
                 _row(QLabel("하중 케이스"), self.case, case_add, case_rename, self.case_remove),
@@ -761,13 +870,28 @@ class LoadStep(_FaceListStep):
         self.ambient.setValue(20)
         self.ambient_label = QLabel("주변 공기 온도 (°C)")
         form.addRow(self.ambient_label, self.ambient)
+        self.offset = [QDoubleSpinBox() for _ in range(3)]
+        for spin in self.offset:
+            spin.setRange(-1e6, 1e6)
+            spin.setDecimals(2)
+        self.offset[0].setValue(100.0)
+        # one row per axis: three spin boxes side by side made the panel wider than the
+        # side bar and cut off its buttons
+        self.offset_labels = [QLabel(f"작용점 {axis}") for axis in "XYZ"]
+        self.offset_rows = [
+            with_help(spin, "load.remote_offset") if i == 0 else spin
+            for i, spin in enumerate(self.offset)
+        ]
+        for label, row in zip(self.offset_labels, self.offset_rows, strict=True):
+            form.addRow(label, row)
+        self.offset_row = self.offset_rows[0]  # (tests and visibility)
         box = QWidget()
         box.setLayout(form)
         self.add(box)
         self.value_hint = _hint("")
         self.add(self.value_hint)
 
-        self.add_btn = QPushButton("하중 추가")
+        self.add_btn = _primary(QPushButton("하중 추가"))
         self.add_btn.clicked.connect(self._add)
         self.add(self.add_btn)
         self.finish_layout()
@@ -782,12 +906,21 @@ class LoadStep(_FaceListStep):
         self.kind_help.key = LOAD_LABELS[kind][1]
         self.kind_help.setToolTip(topic(self.kind_help.key).short)
         self.selection_label.setVisible(kind in FACE_LOADS)
-        self.direction.setVisible(kind in (LoadKind.FORCE, LoadKind.GRAVITY, LoadKind.BEARING))
-        self.direction_label.setVisible(self.direction.isVisible())
-        self.axis.setVisible(kind in AXIS_LOADS)
-        self.axis_label.setVisible(kind in AXIS_LOADS)
-        if kind == LoadKind.BEARING:
-            # a pin pushes along a fixed direction: no "normal to the face" choices
+        # each control sits in a wrapper with its "?" button: hide the wrapper too, or the
+        # button of a hidden row stays behind on its own
+        show_direction = kind in (LoadKind.FORCE, LoadKind.GRAVITY) + AXIS_DIRECTION_LOADS
+        for widget in (*self.offset_labels, *self.offset_rows, *self.offset):
+            widget.setVisible(kind == LoadKind.REMOTE)
+        if self.app.project is not None:
+            unit = quantity(system_of(self.app.project), "length").unit
+            for spin in self.offset:
+                spin.setSuffix(f" {unit}")
+        for widget in (self.direction, self.direction.parentWidget(), self.direction_label):
+            widget.setVisible(show_direction)
+        for widget in (self.axis, self.axis.parentWidget(), self.axis_label):
+            widget.setVisible(kind in AXIS_LOADS)
+        if kind in AXIS_DIRECTION_LOADS:
+            # along a fixed global direction only: no "normal to the face" choices
             for i in range(2):
                 self.direction.model().item(i).setEnabled(False)
             if self.direction.currentIndex() < 2:
@@ -795,8 +928,9 @@ class LoadStep(_FaceListStep):
         else:
             for i in range(2):
                 self.direction.model().item(i).setEnabled(True)
-        self.ambient.setVisible(kind in (LoadKind.CONVECTION, LoadKind.RADIATION))
-        self.ambient_label.setVisible(self.ambient.isVisible())
+        show_ambient = kind in (LoadKind.CONVECTION, LoadKind.RADIATION)
+        self.ambient.setVisible(show_ambient)
+        self.ambient_label.setVisible(show_ambient)
         defaults = {  # internal units
             LoadKind.FORCE: ("크기", 1000.0),
             LoadKind.PRESSURE: ("압력", 1.0),
@@ -809,6 +943,8 @@ class LoadStep(_FaceListStep):
             LoadKind.TORQUE: ("토크", 10_000.0),  # N·mm = 10 N·m
             LoadKind.BEARING: ("힘", 1000.0),
             LoadKind.CENTRIFUGAL: ("회전 속도", 3000 * 2 * 3.141592653589793 / 60),  # rad/s
+            LoadKind.REMOTE: ("힘", 1000.0),
+            LoadKind.MOMENT: ("모멘트", 100_000.0),  # N·mm = 100 N·m
         }
         label, default = defaults[kind]
         q = self._quantity(kind)
@@ -910,6 +1046,14 @@ class LoadStep(_FaceListStep):
             LoadKind.CENTRIFUGAL: (
                 f"= {v:,.1f} rad/s. 모든 부품에 회전축에서 바깥쪽으로 ρω²r의 힘이 걸립니다."
             ),
+            LoadKind.REMOTE: (
+                "작용점까지 떨어진 거리만큼 굽히는 힘이 함께 걸립니다. 고른 면은 단단한 "
+                "연결판에 묶인 것처럼 하중을 나눠 받습니다."
+            ),
+            LoadKind.MOMENT: (
+                "방향은 회전축입니다(오른손 법칙). 면 중심에서 멀수록 크게, 직선으로 나뉘어 "
+                "걸립니다."
+            ),
         }
         self.value_hint.setText(hints[kind])
 
@@ -991,6 +1135,21 @@ class LoadStep(_FaceListStep):
                 return
             _, axis, _ = DIRECTIONS[self.direction.currentIndex()]
             load = Load(LoadKind.BEARING, refs, vector=tuple(v * c + 0.0 for c in axis))
+        elif kind in (LoadKind.REMOTE, LoadKind.MOMENT):
+            faces = self._selected_faces(refs)
+            if not faces:
+                self.app.warn("하중을 전달할 면을 3D 화면에서 먼저 고르세요.")
+                return
+            _, axis, _ = DIRECTIONS[self.direction.currentIndex()]
+            vector = tuple(v * c + 0.0 for c in axis)
+            if kind == LoadKind.MOMENT:
+                load = Load(LoadKind.MOMENT, refs, vector=vector)
+            else:
+                length = quantity(system_of(project), "length")
+                center = np.asarray(faces_centroid(faces), dtype=float)
+                offset = np.array([length.parse(spin.value()) for spin in self.offset])
+                point = tuple(float(c) for c in center + offset)
+                load = Load(LoadKind.REMOTE, refs, vector=vector, point=point)
         elif kind == LoadKind.CENTRIFUGAL:
             axis = self._axis_for(kind, refs)
             if axis is None:
@@ -1039,7 +1198,7 @@ class MeshStep(StepPanel):
             self.quality.addItem(label, key)
         self.quality.currentIndexChanged.connect(self._quality_changed)
         self.add(with_help(self.quality, "mesh.quality"))
-        self.run = QPushButton("메시 만들기")
+        self.run = _primary(QPushButton("메시 만들기"))
         self.run.clicked.connect(app.build_mesh)
         self.add(self.run)
         self.cancel = QPushButton("취소")
@@ -1166,7 +1325,7 @@ ANALYSIS_LABELS = [
 class SolveStep(StepPanel):
     def __init__(self, app: MainWindow) -> None:
         super().__init__(app, "6. 해석", "step.solve")
-        self.add(QLabel("<b>무엇을 알고 싶나요?</b>"))
+        self.add(_section("무엇을 알고 싶나요?"))
         self.kinds = QButtonGroup(self)
         for i, (kind, label, key) in enumerate(ANALYSIS_LABELS):
             radio = QRadioButton(label)
@@ -1193,6 +1352,31 @@ class SolveStep(StepPanel):
         form.addRow(self.speed_label, self.speed_row)
         self.add(self.modal_box)
 
+        self.thermal_box = QGroupBox("열 해석 설정")
+        hform = QFormLayout(self.thermal_box)
+        self.transient = QCheckBox("시간에 따른 변화 보기 (데워지고 식는 과정)")
+        self.transient.toggled.connect(self._thermal_changed)
+        hform.addRow(with_help(self.transient, "analysis.transient"))
+        self.duration = QDoubleSpinBox()
+        self.duration.setRange(1, 1e7)
+        self.duration.setDecimals(0)
+        self.duration_unit = QComboBox()
+        self.duration_unit.addItem("초", 1.0)
+        self.duration_unit.addItem("분", 60.0)
+        self.duration_unit.addItem("시간", 3600.0)
+        self.duration.valueChanged.connect(self._thermal_changed)
+        self.duration_unit.currentIndexChanged.connect(self._thermal_changed)
+        self.duration_label = QLabel("계산할 시간")
+        self.duration_row = _row(self.duration, self.duration_unit)
+        hform.addRow(self.duration_label, self.duration_row)
+        self.initial = QDoubleSpinBox()
+        self.initial.setRange(-200, 3000)
+        self.initial.setDecimals(1)
+        self.initial.valueChanged.connect(self._thermal_changed)
+        self.initial_label = QLabel("처음 온도")
+        hform.addRow(self.initial_label, self.initial)
+        self.add(self.thermal_box)
+
         self.static_box = QGroupBox("강도 해석 설정")
         sform = QFormLayout(self.static_box)
         self.cycle = QComboBox()
@@ -1214,6 +1398,12 @@ class SolveStep(StepPanel):
         self.reliability_label = QLabel("신뢰도")
         self.reliability_box = with_help(self.reliability, "fatigue.reliability")
         sform.addRow(self.reliability_label, self.reliability_box)
+        self.plasticity = QCheckBox("항복한 뒤까지 계산 (영구 변형·붕괴 하중)")
+        self.plasticity.toggled.connect(self._nonlinear_changed)
+        sform.addRow(with_help(self.plasticity, "analysis.plasticity"))
+        self.large = QCheckBox("큰 변형 고려 (얇고 많이 휘는 부품)")
+        self.large.toggled.connect(self._nonlinear_changed)
+        sform.addRow(with_help(self.large, "analysis.large_deformation"))
         self.add(self.static_box)
 
         self.target_box = QGroupBox("권장 안전율")
@@ -1240,9 +1430,13 @@ class SolveStep(StepPanel):
         self.checklist = QLabel()
         self.checklist.setTextFormat(Qt.TextFormat.RichText)
         self.add(self.checklist)
-        self.run = QPushButton("해석 시작")
+        self.estimate = QLabel()
+        self.estimate.setWordWrap(True)
+        self.estimate.setTextFormat(Qt.TextFormat.RichText)
+        self.estimate.setVisible(False)
+        self.add(with_help(self.estimate, "analysis.estimate")).setVisible(False)
+        self.run = _primary(QPushButton("해석 시작"))
         self.run.setMinimumHeight(40)
-        self.run.setStyleSheet("font-weight: bold;")
         self.run.clicked.connect(app.solve)
         self.add(self.run)
         self.cancel = QPushButton("취소")
@@ -1263,6 +1457,7 @@ class SolveStep(StepPanel):
             b.setChecked(b.property("kind") == project.analysis)
         self.modal_box.setVisible(project.analysis == AnalysisKind.MODAL)
         self.static_box.setVisible(project.analysis == AnalysisKind.STATIC)
+        self._show_thermal(project)
         self.modal_box.setTitle(
             "좌굴 해석 설정" if project.analysis == AnalysisKind.BUCKLING else "진동 해석 설정"
         )
@@ -1272,6 +1467,13 @@ class SolveStep(StepPanel):
         self.cycle.blockSignals(True)
         self.cycle.setCurrentIndex(max(0, self.cycle.findData(project.load_cycle)))
         self.cycle.blockSignals(False)
+        for box, value in (
+            (self.plasticity, project.plasticity),
+            (self.large, project.large_deformation),
+        ):
+            box.blockSignals(True)
+            box.setChecked(value)
+            box.blockSignals(False)
         repeated = project.load_cycle != "none"
         for w in (
             self.surface_label,
@@ -1315,16 +1517,35 @@ class SolveStep(StepPanel):
         lines = []
         for ok, text in problems:
             mark = (
-                "<span style='color:#2e9e5b'>✔</span>"
+                f"<span style='color:{theme.current().ok}'>✔</span>"
                 if ok
-                else "<span style='color:#c0392b'>✘</span>"
+                else f"<span style='color:{theme.current().fail}'>✘</span>"
             )
             lines.append(f"{mark} {text}")
         self.checklist.setText("<br>".join(lines))
         self.run.setEnabled(all(ok for ok, _ in problems))
+        # how big the run is, once there is a mesh to tell from
+        mesh = self.app.mesh
+        self.estimate.parentWidget().setVisible(mesh is not None and project is not None)
+        if mesh is None or project is None:
+            self.estimate.setVisible(False)
+        else:
+            from kstruct.fem.estimate import solve_estimate
+
+            text, warning = solve_estimate(project, mesh)
+            colour = theme.current().warn if warning else theme.current().muted
+            self.estimate.setText(f"<span style='color:{colour}'>{text}</span>")
+            self.estimate.setVisible(True)
 
     def _kind_changed(self) -> None:
         self.app.project.analysis = self.kinds.checkedButton().property("kind")
+        self.changed.emit()
+        self.refresh()
+
+    def _nonlinear_changed(self) -> None:
+        project = self.app.project
+        project.plasticity = self.plasticity.isChecked()
+        project.large_deformation = self.large.isChecked()
         self.changed.emit()
         self.refresh()
 
@@ -1345,6 +1566,42 @@ class SolveStep(StepPanel):
             project.target_overrides = {}
         else:
             project.target_overrides = {k: spin.value() for k, spin in self.targets.items()}
+        self.changed.emit()
+        self.refresh()
+
+    def _show_thermal(self, project) -> None:
+        self.thermal_box.setVisible(project.analysis == AnalysisKind.THERMAL)
+        over_time = project.thermal_duration > 0
+        temperature = quantity(system_of(project), "temperature")
+        widgets = (self.transient, self.duration, self.duration_unit, self.initial)
+        for w in widgets:
+            w.blockSignals(True)
+        self.transient.setChecked(over_time)
+        if over_time:
+            seconds = project.thermal_duration
+            unit = 2 if seconds >= 3600 and seconds % 3600 == 0 else 1 if seconds >= 60 else 0
+            self.duration_unit.setCurrentIndex(unit)
+            self.duration.setValue(seconds / self.duration_unit.currentData())
+        elif self.duration.value() <= 1:
+            self.duration_unit.setCurrentIndex(1)
+            self.duration.setValue(10)  # a sensible start: 10 minutes
+        self.initial.setSuffix(f" {temperature.unit}")
+        self.initial.setValue(temperature.show(project.initial_temperature))
+        for w in widgets:
+            w.blockSignals(False)
+        for w in (self.duration_label, self.duration_row, self.initial_label, self.initial):
+            w.setVisible(over_time)
+
+    def _thermal_changed(self) -> None:
+        project = self.app.project
+        temperature = quantity(system_of(project), "temperature")
+        project.thermal_duration = (
+            self.duration.value() * self.duration_unit.currentData()
+            if self.transient.isChecked()
+            else 0.0
+        )
+        project.initial_temperature = temperature.parse(self.initial.value())
+        self._show_thermal(project)
         self.changed.emit()
         self.refresh()
 
@@ -1451,7 +1708,7 @@ class ResultStep(StepPanel):
         self.add(self.probe)
 
         buttons = QHBoxLayout()
-        report = QPushButton("보고서 저장 (PDF)")
+        report = _primary(QPushButton("보고서 저장 (PDF)"))
         report.clicked.connect(app.save_report)
         buttons.addWidget(report)
         buttons.addWidget(HelpButton("result.report"))
@@ -1464,7 +1721,7 @@ class ResultStep(StepPanel):
         self.add(b)
         self.layout_.addStretch(1)
         disclaimer = _hint(topic("result.disclaimer").short)
-        disclaimer.setStyleSheet("color: #8a6d3b; font-size: 11px;")
+        disclaimer.setProperty("role", "disclaimer")
         self.add(with_help(disclaimer, "result.disclaimer"))
 
     def set_fields(self, fields: list[tuple[str, str]]) -> None:
@@ -1489,10 +1746,13 @@ class ResultStep(StepPanel):
             self.case.setCurrentIndex(min(current, len(labels) - 1))
         self.case.blockSignals(False)
 
-    def set_modes(self, frequencies, labels: list[str] | None = None) -> None:
+    def set_modes(self, frequencies, labels: list[str] | None = None, title="진동 모드") -> None:
+        """Fill the mode selector (vibration / buckling modes, or the moments of a
+        transient heat run); None hides it."""
         visible = frequencies is not None
         self.mode_box.setVisible(visible)
         self.mode_label.setVisible(visible)
+        self.mode_label.setText(title)
         if not visible:
             return
         current = max(0, self.mode.currentIndex())

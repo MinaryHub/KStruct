@@ -45,6 +45,49 @@ def test_version_matches_pyproject():
     assert kstruct.__version__.startswith(kstruct.RELEASE_VERSION)
 
 
+def _kbuild():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("kbuild", ROOT / "packaging" / "build.py")
+    kbuild = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kbuild)
+    return kbuild
+
+
+def test_signing_is_optional_and_configured_by_environment(tmp_path):
+    """No certificate: no signing commands (the unsigned build of before). A .pfx or a
+    custom command signs both the program and the installer; macOS signs the bundle and
+    notarizes the disk image only with an identity and a notary profile."""
+    kbuild = _kbuild()
+    exe, setup = tmp_path / "KStruct.exe", tmp_path / "KStruct-Setup-1.exe"
+    assert kbuild.windows_sign_commands([exe], env={}) == []
+    pfx = kbuild.windows_sign_commands(
+        [exe, setup],
+        env={"KSTRUCT_SIGN_PFX": "c.pfx", "KSTRUCT_SIGN_PASSWORD": "pw", "KSTRUCT_SIGNTOOL": "st"},
+    )
+    assert [cmd[-1] for cmd in pfx] == [str(exe), str(setup)]
+    assert pfx[0][:2] == ["st", "sign"] and "/tr" in pfx[0] and ["/p", "pw"] == pfx[0][-3:-1]
+    custom = kbuild.windows_sign_commands([exe], env={"KSTRUCT_SIGN_COMMAND": "azsign {file}"})
+    assert custom == [["azsign", str(exe)]]
+
+    app, dmg = tmp_path / "KStruct.app", tmp_path / "KStruct.dmg"
+    assert kbuild.macos_sign_commands(app, env={}) == []
+    signed = kbuild.macos_sign_commands(app, env={"KSTRUCT_MACOS_IDENTITY": "Developer ID X"})
+    assert "--options" in signed[0] and signed[0][-1] == str(app)
+    assert (ROOT / "packaging" / "macos" / "entitlements.plist").is_file()
+    assert kbuild.macos_notarize_commands(dmg, env={"KSTRUCT_NOTARY_PROFILE": "p"}) == []
+    notarize = kbuild.macos_notarize_commands(
+        dmg, env={"KSTRUCT_NOTARY_PROFILE": "p", "KSTRUCT_MACOS_IDENTITY": "Developer ID X"}
+    )
+    assert notarize[0][:3] == ["xcrun", "notarytool", "submit"] and notarize[1][-1] == str(dmg)
+
+    (tmp_path / "a.exe").write_bytes(b"abc")
+    sums = kbuild.write_checksums([tmp_path / "a.exe"])
+    assert sums.read_text() == (
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a.exe\n"
+    )
+
+
 def test_build_stamp_raises_the_version_every_build(tmp_path, monkeypatch):
     """packaging/build.py: the counter file goes 1, 2, 3 … and the stamp module turns the
     release version into release.build; an explicit number (CI run number) wins."""

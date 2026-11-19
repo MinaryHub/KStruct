@@ -72,6 +72,18 @@ def window_state() -> tuple[bytes | None, list[int] | None]:
         return None, prefs.get("splitter")
 
 
+def theme() -> str:
+    """ "light" or "dark" (the look the user chose last)."""
+    name = load_prefs().get("theme", "light")
+    return name if name in ("light", "dark") else "light"
+
+
+def set_theme(name: str) -> None:
+    prefs = load_prefs()
+    prefs["theme"] = name
+    save_prefs(prefs)
+
+
 # --- autosave ---------------------------------------------------------------------------
 
 
@@ -103,3 +115,47 @@ def clear_autosave() -> None:
             p.unlink(missing_ok=True)
         except OSError as e:
             log.warning("cannot remove autosave %s: %s", p, e)
+
+
+# --- updates ----------------------------------------------------------------------------
+
+
+def auto_update() -> bool:
+    """Check for a new release at start-up (on unless the user turned it off)."""
+    return bool(load_prefs().get("auto_update", True))
+
+
+def set_auto_update(on: bool) -> None:
+    prefs = load_prefs()
+    prefs["auto_update"] = bool(on)
+    save_prefs(prefs)
+
+
+def github_token() -> str:
+    """Token for the private release repository (stored as plain text in prefs.json,
+    which lives in the user's own data folder)."""
+    return load_prefs().get("github_token", "")
+
+
+def set_github_token(value: str) -> None:
+    prefs = load_prefs()
+    if value:
+        prefs["github_token"] = value
+    else:
+        prefs.pop("github_token", None)
+    save_prefs(prefs)
+
+
+def update_check_due(hours: float) -> bool:
+    last = load_prefs().get("last_update_check")
+    try:
+        when = dt.datetime.fromisoformat(last) if last else None
+    except ValueError:
+        when = None
+    return when is None or dt.datetime.now() - when > dt.timedelta(hours=hours)
+
+
+def mark_update_checked() -> None:
+    prefs = load_prefs()
+    prefs["last_update_check"] = dt.datetime.now().isoformat(timespec="seconds")
+    save_prefs(prefs)

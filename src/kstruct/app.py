@@ -101,6 +101,7 @@ def main() -> None:
     window = MainWindow()
     window.install_crash_dialog()
     window.show()
+    window.check_updates_quietly()
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if args:
         window.load(Path(args[0]))

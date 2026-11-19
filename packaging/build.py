@@ -4,6 +4,17 @@
     uv run python packaging/build.py --stamp    # only write the build stamp
     uv run python packaging/build.py --number 57  # use this build number (CI: run number)
 
+Code signing is optional and driven by environment variables; without them the build is
+unsigned, as before:
+
+    Windows   KSTRUCT_SIGN_PFX (path to a .pfx) + KSTRUCT_SIGN_PASSWORD, or
+              KSTRUCT_SIGN_COMMAND (any command with {file}, e.g. for a cloud HSM)
+    macOS     KSTRUCT_MACOS_IDENTITY ("Developer ID Application: ...") for codesign;
+              KSTRUCT_NOTARY_PROFILE (a `notarytool store-credentials` keychain profile)
+              additionally notarizes and staples the .dmg
+
+Every build writes SHA256SUMS.txt next to the installers.
+
 The version is RELEASE_VERSION (pyproject.toml / kstruct.__init__) plus a fourth
 component, the build number. Without --number or the KSTRUCT_BUILD_NUMBER variable the
 number comes from packaging/build_number.txt, which is incremented and saved on every
@@ -16,8 +27,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -88,6 +101,67 @@ def frozen_binary() -> Path:
     return ROOT / "dist" / "KStruct" / "KStruct"
 
 
+TIMESTAMP_URL = "http://timestamp.digicert.com"
+
+
+def windows_sign_commands(files: list[Path], env=os.environ) -> list[list[str]]:
+    """signtool (or the configured command) for each file; [] when nothing is set up."""
+    template = env.get("KSTRUCT_SIGN_COMMAND")
+    if template:
+        return [shlex.split(template.replace("{file}", shlex.quote(str(f)))) for f in files]
+    pfx = env.get("KSTRUCT_SIGN_PFX")
+    if not pfx:
+        return []
+    signtool = env.get("KSTRUCT_SIGNTOOL") or shutil.which("signtool") or "signtool"
+    base = [signtool, "sign", "/fd", "sha256", "/tr", TIMESTAMP_URL, "/td", "sha256", "/f", pfx]
+    if env.get("KSTRUCT_SIGN_PASSWORD"):
+        base += ["/p", env["KSTRUCT_SIGN_PASSWORD"]]
+    return [[*base, str(f)] for f in files]
+
+
+def macos_sign_commands(app: Path, env=os.environ) -> list[list[str]]:
+    """Hardened-runtime codesign of the .app bundle; [] without an identity."""
+    identity = env.get("KSTRUCT_MACOS_IDENTITY")
+    if not identity:
+        return []
+    entitlements = ROOT / "packaging" / "macos" / "entitlements.plist"
+    return [
+        [
+            "codesign", "--deep", "--force", "--options", "runtime", "--timestamp",
+            "--entitlements", str(entitlements), "--sign", identity, str(app),
+        ],
+        ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)],
+    ]  # fmt: skip
+
+
+def macos_notarize_commands(dmg: Path, env=os.environ) -> list[list[str]]:
+    profile = env.get("KSTRUCT_NOTARY_PROFILE")
+    if not profile or not env.get("KSTRUCT_MACOS_IDENTITY"):
+        return []
+    return [
+        ["xcrun", "notarytool", "submit", str(dmg), "--keychain-profile", profile, "--wait"],
+        ["xcrun", "stapler", "staple", str(dmg)],
+    ]
+
+
+def _run_all(commands: list[list[str]], secret: str | None = None) -> None:
+    for cmd in commands:
+        shown = " ".join("***" if secret and part == secret else part for part in cmd)
+        print("+", shown, flush=True)
+        subprocess.run(cmd, cwd=ROOT, check=True)
+
+
+def write_checksums(files: list[Path]) -> Path | None:
+    """SHA256SUMS.txt for the published files (sha256sum -c format)."""
+    files = [f for f in files if f.is_file()]
+    if not files:
+        return None
+    out = files[0].parent / "SHA256SUMS.txt"
+    lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}" for f in files]
+    out.write_text("\n".join(lines) + "\n", "utf-8")
+    return out
+
+
 def package(version: str) -> list[Path]:
     """Installer / archive named after the version. Returns the files made."""
     dist = ROOT / "dist"
@@ -96,10 +170,16 @@ def package(version: str) -> list[Path]:
         if not Path(iscc).is_file():
             print("Inno Setup (iscc) not found: skipping the installer", file=sys.stderr)
             return []
+        secret = os.environ.get("KSTRUCT_SIGN_PASSWORD")
+        # the program inside the installer is signed too (SmartScreen checks both)
+        _run_all(windows_sign_commands([dist / "KStruct" / "KStruct.exe"]), secret)
         run(iscc, f"/DAppVersion={version}", str(ROOT / "packaging" / "windows" / "kstruct.iss"))
-        return [dist / f"KStruct-Setup-{version}.exe"]
+        setup = dist / f"KStruct-Setup-{version}.exe"
+        _run_all(windows_sign_commands([setup]), secret)
+        return [setup]
     if sys.platform == "darwin":
         out = dist / f"KStruct-{version}-macOS.dmg"
+        _run_all(macos_sign_commands(dist / "KStruct.app"))
         run(
             "hdiutil",
             "create",
@@ -112,6 +192,7 @@ def package(version: str) -> list[Path]:
             "UDZO",
             str(out),
         )
+        _run_all(macos_notarize_commands(out))
         return [out]
     out = dist / f"KStruct-{version}-linux-{platform.machine()}.tar.gz"
     run("tar", "-C", str(dist), "-czf", str(out), "KStruct")
@@ -146,8 +227,18 @@ def main() -> int:
         run(str(binary), "--version")
         run(str(binary), "--selftest")
     if not args.no_package:
-        for f in package(version):
+        made = package(version)
+        for f in made:
             print(f"built {f}")
+        sums = write_checksums(made)
+        if sums:
+            print(f"checksums {sums}")
+        signed = any(
+            os.environ.get(k)
+            for k in ("KSTRUCT_SIGN_PFX", "KSTRUCT_SIGN_COMMAND", "KSTRUCT_MACOS_IDENTITY")
+        )
+        if not signed and sys.platform in ("win32", "darwin"):
+            print("note: unsigned build (no signing certificate configured)", file=sys.stderr)
     return 0
 
 

@@ -45,6 +45,11 @@ class Material:
     fatigue_limit: float | None = None  # MPa, fully reversed, polished specimen
     max_service_temperature: float | None = None  # °C, approximate continuous-use limit
     ductile: bool = True
+    # brittle materials: strength in compression (MPa); None = assume the tensile strength
+    compressive_strength: float | None = None
+    # slope of the stress–strain curve beyond yield (MPa) for the elastic–plastic
+    # analysis; None = estimated from yield and tensile strength (fem/plasticity.py)
+    tangent_modulus: float | None = None
     designations: dict[str, str] = field(default_factory=dict, hash=False, compare=False)
 
 
@@ -52,12 +57,18 @@ class FixtureKind(Enum):
     FIXED = "fixed"  # no translation at all
     ROLLER = "roller"  # can slide along the face, not move through it
     PIN = "pin"  # cylindrical face: can rotate about its axis, nothing else
+    DISPLACEMENT = "displacement"  # faces moved by a given amount (per axis, mm)
+    ELASTIC = "elastic"  # faces resting on a spring foundation (normal direction)
 
 
 @dataclass
 class Fixture:
     kind: FixtureKind
     faces: list[FaceRef]
+    # DISPLACEMENT: prescribed movement per global axis in mm, None = that axis is free
+    displacement: tuple[float | None, float | None, float | None] = (None, None, None)
+    # ELASTIC: total spring stiffness of the faces in the normal direction (N/mm)
+    stiffness: float = 0.0
 
 
 class LoadKind(Enum):
@@ -74,6 +85,9 @@ class LoadKind(Enum):
     TORQUE = "torque"  # magnitude N·mm about the axis (vector = unit direction, point on axis)
     BEARING = "bearing"  # force vector (N) on a cylindrical hole, cosine distribution
     CENTRIFUGAL = "centrifugal"  # magnitude = ω rad/s about the axis (vector, point); all parts
+    # loads carried to the faces as if through a rigid fitting
+    REMOTE = "remote"  # force vector (N) acting at `point` away from the faces
+    MOMENT = "moment"  # moment vector (N·mm) on the faces (right-hand rule)
 
 
 THERMAL_LOADS = (
@@ -169,6 +183,12 @@ class Project:
     standard: str = "iso"  # standards pack id
     analysis: AnalysisKind = AnalysisKind.STATIC
     reference_temperature: float = 20.0  # °C, stress-free temperature for thermal stress
+    # heat transfer over time: duration in s (0 = steady state) and starting temperature
+    thermal_duration: float = 0.0
+    initial_temperature: float = 20.0
+    # strength analysis beyond the linear model (fem/nonlinear.py)
+    plasticity: bool = False  # material may yield (elastic–plastic)
+    large_deformation: bool = False  # geometry changes under load (large rotations)
     operating_frequency: float = 0.0  # Hz, excitation to compare natural frequencies with
     n_modes: int = 6
     load_cycle: str = "none"  # fem.fatigue.LoadCycle value

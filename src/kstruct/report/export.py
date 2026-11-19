@@ -54,6 +54,12 @@ def result_columns(project, result, summary=None) -> list[tuple[str, np.ndarray]
     cols.append(("safety factor [-]", result.safety_factor))
     if result.thermal is not None:
         cols.append((f"T [{temp.unit}]", temp.show(result.thermal.temperature)))
+    nl = getattr(result, "nonlinear", None)
+    if nl is not None:
+        cols.append(("equivalent plastic strain [-]", nl.plastic_strain))
+        if nl.permanent is not None:
+            permanent = np.linalg.norm(nl.permanent, axis=1)
+            cols.append((f"permanent |u| [{length.unit}]", length.show(permanent)))
     if summary is not None and getattr(summary, "fatigue", None) is not None:
         cols.append(("fatigue safety factor [-]", summary.fatigue.safety_factor))
         cols.append(("fatigue life [cycles]", summary.fatigue.life))

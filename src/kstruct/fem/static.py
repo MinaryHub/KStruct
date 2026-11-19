@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
+import scipy.sparse as sp
 
-from kstruct.fem import tet10
+from kstruct.fem import multigrid, tet10
 from kstruct.fem.assembly import (
     SolverError,
     d_matrices,
@@ -26,7 +28,12 @@ from kstruct.fem.bolts import (
 )
 from kstruct.fem.constraints import Constraints, build_constraints
 from kstruct.fem.contact import ContactSolver, build_contact
-from kstruct.fem.loads import bearing_forces, centrifugal_forces, torque_forces
+from kstruct.fem.loads import (
+    bearing_forces,
+    centrifugal_forces,
+    rigid_face_forces,
+    torque_forces,
+)
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.thermal import ThermalResult, has_thermal_loads, solve_thermal
 from kstruct.model import ConnectionKind, LoadKind, Material, Project, with_case
@@ -35,6 +42,11 @@ Progress = Callable[[float, str], None]
 
 THERMAL_STRAIN = np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
 FOS_CAP = 100.0  # safety factors above this are shown as "100+"
+# Free DOFs from which a plain static solve uses p-multigrid CG instead of a sparse
+# factorization (measured: 33k DOF 0.9 s vs 1.4-2.2 s, 85k DOF 2.6 s vs 15 s). Contact
+# solves keep the factorization: they change the matrix every iteration.
+ITERATIVE_MIN_DOF = 30_000
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -52,6 +64,7 @@ class StaticResult:
     contact_converged: bool = True  # False: the contact/friction iteration did not settle
     bolts: list | None = None  # fem.bolts.BoltResult per bolt
     bolt_nodes: np.ndarray | None = None  # nodes under bolt heads / nuts
+    nonlinear: object | None = None  # fem.nonlinear.NonlinearInfo for yield / large runs
 
     @property
     def von_mises(self) -> np.ndarray:
@@ -85,16 +98,25 @@ class StaticResult:
 
     @property
     def safety_factor(self) -> np.ndarray:
-        """Per node. Ductile: yield / von Mises. Brittle: tensile strength / max principal."""
+        """Per node. Ductile: yield / von Mises. Brittle: the smaller of tensile strength /
+        largest tensile principal stress and compressive strength / largest compressive
+        principal stress (compressive strength = tensile strength unless the material
+        says otherwise; checking tension only called a crushed part 100x safe)."""
         fos = np.full(self.mesh.n_nodes, FOS_CAP)
         for pid, m in self.materials.items():
             nodes = self.mesh.part_nodes(pid)
             if m.ductile:
                 demand, capacity = self.von_mises[nodes], m.yield_strength
             else:
-                demand, capacity = np.maximum(self.principal[nodes, 0], 0), m.tensile_strength
+                principal = self.principal[nodes]
+                demand, capacity = np.maximum(principal[:, 0], 0), m.tensile_strength
+                crush = np.maximum(-principal[:, 2], 0)
+                with np.errstate(divide="ignore"):
+                    fos[nodes] = np.minimum(
+                        (m.compressive_strength or m.tensile_strength) / crush, FOS_CAP
+                    )
             with np.errstate(divide="ignore"):
-                fos[nodes] = np.minimum(capacity / demand, FOS_CAP)
+                fos[nodes] = np.minimum(fos[nodes], np.minimum(capacity / demand, FOS_CAP))
         return fos
 
 
@@ -122,6 +144,12 @@ def _load_vector(project: Project, mesh: FEMesh, materials: dict[int, Material])
             f += bearing_forces(project, mesh, load)
         elif load.kind == LoadKind.CENTRIFUGAL:
             f += centrifugal_forces(project, mesh, materials, load)
+        elif load.kind == LoadKind.REMOTE:
+            f += rigid_face_forces(
+                mesh, load.faces, np.asarray(load.vector), np.zeros(3), load.point
+            )
+        elif load.kind == LoadKind.MOMENT:
+            f += rigid_face_forces(mesh, load.faces, np.zeros(3), np.asarray(load.vector))
     return f.ravel()
 
 
@@ -163,17 +191,21 @@ def recover_stress(
     ue = u[element_dofs(mesh.tets)]
     D = d_matrices(mesh, materials, slice(None))
     alpha = part_property(mesh, materials, "thermal_expansion")
-    acc = np.zeros((mesh.n_nodes, 6))
-    count = np.zeros(mesh.n_nodes)
+    sig = np.empty((len(mesh.tets), 10, 6))
     for k, p in enumerate(tet10.NODE_POINTS):
         dNdx, _ = tet10.gradients(X, p)
-        eps = np.einsum("eij,ej->ei", tet10.strain_matrix(dNdx), ue)
+        eps = (tet10.strain_matrix(dNdx) @ ue[:, :, None])[:, :, 0]
         if dT is not None:
             eps = eps - np.outer(alpha * dT[mesh.tets[:, k]], THERMAL_STRAIN)
-        sig = np.einsum("eij,ej->ei", D, eps)
-        np.add.at(acc, mesh.tets[:, k], sig)
-        np.add.at(count, mesh.tets[:, k], 1)
-    return acc / np.maximum(count, 1)[:, None]
+        sig[:, k] = (D @ eps[:, :, None])[:, :, 0]
+    # scatter-average with one sparse product (np.add.at is an order of magnitude slower)
+    n_entries = mesh.tets.size
+    scatter = sp.csr_matrix(
+        (np.ones(n_entries), (mesh.tets.ravel(), np.arange(n_entries))),
+        shape=(mesh.n_nodes, n_entries),
+    )
+    count = np.asarray(scatter.sum(axis=1)).ravel()
+    return (scatter @ sig.reshape(-1, 6)) / np.maximum(count, 1)[:, None]
 
 
 @dataclass
@@ -188,7 +220,12 @@ class _Stiffness:
     free: np.ndarray
     near_null: np.ndarray
     scale: float
-    solver: Callable | None = None  # factorization of Kp[free][:, free], made on first use
+    mesh: FEMesh | None = None
+    solver: Callable | None = None  # full-size rhs -> u, made on first use
+    # True when `solver` enforces the constraints exactly (eliminated) instead of by
+    # penalty springs: the reactions then come from multipliers, not from spring forces
+    exact: bool = False
+    iterations: int = 0  # CG iterations of the last iterative solve (0: direct)
 
 
 def _stiffness(
@@ -203,6 +240,8 @@ def _stiffness(
     K = stiffness_matrix(mesh, materials)
     if connectors:
         K = K + bolt_stiffness_and_preload(connectors, n_dof)[0]
+    if c.springs:
+        K = K + c.spring_matrix()  # elastic supports are stiffness, not constraints
     scale = K.diagonal().max()
     free = np.flatnonzero(~c.fixed)
     return _Stiffness(
@@ -213,7 +252,53 @@ def _stiffness(
         free=free,
         near_null=rigid_body_modes(mesh.nodes)[free],
         scale=scale,
+        mesh=mesh,
     )
+
+
+def _penalty_solver(st: _Stiffness) -> Callable:
+    """Direct (or AMG) solve of K + penalty equations on the free DOFs."""
+    n_dof, free = st.K.shape[0], st.free
+    solve = make_solver(st.Kp[free][:, free].tocsr(), st.near_null)
+
+    def run(rhs: np.ndarray) -> np.ndarray:
+        out = np.zeros(n_dof)
+        out[free] = solve(rhs[free])
+        return out
+
+    return run
+
+
+def _iterative_solver(st: _Stiffness) -> Callable | None:
+    """p-multigrid CG on the system with the constraints eliminated, or None when the
+    constraints cannot be eliminated or the coarse problem is singular."""
+    eliminated = st.constraints.elimination()
+    if eliminated is None:
+        return None
+    T, unknowns = eliminated
+    TT = T.T.tocsr()
+    A = (TT @ st.K @ T).tocsr()
+    # coarse unknowns: every corner DOF that is not fixed (a tied corner keeps its column:
+    # it then only steers the midside nodes next to it, which keeps rigid motions in the
+    # coarse space)
+    coarse_free = np.flatnonzero(~st.constraints.fixed[_coarse_dofs(st.mesh)])
+    P = multigrid.dof_prolongation(st.mesh)[unknowns][:, coarse_free]
+    try:
+        pmg = multigrid.PMGSolver(A, P)
+    except multigrid.NotSuitable:
+        return None
+
+    def run(rhs: np.ndarray) -> np.ndarray:
+        x = pmg.solve(TT @ rhs)
+        st.iterations = pmg.iterations
+        return T @ x
+
+    return run
+
+
+def _coarse_dofs(mesh: FEMesh) -> np.ndarray:
+    corners = np.unique(mesh.tets[:, :4])
+    return (corners[:, None] * 3 + np.arange(3)).ravel()
 
 
 def solve_static(
@@ -247,25 +332,38 @@ def solve_static(
     f = f_mech if dT is None else f_mech + _thermal_load(mesh, materials, dT)
     pulls = np.zeros(len(connectors))
     unit_solver = None
-    if not np.any(f) and not any(c.bolt.preload for c in connectors):
+    u_set = c.prescribed()  # displacement imposed by DISPLACEMENT fixtures (else zero)
+    moved = bool(np.any(u_set))
+    if not np.any(f) and not moved and not any(c.bolt.preload for c in connectors):
         raise SolverError("하중이 없습니다. 힘, 압력, 중력 또는 온도 하중을 추가하세요.")
 
     report(0.4, "연립방정식 푸는 중")
     size = np.ptp(mesh.nodes, axis=0).max()
 
     def linear_solver():
-        """Kp on the free DOFs, factorized once per _Stiffness; the returned function
-        solves full-size right-hand sides."""
+        """Solver for full-size right-hand sides, set up once per _Stiffness: p-multigrid
+        CG for large models, a factorization of K + penalty terms otherwise (and whenever
+        the iteration is not suitable, e.g. a part that is not held: the factorization
+        diagnoses that)."""
         if st.solver is None:
-            st.solver = make_solver(Kp[free][:, free].tocsr(), near_null)
-        solve = st.solver
+            iterative = _iterative_solver(st) if len(free) >= ITERATIVE_MIN_DOF else None
+            if iterative is None:
+                st.solver = _penalty_solver(st)
+            else:
+                st.exact = True
 
-        def run(rhs):
-            out = np.zeros(n_dof)
-            out[free] = solve(rhs[free])
-            return out
+                def guarded(rhs):
+                    if st.exact:
+                        try:
+                            return iterative(rhs)
+                        except multigrid.NotSuitable as e:
+                            log.warning("iterative solver gave up (%s): factorizing instead", e)
+                            st.exact, st.iterations = False, 0
+                            st.solver = _penalty_solver(st)
+                    return st.solver(rhs)
 
-        return run
+                st.solver = guarded
+        return st.solver
 
     contact_solver = (
         ContactSolver(Kp, free, contacts, lambda A: make_solver(A.tocsr(), near_null), scale)
@@ -297,14 +395,15 @@ def solve_static(
         f = f + f_preload
     if contact_solver is not None:
         report(0.5, "접촉 상태 계산 중 (반복)")
-        u = contact_solver.solve_path(f_preload, f)[0]
+        u = contact_solver.solve_path(f_preload, f, u_set if moved else None)[0]
         # only the stabilising springs hold a part that slid or lifted off
         if np.abs(u).max() > 0.2 * size:
             raise SolverError("contact unstable")
-    elif unit_solver is not None:
-        u = unit_solver(f)  # the preload stage already factorized this matrix
     else:
-        u = linear_solver()(f)
+        # the preload stage may already have factorized this matrix
+        solve = unit_solver if unit_solver is not None else linear_solver()
+        # imposed displacements: solve for the rest with their forces moved to the right
+        u = u_set + solve(f - Kp @ u_set) if moved else solve(f)
     if np.abs(u).max() > 1e3 * size:
         raise SolverError("unstable")
 
@@ -312,11 +411,26 @@ def solve_static(
     stress = recover_stress(mesh, materials, u, dT)
 
     residual = K @ u - f
+    # exact constraints carry multipliers instead of penalty spring forces
+    needs = st.exact and contact_solver is None and any(len(e) for e in c.fixture_equations)
+    multipliers = c.multiplier_forces(residual) if needs else None
+    if needs and multipliers is None:
+        raise SolverError("not converged")
     reactions = []
-    for dofs, equations in zip(c.fixture_dofs, c.fixture_equations, strict=True):
+    spring_force = {i: -(Ks @ u) for i, Ks in c.springs}  # what each support pushes with
+    for i, (dofs, equations) in enumerate(zip(c.fixture_dofs, c.fixture_equations, strict=True)):
         r = np.zeros(3)
         np.add.at(r, dofs % 3, residual[dofs])
-        reactions.append(r + c.penalty_forces(u, equations, scale))
+        if i in spring_force:
+            r += spring_force[i].reshape(-1, 3).sum(axis=0)
+            reactions.append(r)
+            continue
+        if len(equations) == 0:
+            reactions.append(r)
+        elif multipliers is not None:
+            reactions.append(r + multipliers[equations.start : equations.stop].sum(axis=0))
+        else:
+            reactions.append(r + c.penalty_forces(u, equations, scale))
     applied = f_mech.reshape(-1, 3).sum(axis=0)
 
     report(1.0, "완료")
@@ -356,6 +470,17 @@ def solve_cases(
     report = progress or (lambda frac, msg: None)
     n = len(project.cases)
     results = []
+    if project.plasticity or project.large_deformation:
+        from kstruct.fem.nonlinear import solve_nonlinear
+
+        for i, case in enumerate(project.cases):
+            prefix = f"[{case.name}] " if n > 1 else ""
+
+            def sub(frac, msg, i=i, prefix=prefix):
+                report((i + frac) / n, prefix + msg)
+
+            results.append(solve_nonlinear(with_case(project, i), mesh, materials, sub))
+        return results
     shared = _stiffness(project, mesh, materials) if project.cases else None
     for i, case in enumerate(project.cases):
         prefix = f"[{case.name}] " if n > 1 else ""
