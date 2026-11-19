@@ -123,11 +123,11 @@ class UpdateDialog(QDialog):
 
         self.token = QLineEdit(prefs.github_token())
         self.token.setEchoMode(QLineEdit.EchoMode.Password)
-        self.token.setPlaceholderText("github_pat_… (저장소 읽기 권한)")
+        self.token.setPlaceholderText("선택 사항 — 비워 두어도 됩니다")
         if update.TOKEN_ENV in os.environ:
             self.token.setPlaceholderText(f"환경 변수 {update.TOKEN_ENV} 사용 중")
         row = QHBoxLayout()
-        row.addWidget(QLabel("GitHub 토큰"))
+        row.addWidget(QLabel("GitHub 토큰 (선택)"))
         row.addWidget(self.token, 1)
         holder = QWidget()
         holder.setLayout(row)
@@ -297,7 +297,7 @@ def _will_quit() -> bool:
 
 class UpdateChecker(QObject):
     """Quiet start-up check: emits `available(release)` when a newer release exists.
-    Failures (offline, no token for the private repository) are only logged."""
+    Failures (offline, no release yet) are only logged."""
 
     available = Signal(object)
 
