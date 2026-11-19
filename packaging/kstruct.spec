@@ -16,6 +16,7 @@ for package in ("OCP", "netgen", "pyngcore", "vtkmodules", "pyvista", "pyvistaqt
     hiddenimports += h
 datas += collect_data_files("kstruct", includes=["resources/**/*"])
 datas.append((str(ROOT / "THIRD_PARTY_NOTICES.md"), "."))  # shown in the About dialog
+datas.append((str(ROOT / "LICENSE"), "."))  # KStruct itself: MIT
 hiddenimports += collect_submodules("kstruct")
 if (ROOT / "src" / "kstruct" / "_build.py").is_file():  # version stamp from packaging/build.py
     hiddenimports.append("kstruct._build")

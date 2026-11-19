@@ -19,7 +19,7 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
-LicenseFile=..\..\THIRD_PARTY_NOTICES.md
+LicenseFile=..\..\LICENSE
 
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
@@ -32,6 +32,7 @@ Name: "assockst"; Description: "KStruct 프로젝트 파일(.kst)을 KStruct로 
 [Files]
 Source: "..\..\dist\KStruct\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"
+Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"
 
 [Icons]
 Name: "{group}\KStruct"; Filename: "{app}\KStruct.exe"

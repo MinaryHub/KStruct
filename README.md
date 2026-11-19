@@ -11,7 +11,7 @@ KStruct는 기계 부품을 설계하는 사람이 유한요소해석(FEA) 전�
 - **분야**: 엔지니어링 · CAD/CAE · 기계 설계
 - **지원 OS**: Windows 10/11 (64비트), macOS 14 이상 (Apple Silicon), Linux (x86-64)
 - **언어**: 한국어
-- **가격**: 무료
+- **가격**: 무료 (오픈소스, MIT 라이선스)
 - **개발**: MinaryHub · [github.com/MinaryHub/KStruct](https://github.com/MinaryHub/KStruct)
 
 ## 주요 기능
@@ -84,6 +84,12 @@ KStruct는 기계 부품을 설계하는 사람이 유한요소해석(FEA) 전�
 해석 결과는 설계 검토를 돕는 **참고 자료**입니다. 실제 제작·사용 여부는 자격을 갖춘 기술자가 최종 판단해야
 합니다. 결과 화면과 보고서에도 같은 고지가 표시됩니다.
 
+## 라이선스
+
+KStruct는 [MIT 라이선스](LICENSE)로 배포됩니다. 누구나 무료로 사용·수정·재배포할 수 있으며, 저작권 고지와
+라이선스 문구를 함께 넣으면 됩니다. 함께 배포되는 오픈소스 구성요소(Qt/PySide6, Open CASCADE, Netgen 등)는
+각자의 라이선스를 따르며 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에 정리되어 있습니다.
+
 ## English
 
 **KStruct** is a desktop finite-element analysis app for mechanical parts, made for people who are not
@@ -91,7 +97,7 @@ simulation experts. Open a CAD model (STEP, IGES, STL…), pick a material, clic
 loads, and KStruct meshes and solves automatically, then explains in plain language whether the part is
 safe, where it is weakest and what to change. It covers static strength (with thermal stress and
 fatigue), yielding and large deformation, vibration, buckling, steady and transient heat transfer,
-contact with friction and bolted joints, and writes PDF reports. Free; Windows, macOS (Apple Silicon)
+contact with friction and bolted joints, and writes PDF reports. Free and open source (MIT License); Windows, macOS (Apple Silicon)
 and Linux. The user interface is in Korean.
 
 ## 개발

@@ -1,5 +1,8 @@
 # KStruct — Third-party software notices
 
+KStruct itself is released under the MIT License (see `LICENSE`). It includes the
+open-source components below, each under its own license.
+
 KStruct includes the following open-source components. Each is used unmodified and
 shipped as separate, replaceable shared libraries in the installation folder, so the
 LGPL-licensed libraries can be replaced by the user with compatible versions.

@@ -357,3 +357,17 @@ def test_bug_report_bundle(tmp_path, monkeypatch):
     out = write_bug_report(tmp_path / "r.zip", project_file, {"error.txt": "boom"})
     names = set(zipfile.ZipFile(out).namelist())
     assert {"environment.txt", "error.txt", "kstruct.log", "p.kst"} <= names
+
+
+def test_license_is_mit_and_shown_with_the_notices():
+    import tomllib
+    from pathlib import Path
+
+    from kstruct.paths import notices_text
+
+    root = Path(__file__).parents[1]
+    assert (root / "LICENSE").read_text("utf-8").startswith("MIT License")
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
+    assert pyproject["project"]["license"] == "MIT"
+    text = notices_text()  # the About dialog's 'open-source notices' tab
+    assert text.startswith("MIT License") and "Netgen" in text

@@ -99,12 +99,12 @@ def environment_summary() -> str:
     )
 
 
-def notices_text() -> str:
-    """Third-party notices shipped with the app (repo root in development)."""
+def _shipped_text(name: str) -> str | None:
+    """A text file shipped next to the app (bundle, install folder, or repo root)."""
     candidates = [
-        Path(getattr(sys, "_MEIPASS", "")) / "THIRD_PARTY_NOTICES.md",
-        Path(sys.executable).parent / "THIRD_PARTY_NOTICES.md",
-        Path(__file__).resolve().parents[2] / "THIRD_PARTY_NOTICES.md",
+        Path(getattr(sys, "_MEIPASS", "")) / name,
+        Path(sys.executable).parent / name,
+        Path(__file__).resolve().parents[2] / name,
     ]
     for c in candidates:
         try:
@@ -112,4 +112,13 @@ def notices_text() -> str:
                 return c.read_text("utf-8")
         except OSError:
             continue
-    return "THIRD_PARTY_NOTICES.md 파일을 찾을 수 없습니다."
+    return None
+
+
+def notices_text() -> str:
+    """KStruct's own license (MIT) followed by the third-party notices."""
+    own = _shipped_text("LICENSE") or "KStruct is released under the MIT License."
+    notices = _shipped_text("THIRD_PARTY_NOTICES.md") or (
+        "THIRD_PARTY_NOTICES.md 파일을 찾을 수 없습니다."
+    )
+    return f"{own.strip()}\n\n{'=' * 72}\n\n{notices}"
