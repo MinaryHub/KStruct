@@ -42,7 +42,7 @@ git tag v0.2.0 && git push origin v0.2.0
 
 가 있어야 합니다(CI의 `release` 작업이 이렇게 올립니다). 초안·프리릴리스는 `/releases/latest`에 나오지 않으므로 앱이 무시합니다.
 
-저장소가 비공개이므로 각 PC에 **읽기 전용 토큰**이 필요합니다. GitHub → Settings → Developer settings → Fine-grained personal access tokens에서 저장소를 KStruct로 한정하고 권한은 "Contents: Read-only"만 준 토큰을 만들어, 업데이트 창의 'GitHub 토큰'에 붙여 넣거나 환경 변수 `KSTRUCT_GITHUB_TOKEN`으로 배포합니다.
+저장소(`MinaryHub/KStruct`)는 공개라서 토큰 없이 동작합니다. 회사 전체가 한 인터넷 주소로 나가 GitHub의 비로그인 한도(주소당 시간당 60회)에 걸리면, 권한 없는 토큰을 업데이트 창의 'GitHub 토큰 (선택)'에 넣거나 환경 변수 `KSTRUCT_GITHUB_TOKEN`으로 배포합니다. 저장소를 다시 비공개로 바꾸면 "Contents: Read-only" 토큰이 필요합니다.
 
 ## 4. 로컬에서 서명하며 빌드
 

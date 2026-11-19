@@ -76,7 +76,7 @@ def test_check_and_errors(monkeypatch):
     monkeypatch.setattr(update, "_request", fake)
     release = update.check("tok")
     assert release.version == "99.0.0" and release.notes == "새 기능"
-    assert seen["url"].endswith("/repos/knoxxr/KStruct/releases/latest")
+    assert seen["url"].endswith("/repos/MinaryHub/KStruct/releases/latest")
     assert seen["headers"]["Authorization"] == "Bearer tok"
 
     monkeypatch.setattr(
@@ -90,7 +90,7 @@ def test_check_and_errors(monkeypatch):
         raise _http_error(404)
 
     monkeypatch.setattr(update, "_request", missing)
-    with pytest.raises(update.UpdateError, match="토큰이 필요"):
+    with pytest.raises(update.UpdateError, match="아직 릴리스가 없거나"):
         update.check(None)
     with pytest.raises(update.UpdateError, match="권한"):
         update.check("tok")
@@ -171,9 +171,9 @@ def test_token_does_not_follow_the_redirect_to_storage(monkeypatch):
 
 def test_issue_link_and_sha_lookup():
     url = update.issue_url("제목", "본문 " * 3000)
-    assert url.startswith("https://github.com/knoxxr/KStruct/issues/new?")
+    assert url.startswith("https://github.com/MinaryHub/KStruct/issues/new?")
     assert len(url) < 40_000
     assert "KStruct" in update.environment_text()
     assert update.expected_sha256("ab  a.exe\ncd *b.dmg\n", "b.dmg") == "cd"
     assert update.expected_sha256("ab  a.exe\n", "c.exe") is None
-    assert update.links()["sponsor"] == "https://github.com/sponsors/minarhub"
+    assert update.links()["sponsor"] == "https://github.com/sponsors/MinaryHub"

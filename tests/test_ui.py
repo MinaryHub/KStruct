@@ -979,14 +979,14 @@ def test_contact_sponsor_and_update_from_the_toolbar(qtbot, monkeypatch, tmp_pat
     actions = {a.text(): a for a in window.findChildren(type(window.update_action))}
     actions["문의하기"].trigger()
     actions["후원하기"].trigger()
-    assert opened[0].startswith("https://github.com/knoxxr/KStruct/issues/new?")
-    assert "KStruct" in opened[0] and opened[1] == "https://github.com/sponsors/minarhub"
+    assert opened[0].startswith("https://github.com/MinaryHub/KStruct/issues/new?")
+    assert "KStruct" in opened[0] and opened[1] == "https://github.com/sponsors/MinaryHub"
 
     release = update.Release(
         "v99.0.0",
         "99.0.0",
         "- 새 기능",
-        "https://github.com/knoxxr/KStruct/releases/tag/v99.0.0",
+        "https://github.com/MinaryHub/KStruct/releases/tag/v99.0.0",
         [
             update.Asset(n, f"api/{n}")
             for n in (

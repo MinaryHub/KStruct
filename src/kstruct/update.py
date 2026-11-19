@@ -1,16 +1,17 @@
 """Updates from GitHub Releases, plus the contact / sponsor links.
 
-The repository is private, so the GitHub API answers 404 without a token: a personal
-access token with read access to the repository (fine-grained: "Contents: read") is
-taken from the environment variable KSTRUCT_GITHUB_TOKEN or the preferences.
+The repository (MinaryHub/KStruct) is public, so no sign-in is needed. A personal access
+token is still used when given (environment variable KSTRUCT_GITHUB_TOKEN or the
+preferences): it lifts the anonymous API limit of 60 requests an hour per address, and
+keeps updates working if the repository is ever made private again.
 
 Flow: `check()` reads /releases/latest and returns the release when its tag is newer
 than this build's RELEASE_VERSION; `download()` fetches the installer for this platform
 and checks it against the release's SHA256SUMS.txt (written by CI); `launch_installer()`
 starts it. Nothing here touches Qt, so it can be tested without a window.
 
-All network access goes through `_request` (one seam for the tests). Release assets of
-a private repository are fetched through the API, which redirects to a signed storage
+All network access goes through `_request` (one seam for the tests). Release assets are
+fetched through the API, which redirects to a signed storage
 URL: the token must not follow that redirect (the storage rejects a second credential,
 and it should not see the token anyway).
 """
@@ -85,7 +86,7 @@ def is_newer(tag: str, current: str = RELEASE_VERSION) -> bool:
 @dataclass
 class Asset:
     name: str
-    api_url: str  # .../releases/assets/<id> (works for private repositories)
+    api_url: str  # .../releases/assets/<id> (also works with a private repository)
     size: int = 0
 
 
@@ -175,8 +176,8 @@ def _explain(error: Exception, tok: str | None) -> UpdateError:
     if isinstance(error, urllib.error.HTTPError):
         if error.code == 404:
             return UpdateError(
-                "릴리스를 찾을 수 없습니다. 저장소가 비공개라서 읽을 수 있는 GitHub 토큰이 "
-                "필요합니다."
+                "릴리스를 찾을 수 없습니다. 아직 릴리스가 없거나 저장소 주소가 바뀌었을 수 "
+                "있습니다(저장소가 비공개라면 읽기 권한이 있는 GitHub 토큰이 필요합니다)."
                 if not tok
                 else "릴리스를 찾을 수 없습니다. 아직 릴리스가 없거나, 토큰에 이 저장소를 "
                 "읽을 권한이 없습니다."
