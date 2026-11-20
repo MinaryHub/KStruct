@@ -1,6 +1,6 @@
 # 앱 등록용 스크린샷
 
-한국어 화면은 이 폴더, 영어 화면은 `en/` 아래 같은 구조(`en/1920x1080/`, `en/2880x1800/`)에 있습니다.
+스크린샷은 **영어 화면**입니다(`KSTRUCT_LANG=en`). 한국어 화면이 필요하면 아래 명령의 `ko`로 `ko/` 아래에 만듭니다.
 
 | 폴더 | 크기 | 용도 |
 |---|---|---|
@@ -22,17 +22,17 @@
 예제 모델(브래킷 S355 3 kN, 볼트 체결 판 S355 + M10 10.9 세 개)로 실제 해석한 화면이며, 다시 만들려면:
 
 ```
-QT_SCALE_FACTOR=1.5 xvfb-run -a uv run python packaging/store_screenshots.py 03_stress docs/screenshots/1920x1080/03_stress.png 1280 720
-QT_SCALE_FACTOR=2   xvfb-run -a uv run python packaging/store_screenshots.py 03_stress docs/screenshots/2880x1800/03_stress.png 1440 900
+KSTRUCT_LANG=en QT_SCALE_FACTOR=1.5 xvfb-run -a uv run python packaging/store_screenshots.py 03_stress docs/screenshots/1920x1080/03_stress.png 1280 720
+KSTRUCT_LANG=en QT_SCALE_FACTOR=2   xvfb-run -a uv run python packaging/store_screenshots.py 03_stress docs/screenshots/2880x1800/03_stress.png 1440 900
 ```
 
 장면 이름: `01_welcome 02_setup 03_stress 04_safety 05_bolts 06_modal 07_thermal 08_nonlinear`, 어두운 화면은 장면 이름 뒤에 `_dark`(예: `03_stress_dark` → `09_dark_theme.png`).
 
-언어별로 전부 다시 만들기(영어는 `KSTRUCT_LANG=en`으로 앱을 영어로 띄움):
+전부 다시 만들기:
 
 ```
-xvfb-run -a -s "-screen 0 3000x2000x24" ./packaging/all_store_screenshots.sh ko
-xvfb-run -a -s "-screen 0 3000x2000x24" ./packaging/all_store_screenshots.sh en
+xvfb-run -a -s "-screen 0 3000x2000x24" ./packaging/all_store_screenshots.sh      # 영어 → 이 폴더
+xvfb-run -a -s "-screen 0 3000x2000x24" ./packaging/all_store_screenshots.sh ko   # 한국어 → ko/
 ```
 
 | File | Caption (English, example) |

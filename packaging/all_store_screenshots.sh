@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# All store screenshots for one language: ./packaging/all_store_screenshots.sh ko|en
-#   ko -> docs/screenshots/<size>/, en -> docs/screenshots/en/<size>/
+# All store screenshots for one language: ./packaging/all_store_screenshots.sh [en|ko]
+#   en (default) -> docs/screenshots/<size>/, ko -> docs/screenshots/ko/<size>/
 # Linux needs a display: run under `xvfb-run -a -s "-screen 0 3000x2000x24"`.
 set -euo pipefail
-lang="${1:-ko}"
+lang="${1:-en}"
 base="docs/screenshots"
-[ "$lang" = "ko" ] || base="docs/screenshots/$lang"
+[ "$lang" = "en" ] || base="docs/screenshots/$lang"
 scenes=(01_welcome 02_setup 03_stress 04_safety 05_bolts 06_modal 07_thermal 08_nonlinear)
 shoot() {  # scale, width, height, folder
   mkdir -p "$base/$4"
