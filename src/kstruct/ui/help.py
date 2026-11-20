@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from kstruct.i18n import tr
+
 
 @dataclass(frozen=True)
 class HelpTopic:
@@ -55,7 +57,12 @@ def topic(key: str) -> HelpTopic:
         return _topics()[key]
     except KeyError:
         # missing help text is a bug, but must not crash the app
-        return HelpTopic(key, key, f"(도움말 없음: {key})", f"도움말이 아직 없습니다: {key}")
+        return HelpTopic(
+            key,
+            key,
+            tr("(도움말 없음: {key})", key=key),
+            tr("도움말이 아직 없습니다: {key}", key=key),
+        )
 
 
 class HelpDialog(QDialog):
@@ -79,7 +86,7 @@ class HelpDialog(QDialog):
             layout.addWidget(link)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText(tr("닫기"))
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 

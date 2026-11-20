@@ -16,10 +16,14 @@ from scipy.spatial import cKDTree
 
 from kstruct.fem import tet10
 from kstruct.fem.mesh import FEMesh
+from kstruct.i18n import N_
 from kstruct.model import Project
 
 NONE, FIXTURE_EDGE, CONCAVE_EDGE = 0, 1, 2
-KIND_NAMES = {FIXTURE_EDGE: "완전 고정면 가장자리", CONCAVE_EDGE: "오목 모서리(필렛 없음)"}
+KIND_NAMES = {
+    FIXTURE_EDGE: N_("완전 고정면 가장자리"),
+    CONCAVE_EDGE: N_("오목 모서리(필렛 없음)"),
+}
 MIN_BEND = np.cos(np.radians(15.0))  # faces meeting at less than 15° are smooth, not a corner
 ZONE_FRACTION = 0.03  # exclusion radius as a fraction of the part's bounding diagonal
 

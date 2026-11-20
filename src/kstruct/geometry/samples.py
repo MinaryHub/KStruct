@@ -13,6 +13,8 @@ from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 from OCP.TopoDS import TopoDS_Compound, TopoDS_Shape
 
+from kstruct.i18n import tr
+
 
 def _box(x: float, y: float, z: float, dx: float, dy: float, dz: float) -> TopoDS_Shape:
     return BRepPrimAPI_MakeBox(gp_Pnt(x, y, z), dx, dy, dz).Shape()
@@ -51,7 +53,7 @@ def write_step(shape: TopoDS_Shape, path: str | Path) -> Path:
     writer = STEPControl_Writer()
     writer.Transfer(shape, STEPControl_AsIs)
     if writer.Write(str(path)) != IFSelect_RetDone:
-        raise OSError(f"STEP 저장 실패: {path}")
+        raise OSError(tr("STEP 저장 실패: {path}", path=path))
     return path
 
 

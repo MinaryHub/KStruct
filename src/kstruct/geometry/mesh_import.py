@@ -22,6 +22,7 @@ from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCP.TopoDS import TopoDS, TopoDS_Shape, TopoDS_Shell, TopoDS_Vertex, TopoDS_Wire
 
 from kstruct.geometry.step_import import GeometryImportError
+from kstruct.i18n import tr
 from kstruct.model import Part, Project
 
 MESH_SUFFIXES = {".stl", ".obj", ".gltf", ".glb", ".3mf", ".fbx", ".ply", ".off"}
@@ -45,7 +46,7 @@ def _read_triangles(path: Path) -> list[tuple[str, np.ndarray, np.ndarray]]:
     try:
         scene = trimesh.load(str(path), force="scene")
     except Exception as e:  # trimesh raises many exception types for bad files
-        raise GeometryImportError(f"파일을 읽을 수 없습니다: {path.name}") from e
+        raise GeometryImportError(tr("파일을 읽을 수 없습니다: {name}", name=path.name)) from e
     scale = 1000.0 if suffix in _METRE_FORMATS else 1.0
     if suffix == ".3mf":
         unit = (scene.units or "millimeters").lower()
@@ -127,22 +128,30 @@ def _vertex(builder: BRep_Builder, p: np.ndarray) -> TopoDS_Vertex:
 def load_mesh(path: str | Path) -> Project:
     path = Path(path)
     if path.suffix.lower() not in MESH_SUFFIXES:
-        raise GeometryImportError(f"지원하지 않는 파일 형식입니다: {path.suffix}")
+        raise GeometryImportError(tr("지원하지 않는 파일 형식입니다: {suffix}", suffix=path.suffix))
     project = Project(source_path=path)
     for i, (name, vertices, triangles) in enumerate(_read_triangles(path)):
         mesh = _clean(vertices, triangles)
         if len(mesh.faces) > MAX_TRIANGLES:
             raise GeometryImportError(
-                f"'{name}'의 삼각형이 {len(mesh.faces):,}개로 너무 많습니다 "
-                f"(최대 {MAX_TRIANGLES:,}개). CAD에서 STEP으로 저장하거나, 메시를 단순화해 주세요."
+                tr(
+                    "'{name}'의 삼각형이 {n:,}개로 너무 많습니다 "
+                    "(최대 {limit:,}개). CAD에서 STEP으로 저장하거나, 메시를 단순화해 주세요.",
+                    name=name,
+                    n=len(mesh.faces),
+                    limit=MAX_TRIANGLES,
+                )
             )
         if not mesh.is_watertight:
             raise GeometryImportError(
-                f"'{name}' 형상에 구멍이나 틈이 있어 속이 찬 물체로 만들 수 없습니다. "
-                "닫힌(watertight) 메시가 필요합니다. 가능하면 원본 CAD에서 STEP으로 저장해 주세요."
+                tr(
+                    "'{name}' 형상에 구멍이나 틈이 있어 속이 찬 물체로 만들 수 없습니다. "
+                    "닫힌(watertight) 메시가 필요합니다. 가능하면 원본 CAD에서 STEP으로 저장해 주세요.",
+                    name=name,
+                )
             )
         shape = mesh_to_solid(mesh.vertices, mesh.faces)
         project.parts.append(Part(id=i, name=name, shape=shape))
     if not project.parts:
-        raise GeometryImportError("파일에 형상이 없습니다.")
+        raise GeometryImportError(tr("파일에 형상이 없습니다."))
     return project

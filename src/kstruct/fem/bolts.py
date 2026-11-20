@@ -28,6 +28,7 @@ from kstruct.fem import tet10
 from kstruct.fem.constraints import ConstraintError
 from kstruct.fem.mesh import FEMesh
 from kstruct.geometry.tessellate import faces_of
+from kstruct.i18n import tr
 from kstruct.model import Bolt, FaceRef, Project
 
 
@@ -80,7 +81,7 @@ def recommended_preload(size: str, grade: str) -> float:
 def hole_axis(project: Project, ref: FaceRef) -> tuple[np.ndarray, np.ndarray, float]:
     surf = BRepAdaptor_Surface(faces_of(project.part(ref.part_id).shape)[ref.face_index])
     if surf.GetType() != GeomAbs_Cylinder:
-        raise ConstraintError("볼트는 구멍(원통면)끼리만 연결할 수 있습니다.")
+        raise ConstraintError(tr("볼트는 구멍(원통면)끼리만 연결할 수 있습니다."))
     cyl = surf.Cylinder()
     ax = cyl.Axis()
     return np.array(ax.Location().Coord()), np.array(ax.Direction().Coord()), 2 * cyl.Radius()
@@ -125,7 +126,7 @@ class BoltConnector:
 def _face_weights(mesh: FEMesh, ref: FaceRef) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     tris = mesh.tris[mesh.face_tris([ref])]
     if len(tris) == 0:
-        raise ConstraintError("볼트 구멍 면이 메시에 없습니다. 메시를 다시 만들어 주세요.")
+        raise ConstraintError(tr("볼트 구멍 면이 메시에 없습니다. 메시를 다시 만들어 주세요."))
     weights, _, _ = tet10.tri6_load_weights(mesh.nodes[tris])
     w = np.zeros(mesh.n_nodes)
     np.add.at(w, tris.ravel(), weights.ravel())
@@ -249,7 +250,7 @@ def evaluate(connectors, u: np.ndarray, pulls: np.ndarray) -> list[BoltResult]:
         fos = grade.proof / eq if eq > 0 else 100.0
         out.append(
             BoltResult(
-                c.bolt.name or f"볼트 {i + 1}",
+                c.bolt.name or tr("볼트 {n}", n=i + 1),
                 c.bolt.size,
                 c.bolt.grade,
                 c.bolt.preload,

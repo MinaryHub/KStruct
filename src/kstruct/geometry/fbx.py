@@ -15,11 +15,17 @@ from pathlib import Path
 
 import numpy as np
 
+from kstruct.i18n import tr
+
 BINARY_MAGIC = b"Kaydara FBX Binary  \x00"
 
 
 class FbxError(Exception):
-    pass
+    """A message for the user; `internal` ones are replaced by a generic message."""
+
+    def __init__(self, message: str, internal: bool = False) -> None:
+        super().__init__(message)
+        self.internal = internal
 
 
 @dataclass
@@ -66,7 +72,7 @@ def _read_binary(data: bytes) -> Node:
             pos += 4
             raw = data[pos : pos + size]
             return (raw.decode("utf-8", "replace") if t == b"S" else raw), pos + size
-        raise FbxError(f"unknown FBX property type {t!r}")
+        raise FbxError(f"unknown FBX property type {t!r}", internal=True)
 
     def read_node(pos: int) -> tuple[Node | None, int]:
         end, n_props, _ = struct.unpack_from(head, data, pos)
@@ -206,13 +212,13 @@ def read_fbx(path: str | Path) -> list[FbxMesh]:
     try:
         return _read(data)
     except FbxError as e:
-        if not any("\uac00" <= ch <= "\ud7a3" for ch in str(e)):  # an internal message
-            raise FbxError("FBX 파일이 손상되었거나 지원하지 않는 형식입니다.") from e
+        if e.internal:
+            raise FbxError(tr("FBX 파일이 손상되었거나 지원하지 않는 형식입니다.")) from e
         raise
     except (struct.error, zlib.error, IndexError, ValueError, TypeError, KeyError) as e:
         # malformed content: counts that do not divide by three, indices out of range,
         # text where a number belongs
-        raise FbxError("FBX 파일이 손상되었거나 지원하지 않는 형식입니다.") from e
+        raise FbxError(tr("FBX 파일이 손상되었거나 지원하지 않는 형식입니다.")) from e
 
 
 def _read(data: bytes) -> list[FbxMesh]:
@@ -227,7 +233,7 @@ def _read(data: bytes) -> list[FbxMesh]:
 
     objects = root.find("Objects")
     if objects is None:
-        raise FbxError("FBX 파일에 형상이 없습니다.")
+        raise FbxError(tr("FBX 파일에 형상이 없습니다."))
     models = {m.props[0]: m for m in objects.all("Model")}
     parent: dict[int, int] = {}
     conns = root.find("Connections")
@@ -266,8 +272,8 @@ def _read(data: bytes) -> list[FbxMesh]:
         if tris:
             tris = np.array(tris, dtype=np.int64)
             if tris.min() < 0 or tris.max() >= len(verts):
-                raise FbxError("FBX 파일의 면이 없는 꼭짓점을 가리킵니다(파일 손상).")
+                raise FbxError(tr("FBX 파일의 면이 없는 꼭짓점을 가리킵니다(파일 손상)."))
             meshes.append(FbxMesh(name or "Mesh", verts, tris))
     if not meshes:
-        raise FbxError("FBX 파일에 메시 형상이 없습니다.")
+        raise FbxError(tr("FBX 파일에 메시 형상이 없습니다."))
     return meshes

@@ -18,6 +18,7 @@ from enum import Enum
 import numpy as np
 
 from kstruct.fem.static import FOS_CAP, StaticResult
+from kstruct.i18n import N_
 
 MARIN_FACTOR = 0.7  # legacy combined factor (machined surface × size), used without settings
 LOW_CYCLES, HIGH_CYCLES = 1e3, 1e6
@@ -25,10 +26,10 @@ INFINITE_LIFE = 1e9  # shown as "무한 수명"
 
 # Marin surface factor ka = a · Su^b (Su in MPa), Shigley's table
 SURFACE_FACTORS = {
-    "ground": ("연삭", 1.58, -0.085),
-    "machined": ("기계 가공·냉간 인발", 4.51, -0.265),
-    "hot_rolled": ("열간 압연", 57.7, -0.718),
-    "as_forged": ("단조 그대로", 272.0, -0.995),
+    "ground": (N_("연삭"), 1.58, -0.085),
+    "machined": (N_("기계 가공·냉간 인발"), 4.51, -0.265),
+    "hot_rolled": (N_("열간 압연"), 57.7, -0.718),
+    "as_forged": (N_("단조 그대로"), 272.0, -0.995),
 }
 # reliability factor kc (normal distribution, 8 % standard deviation of the fatigue limit)
 RELIABILITY_FACTORS = {"50": 1.0, "90": 0.897, "95": 0.868, "99": 0.814, "99.9": 0.753}

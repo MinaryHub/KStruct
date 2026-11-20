@@ -15,6 +15,7 @@ from OCP.BRep import BRep_Builder
 from OCP.BRepTools import BRepTools
 from OCP.TopoDS import TopoDS_Shape
 
+from kstruct.i18n import tr
 from kstruct.model import (
     AnalysisKind,
     Bolt,
@@ -168,7 +169,7 @@ def _write_archive(project: Project, path: Path, doc: dict, mesh) -> None:
         for p in project.parts:
             brep = Path(tmp) / f"part{p.id}.brep"
             if not BRepTools.Write_s(p.shape, str(brep)):
-                raise ProjectFileError(f"부품 형상을 저장할 수 없습니다: {p.name}")
+                raise ProjectFileError(tr("부품 형상을 저장할 수 없습니다: {name}", name=p.name))
             brep_bytes[p.id] = brep.read_bytes()
             z.writestr(f"parts/{p.id}.brep", brep_bytes[p.id])
         if mesh is not None:
@@ -227,7 +228,10 @@ def load_project(path: str | Path) -> Project:
         raise
     except Exception as e:  # zlib.error, BadZipFile, KeyError, TypeError, OCP failures ...
         raise ProjectFileError(
-            f"프로젝트 파일이 손상되었거나 형식이 맞지 않아 열 수 없습니다: {path.name}"
+            tr(
+                "프로젝트 파일이 손상되었거나 형식이 맞지 않아 열 수 없습니다: {name}",
+                name=path.name,
+            )
         ) from e
 
 
@@ -235,17 +239,17 @@ def _load_project(path: Path) -> Project:
     try:
         z = zipfile.ZipFile(path)
     except (zipfile.BadZipFile, OSError) as e:
-        raise ProjectFileError(f"프로젝트 파일을 열 수 없습니다: {path.name}") from e
+        raise ProjectFileError(tr("프로젝트 파일을 열 수 없습니다: {name}", name=path.name)) from e
     with z, tempfile.TemporaryDirectory() as tmp:
         doc = json.loads(z.read("project.json"))
         if doc.get("format") != "kstruct" or doc.get("version", 0) > FORMAT_VERSION:
-            raise ProjectFileError("이 버전의 KStruct에서 열 수 없는 프로젝트 파일입니다.")
+            raise ProjectFileError(tr("이 버전의 KStruct에서 열 수 없는 프로젝트 파일입니다."))
         shapes = {}
         for pd in doc["parts"]:
             brep = Path(z.extract(f"parts/{pd['id']}.brep", tmp))
             shape = TopoDS_Shape()
             if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
-                raise ProjectFileError(f"부품 형상을 읽을 수 없습니다: {pd['name']}")
+                raise ProjectFileError(tr("부품 형상을 읽을 수 없습니다: {name}", name=pd["name"]))
             shapes[pd["id"]] = shape
     return from_document(doc, shapes)
 
@@ -306,7 +310,7 @@ def from_document(doc: dict, shapes: dict) -> Project:
     if "cases" in doc:
         project.cases = [LoadCase(c["name"], [load(ld) for ld in c["loads"]]) for c in doc["cases"]]
     else:  # format 1: a single flat list
-        project.cases = [LoadCase("하중 케이스 1", [load(ld) for ld in doc.get("loads", [])])]
+        project.cases = [LoadCase(tr("하중 케이스 1"), [load(ld) for ld in doc.get("loads", [])])]
     project.active_case = int(doc.get("active_case", 0))
     project.mesh_refinements = [
         MeshRefinement(_unrefs(r["faces"]), float(r["size"]))

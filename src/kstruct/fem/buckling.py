@@ -28,10 +28,11 @@ from kstruct.fem.bolts import bolt_stiffness_and_preload, build_bolts
 from kstruct.fem.constraints import build_constraints
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.static import THERMAL_STRAIN, StaticResult, solve_static, temperature_change
+from kstruct.i18n import N_, tr
 from kstruct.model import Material, Project
 
 Progress = Callable[[float, str], None]
-NO_COMPRESSION = (
+NO_COMPRESSION = N_(
     "이 하중으로는 좌굴이 생기지 않습니다(누르는 힘이 없음). "
     "좌굴은 압축을 받는 가늘거나 얇은 부품에서 확인하세요."
 )
@@ -88,12 +89,12 @@ def solve_buckling(
 ) -> BucklingResult:
     report = progress or (lambda frac, msg: None)
     static = solve_static(
-        project, mesh, materials, lambda f, m: report(0.4 * f, f"하중 상태 계산: {m}")
+        project, mesh, materials, lambda f, m: report(0.4 * f, tr("하중 상태 계산: {m}", m=m))
     )
     # no compression anywhere -> nothing can buckle (and ARPACK would search in vain)
     if static.principal[:, 2].min() > -1e-6 * max(static.von_mises.max(), 1e-30):
-        raise SolverError(NO_COMPRESSION)
-    report(0.45, "기하 강성 행렬 조립 중")
+        raise SolverError(tr(NO_COMPRESSION))
+    report(0.45, tr("기하 강성 행렬 조립 중"))
     n_dof = mesh.n_nodes * 3
     u = static.displacement.ravel()
     thermal = static.thermal
@@ -106,7 +107,7 @@ def solve_buckling(
     free = np.flatnonzero(~c.fixed)
     Kf, Kgf = K[free][:, free].tocsc(), Kg[free][:, free].tocsc()
 
-    report(0.6, "좌굴 하중 계산 중")
+    report(0.6, tr("좌굴 하중 계산 중"))
     # K φ = λ (-Kg) φ with K positive definite and Kg indefinite: ARPACK "buckling" mode.
     # Eigenvalues closest to the shift come first; negative ones (load reversal) are dropped,
     # so ask for extra.
@@ -122,12 +123,12 @@ def solve_buckling(
         # no buckling mode anywhere near practical load levels (only tiny local compression)
         lam, phi = e.eigenvalues, e.eigenvectors
         if len(lam) == 0:
-            raise SolverError(NO_COMPRESSION) from e
+            raise SolverError(tr(NO_COMPRESSION)) from e
     except RuntimeError as e:
         raise SolverError("not converged") from e
     positive = lam > 1e-9
     if not positive.any():
-        raise SolverError(NO_COMPRESSION)
+        raise SolverError(tr(NO_COMPRESSION))
     lam, phi = lam[positive], phi[:, positive]
     order = np.argsort(lam)[:n_modes]
     factors = lam[order]
@@ -136,5 +137,5 @@ def solve_buckling(
     shapes = shapes.reshape(len(factors), -1, 3)
     peak = np.linalg.norm(shapes, axis=2).max(axis=1)
     shapes /= np.where(peak > 0, peak, 1.0)[:, None, None]
-    report(1.0, "완료")
+    report(1.0, tr("완료"))
     return BucklingResult(mesh, factors, shapes, static)
