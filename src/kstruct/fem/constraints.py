@@ -20,6 +20,7 @@ from scipy.spatial import cKDTree
 from kstruct.fem import tet10
 from kstruct.fem.mesh import FEMesh
 from kstruct.geometry.tessellate import faces_of
+from kstruct.i18n import tr
 from kstruct.model import Connection, ConnectionKind, FaceRef, FixtureKind, Project
 
 PENALTY_FACTOR = 1e6  # relative to the largest stiffness diagonal
@@ -230,13 +231,15 @@ def build_constraints(
     """Fixtures and connections. Contact connections are linear (bonded) unless the caller
     handles them itself (`contacts_as_bonded=False`, static analysis)."""
     if not project.fixtures:
-        raise ConstraintError("고정이 하나도 없습니다. 부품이 공중에 떠 있어 해석할 수 없습니다.")
+        raise ConstraintError(
+            tr("고정이 하나도 없습니다. 부품이 공중에 떠 있어 해석할 수 없습니다.")
+        )
     c = Constraints(fixed=np.zeros(mesh.n_nodes * 3, dtype=bool))
 
     for fixture in project.fixtures:
         nodes = mesh.face_nodes(fixture.faces)
         if len(nodes) == 0:
-            raise ConstraintError("고정할 면이 메시에 없습니다. 메시를 다시 만들어 주세요.")
+            raise ConstraintError(tr("고정할 면이 메시에 없습니다. 메시를 다시 만들어 주세요."))
         already_fixed = c.fixed.copy()
         first_equation = len(c.penalty_rows)
 
@@ -245,7 +248,9 @@ def build_constraints(
 
         elif fixture.kind == FixtureKind.DISPLACEMENT:
             if all(d is None for d in fixture.displacement):
-                raise ConstraintError("강제 변위에 움직일 방향(X·Y·Z 중 하나 이상)을 지정하세요.")
+                raise ConstraintError(
+                    tr("강제 변위에 움직일 방향(X·Y·Z 중 하나 이상)을 지정하세요.")
+                )
             if c.values is None:
                 c.values = np.zeros(mesh.n_nodes * 3)
             for axis, d in enumerate(fixture.displacement):
@@ -258,7 +263,7 @@ def build_constraints(
 
         elif fixture.kind == FixtureKind.ELASTIC:
             if fixture.stiffness <= 0:
-                raise ConstraintError("탄성 지지의 강성은 0보다 커야 합니다.")
+                raise ConstraintError(tr("탄성 지지의 강성은 0보다 커야 합니다."))
             c.springs.append(
                 (len(c.fixture_dofs), elastic_support(mesh, fixture.faces, fixture.stiffness))
             )
@@ -280,7 +285,9 @@ def build_constraints(
             for ref in fixture.faces:
                 surf = _surface_kind(project, ref)
                 if surf.GetType() != GeomAbs_Cylinder:
-                    raise ConstraintError("핀 고정은 원통면(구멍이나 축)에만 지정할 수 있습니다.")
+                    raise ConstraintError(
+                        tr("핀 고정은 원통면(구멍이나 축)에만 지정할 수 있습니다.")
+                    )
                 ax = surf.Cylinder().Axis()
                 origin = np.array(ax.Location().Coord())
                 direction = np.array(ax.Direction().Coord())
@@ -310,7 +317,7 @@ def elastic_support(mesh: FEMesh, refs: list[FaceRef], stiffness: float) -> sp.c
     k/A · ∫ N_i N_j dA · n nᵀ, so a uniform push of the faces by δ costs exactly k·δ."""
     tri_idx = mesh.face_tris(refs)
     if len(tri_idx) == 0:
-        raise ConstraintError("탄성 지지할 면이 메시에 없습니다. 메시를 다시 만들어 주세요.")
+        raise ConstraintError(tr("탄성 지지할 면이 메시에 없습니다. 메시를 다시 만들어 주세요."))
     tris = mesh.tris[tri_idx]
     X = mesh.nodes[tris]
     _, normal, area = tet10.tri6_load_weights(X)
@@ -388,7 +395,7 @@ def add_bonded(c: Constraints, mesh: FEMesh, connection: Connection, tol: float 
     master = mesh.tris[mesh.face_tris(connection.faces_a)]
     slave_nodes = mesh.face_nodes(connection.faces_b)
     if len(master) == 0 or len(slave_nodes) == 0:
-        raise ConstraintError("접합할 면이 메시에 없습니다.")
+        raise ConstraintError(tr("접합할 면이 메시에 없습니다."))
     X = mesh.nodes
     A, B, C = X[master[:, 0]], X[master[:, 1]], X[master[:, 2]]
     edge = np.linalg.norm(B - A, axis=1).mean()

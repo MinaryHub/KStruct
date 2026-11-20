@@ -43,6 +43,7 @@ from kstruct.fem.assembly import (
 from kstruct.fem.constraints import Constraints, build_constraints
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.plasticity import point_material, return_map
+from kstruct.i18n import tr
 from kstruct.model import ConnectionKind, Material, Project
 
 log = logging.getLogger(__name__)
@@ -271,9 +272,9 @@ class _Space:
 def unsupported(project: Project) -> str | None:
     """Why this project cannot be solved nonlinearly (None: it can)."""
     if any(c.kind == ConnectionKind.CONTACT for c in project.connections):
-        return "접촉 연결이 있는 모델은 비선형(항복·큰 변형) 해석을 아직 지원하지 않습니다."
+        return tr("접촉 연결이 있는 모델은 비선형(항복·큰 변형) 해석을 아직 지원하지 않습니다.")
     if project.bolts:
-        return "볼트가 있는 모델은 비선형(항복·큰 변형) 해석을 아직 지원하지 않습니다."
+        return tr("볼트가 있는 모델은 비선형(항복·큰 변형) 해석을 아직 지원하지 않습니다.")
     return None
 
 
@@ -300,13 +301,13 @@ def solve_nonlinear(
     large = bool(getattr(project, "large_deformation", False))
     n_dof = mesh.n_nodes * 3
 
-    report(0.02, "경계조건 준비 중")
+    report(0.02, tr("경계조건 준비 중"))
     c = build_constraints(project, mesh, contacts_as_bonded=False)
     f_mech = _load_vector(project, mesh, materials)
     thermal = None
     if has_thermal_loads(project):
         thermal = solve_thermal(
-            project, mesh, materials, lambda f, m: report(0.02 + 0.08 * f, f"열전달: {m}")
+            project, mesh, materials, lambda f, m: report(0.02 + 0.08 * f, tr("열전달: {m}", m=m))
         )
     dT = temperature_change(project, mesh, thermal)
     if not plastic:  # large deformation only: nothing yields
@@ -321,7 +322,7 @@ def solve_nonlinear(
     K0 = stiffness_matrix(mesh, materials)
     space = _Space(c, mesh, K0.diagonal().max())
     if not np.any(f_mech) and not np.any(space.u_set) and dT is None:
-        raise SolverError("하중이 없습니다. 힘, 압력, 중력 또는 온도 하중을 추가하세요.")
+        raise SolverError(tr("하중이 없습니다. 힘, 압력, 중력 또는 온도 하중을 추가하세요."))
     size = float(np.ptp(mesh.nodes, axis=0).max())
 
     # thermal strain also ramps with λ: it is part of the load
@@ -390,7 +391,7 @@ def solve_nonlinear(
                 raise NotCarried("runaway displacement")
         raise NotCarried("no convergence")
 
-    report(0.1, "비선형 해석 시작")
+    report(0.1, tr("비선형 해석 시작"))
     while lam < 1.0 - 1e-12:
         target = min(1.0, lam + step)
         try:
@@ -406,16 +407,19 @@ def solve_nonlinear(
             continue
         u, state, stress_points, lam = u_new, trial, S, target
         increments += 1
-        report(0.1 + 0.75 * lam, f"하중 {lam * 100:.0f}% 계산 완료 (증분 {increments})")
+        report(
+            0.1 + 0.75 * lam,
+            tr("하중 {pct:.0f}% 계산 완료 (증분 {n})", pct=lam * 100, n=increments),
+        )
         step = min(step * 1.5, 0.25)  # easy increments: larger steps
     if increments == 0:
         raise SolverError(
-            "처음 하중 단계부터 풀리지 않습니다. 부품이 충분히 고정되었는지 확인하세요."
+            tr("처음 하중 단계부터 풀리지 않습니다. 부품이 충분히 고정되었는지 확인하세요.")
             if limit_reason
             else "unstable"
         )
 
-    report(0.88, "응력 계산 중")
+    report(0.88, tr("응력 계산 중"))
     loaded_u = u.copy()
     points = _cauchy(stress_points, el, mesh, u) if large else stress_points.copy()
     # in elements that yielded the stress is capped by the flow stress: a linear
@@ -435,7 +439,7 @@ def solve_nonlinear(
 
     permanent = None
     if plastic and state[1].max() > 0 and lam >= 1.0 - 1e-9:
-        report(0.94, "하중을 뺀 뒤 남는 변형 계산 중")
+        report(0.94, tr("하중을 뺀 뒤 남는 변형 계산 중"))
         try:
             for start, target in ((1.0, 0.5), (0.5, 0.0)):
                 u, state, _ = increment(target, u, state, start)
@@ -454,7 +458,7 @@ def solve_nonlinear(
         iterations=iterations,
         limit_reason=limit_reason,
     )
-    report(1.0, "완료")
+    report(1.0, tr("완료"))
     return StaticResult(
         mesh=mesh,
         materials=materials,

@@ -15,6 +15,8 @@ import platform
 import sys
 from pathlib import Path
 
+from kstruct.i18n import tr
+
 APP_NAME = "KStruct"
 LOG_NAME = "kstruct.log"
 
@@ -112,4 +114,4 @@ def notices_text() -> str:
                 return c.read_text("utf-8")
         except OSError:
             continue
-    return "THIRD_PARTY_NOTICES.md 파일을 찾을 수 없습니다."
+    return tr("THIRD_PARTY_NOTICES.md 파일을 찾을 수 없습니다.")

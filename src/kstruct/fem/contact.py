@@ -36,6 +36,7 @@ from kstruct.fem.constraints import (
     _tri6_shape,
 )
 from kstruct.fem.mesh import FEMesh
+from kstruct.i18n import tr
 from kstruct.model import Connection
 
 MAX_ITERATIONS = 40
@@ -166,7 +167,7 @@ def build_contact(mesh: FEMesh, connection: Connection) -> ContactSet:
     master = mesh.tris[mesh.face_tris(connection.faces_a)]
     slave_nodes = mesh.face_nodes(connection.faces_b)
     if len(master) == 0 or len(slave_nodes) == 0:
-        raise ConstraintError("접촉할 면이 메시에 없습니다.")
+        raise ConstraintError(tr("접촉할 면이 메시에 없습니다."))
     X = mesh.nodes
     A, B, C = X[master[:, 0]], X[master[:, 1]], X[master[:, 2]]
     _, normals, _ = tet10.tri6_load_weights(X[master])
@@ -198,7 +199,7 @@ def build_contact(mesh: FEMesh, connection: Connection) -> ContactSet:
         tcoefs.append([np.concatenate([t, (-N[:, None] * t).ravel()]) for t in _tangents(n)])
         gaps.append((X[node] - point) @ n)
     if not dofs:
-        raise ConstraintError("접촉면이 서로 너무 멀리 떨어져 있습니다.")
+        raise ConstraintError(tr("접촉면이 서로 너무 멀리 떨어져 있습니다."))
     gap0 = np.array(gaps)
     return ContactSet(
         np.array(dofs),

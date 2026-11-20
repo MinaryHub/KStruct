@@ -36,6 +36,7 @@ from kstruct.fem.loads import (
 )
 from kstruct.fem.mesh import FEMesh
 from kstruct.fem.thermal import ThermalResult, has_thermal_loads, solve_thermal
+from kstruct.i18n import tr
 from kstruct.model import ConnectionKind, LoadKind, Material, Project, with_case
 
 Progress = Callable[[float, str], None]
@@ -126,7 +127,7 @@ def _load_vector(project: Project, mesh: FEMesh, materials: dict[int, Material])
         if load.kind in (LoadKind.FORCE, LoadKind.PRESSURE):
             tris = mesh.tris[mesh.face_tris(load.faces)]
             if len(tris) == 0:
-                raise SolverError("하중을 줄 면이 메시에 없습니다. 메시를 다시 만들어 주세요.")
+                raise SolverError(tr("하중을 줄 면이 메시에 없습니다. 메시를 다시 만들어 주세요."))
             weights, normal, area = tet10.tri6_load_weights(mesh.nodes[tris])
             if load.kind == LoadKind.FORCE:
                 traction = np.broadcast_to(np.asarray(load.vector) / area.sum(), normal.shape)
@@ -314,11 +315,11 @@ def solve_static(
     report = progress or (lambda frac, msg: None)
     n_dof = mesh.n_nodes * 3
 
-    report(0.05, "경계조건 준비 중")
+    report(0.05, tr("경계조건 준비 중"))
     contact_connections = [x for x in project.connections if x.kind == ConnectionKind.CONTACT]
     contacts = [build_contact(mesh, x) for x in contact_connections]
 
-    report(0.1, "강성행렬 조립 중")
+    report(0.1, tr("강성행렬 조립 중"))
     st = shared or _stiffness(project, mesh, materials, constraints)
     c, connectors, K, Kp = st.constraints, st.connectors, st.K, st.Kp
     free, near_null, scale = st.free, st.near_null, st.scale
@@ -326,7 +327,10 @@ def solve_static(
     thermal = None
     if has_thermal_loads(project):
         thermal = solve_thermal(
-            project, mesh, materials, lambda frac, msg: report(0.1 + 0.2 * frac, f"열전달: {msg}")
+            project,
+            mesh,
+            materials,
+            lambda frac, msg: report(0.1 + 0.2 * frac, tr("열전달: {msg}", msg=msg)),
         )
     dT = temperature_change(project, mesh, thermal)
     f = f_mech if dT is None else f_mech + _thermal_load(mesh, materials, dT)
@@ -335,9 +339,9 @@ def solve_static(
     u_set = c.prescribed()  # displacement imposed by DISPLACEMENT fixtures (else zero)
     moved = bool(np.any(u_set))
     if not np.any(f) and not moved and not any(c.bolt.preload for c in connectors):
-        raise SolverError("하중이 없습니다. 힘, 압력, 중력 또는 온도 하중을 추가하세요.")
+        raise SolverError(tr("하중이 없습니다. 힘, 압력, 중력 또는 온도 하중을 추가하세요."))
 
-    report(0.4, "연립방정식 푸는 중")
+    report(0.4, tr("연립방정식 푸는 중"))
     size = np.ptp(mesh.nodes, axis=0).max()
 
     def linear_solver():
@@ -382,7 +386,7 @@ def solve_static(
                 raise SolverError("bolt without contact")
         # lock the preload: settle contact under the nominal pulls, then (with that contact
         # state frozen) solve for the pulls that give exactly P in each bolt
-        report(0.35, "볼트 체결 상태 계산 중")
+        report(0.35, tr("볼트 체결 상태 계산 중"))
         _, f_nominal = bolt_stiffness_and_preload(connectors, n_dof)
         if contact_solver is not None:
             contact_solver.solve(f_nominal)
@@ -394,7 +398,7 @@ def solve_static(
         f_preload = bolt_stiffness_and_preload(connectors, n_dof, pulls)[1]
         f = f + f_preload
     if contact_solver is not None:
-        report(0.5, "접촉 상태 계산 중 (반복)")
+        report(0.5, tr("접촉 상태 계산 중 (반복)"))
         u = contact_solver.solve_path(f_preload, f, u_set if moved else None)[0]
         # only the stabilising springs hold a part that slid or lifted off
         if np.abs(u).max() > 0.2 * size:
@@ -407,7 +411,7 @@ def solve_static(
     if np.abs(u).max() > 1e3 * size:
         raise SolverError("unstable")
 
-    report(0.85, "응력 계산 중")
+    report(0.85, tr("응력 계산 중"))
     stress = recover_stress(mesh, materials, u, dT)
 
     residual = K @ u - f
@@ -433,7 +437,7 @@ def solve_static(
             reactions.append(r + c.penalty_forces(u, equations, scale))
     applied = f_mech.reshape(-1, 3).sum(axis=0)
 
-    report(1.0, "완료")
+    report(1.0, tr("완료"))
     return StaticResult(
         mesh=mesh,
         materials=materials,

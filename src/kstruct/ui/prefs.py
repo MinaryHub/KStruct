@@ -84,6 +84,20 @@ def set_theme(name: str) -> None:
     save_prefs(prefs)
 
 
+def language() -> str:
+    """'ko' or 'en' (applied at start-up; changing it needs a restart)."""
+    from kstruct.i18n import DEFAULT, LANGUAGES
+
+    lang = load_prefs().get("language", DEFAULT)
+    return lang if lang in LANGUAGES else DEFAULT
+
+
+def set_language(lang: str) -> None:
+    prefs = load_prefs()
+    prefs["language"] = lang
+    save_prefs(prefs)
+
+
 # --- autosave ---------------------------------------------------------------------------
 
 

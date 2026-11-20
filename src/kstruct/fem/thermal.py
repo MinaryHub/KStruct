@@ -22,6 +22,7 @@ from kstruct.fem import tet10
 from kstruct.fem.assembly import SolverError, part_property, solve_spd
 from kstruct.fem.constraints import Constraints, _tri6_shape, add_bonded
 from kstruct.fem.mesh import FEMesh
+from kstruct.i18n import tr, tr_data
 from kstruct.model import TEMPERATURE_REFERENCES, THERMAL_LOADS, LoadKind, Material, Project
 
 Progress = Callable[[float, str], None]
@@ -200,12 +201,17 @@ def solve_thermal(
         missing = [m.name for m in materials.values() if m.specific_heat <= 0 or m.density <= 0]
         if missing:
             raise SolverError(
-                f"시간에 따른 온도 변화를 계산하려면 비열과 밀도가 필요합니다: {', '.join(missing)}"
+                tr(
+                    "시간에 따른 온도 변화를 계산하려면 비열과 밀도가 필요합니다: {names}",
+                    names=", ".join(tr_data(m) for m in missing),
+                )
             )
     if not transient and not any(ld.kind in TEMPERATURE_REFERENCES for ld in loads):
         raise SolverError(
-            "온도의 기준이 없습니다. '고정 온도', '대류 냉각', '복사 냉각' 중 하나 이상을 "
-            "지정하세요."
+            tr(
+                "온도의 기준이 없습니다. '고정 온도', '대류 냉각', '복사 냉각' 중 하나 이상을 "
+                "지정하세요."
+            )
         )
     # every group of connected parts needs its own temperature reference: without one its
     # conduction matrix is singular and the solve used to return 0 °C for it, silently
@@ -215,21 +221,24 @@ def solve_thermal(
         if not transient and not group & referenced:
             names = ", ".join(f"'{project.part(pid).name}'" for pid in sorted(group))
             raise SolverError(
-                f"{names} 부품에 온도의 기준이 없습니다. 이 부품에 '고정 온도'·'대류 냉각'·"
-                "'복사 냉각' 중 하나를 지정하거나, 기준이 있는 부품과 접합(맞닿은 면 연결)하세요."
+                tr(
+                    "{names} 부품에 온도의 기준이 없습니다. 이 부품에 '고정 온도'·'대류 냉각'·"
+                    "'복사 냉각' 중 하나를 지정하거나, 기준이 있는 부품과 접합(맞닿은 면 연결)하세요.",
+                    names=names,
+                )
             )
     faces = {}
     for i, ld in enumerate(loads):
         tris = mesh.tris[mesh.face_tris(ld.faces)]
         if len(tris) == 0:
-            raise SolverError("열 조건을 줄 면이 메시에 없습니다. 메시를 다시 만들어 주세요.")
+            raise SolverError(tr("열 조건을 줄 면이 메시에 없습니다. 메시를 다시 만들어 주세요."))
         faces[i] = tris
     nonlinear = any(ld.kind == LoadKind.RADIATION for ld in loads) or any(
         m.conductivity_table for m in materials.values()
     )
 
     # bonded parts conduct heat across the joint: reuse the tie equations (x component)
-    report(0.1, "열전도 행렬 조립 중")
+    report(0.1, tr("열전도 행렬 조립 중"))
     ties = Constraints(fixed=np.zeros(3 * n, dtype=bool))
     for c in project.connections:
         add_bonded(ties, mesh, c)
@@ -294,13 +303,15 @@ def solve_thermal(
         iterations = TRANSIENT_STEPS
         nonlinear = False  # already handled step by step
     else:
-        report(0.5, "온도 계산 중")
+        report(0.5, tr("온도 계산 중"))
         T, fixed, films = solve_once(None)
         times = history = None
         iterations = 1
     if nonlinear:
         for iterations in range(2, MAX_ITERATIONS + 1):
-            report(0.5 + 0.3 * iterations / MAX_ITERATIONS, f"온도 계산 중 (반복 {iterations})")
+            report(
+                0.5 + 0.3 * iterations / MAX_ITERATIONS, tr("온도 계산 중 (반복 {n})", n=iterations)
+            )
             T_new, fixed, films = solve_once(T)
             change = np.abs(T_new - T).max()
             T = T_new
@@ -309,7 +320,7 @@ def solve_thermal(
         else:
             raise SolverError("not converged")
 
-    report(0.85, "열 흐름 계산 중")
+    report(0.85, tr("열 흐름 계산 중"))
     k = element_conductivity(mesh, materials, T if nonlinear else None)
     flux = _nodal_flux(mesh, k, T)
     # Heat entering and leaving are summed separately: netting them made a bar between a
@@ -325,7 +336,7 @@ def solve_thermal(
         flows.append(-float((h * per_face).sum()))
     heat_in = sum(q for q in flows if q > 0) / WATT
     heat_out = -sum(q for q in flows if q < 0) / WATT
-    report(1.0, "완료")
+    report(1.0, tr("완료"))
     return ThermalResult(mesh, T, flux, heat_in, heat_out, iterations, times, history)
 
 
@@ -346,7 +357,7 @@ def _march(assemble, C, project: Project, duration: float, nonlinear: bool, repo
     for step in range(1, TRANSIENT_STEPS + 1):
         report(
             0.5 + 0.35 * step / TRANSIENT_STEPS,
-            f"시간에 따른 온도 계산 중 ({step}/{TRANSIENT_STEPS})",
+            tr("시간에 따른 온도 계산 중 ({step}/{total})", step=step, total=TRANSIENT_STEPS),
         )
         if solver is None or nonlinear:
             Kp, f, fixed, T_fix, films = assemble(T if nonlinear else None)

@@ -13,16 +13,17 @@ from enum import Enum
 from functools import cache
 from importlib import resources
 
+from kstruct.i18n import N_
 from kstruct.model import Material, Project
 
 CATEGORY_NAMES = {
-    "steel": "강",
-    "stainless": "스테인리스강",
-    "aluminum": "알루미늄",
-    "cast_iron": "주철",
-    "titanium": "티타늄",
-    "copper": "구리 합금",
-    "plastic": "플라스틱",
+    "steel": N_("강"),
+    "stainless": N_("스테인리스강"),
+    "aluminum": N_("알루미늄"),
+    "cast_iron": N_("주철"),
+    "titanium": N_("티타늄"),
+    "copper": N_("구리 합금"),
+    "plastic": N_("플라스틱"),
 }
 
 

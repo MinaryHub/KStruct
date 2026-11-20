@@ -10,11 +10,13 @@ from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane, GeomAbs_S
 from OCP.GProp import GProp_GProps
 from OCP.TopoDS import TopoDS_Face
 
+from kstruct.i18n import N_, tr
+
 _KIND_NAMES = {
-    GeomAbs_Plane: "평면",
-    GeomAbs_Cylinder: "원통면",
-    GeomAbs_Cone: "원뿔면",
-    GeomAbs_Sphere: "구면",
+    GeomAbs_Plane: N_("평면"),
+    GeomAbs_Cylinder: N_("원통면"),
+    GeomAbs_Cone: N_("원뿔면"),
+    GeomAbs_Sphere: N_("구면"),
 }
 
 
@@ -25,9 +27,9 @@ class FaceInfo:
     radius: float | None = None  # mm, for cylinders (e.g. bolt holes)
 
     def describe(self) -> str:
-        text = f"{self.kind}, 면적 {self.area:,.1f} mm²"
+        text = tr("{kind}, 면적 {area:,.1f} mm²", kind=self.kind, area=self.area)
         if self.radius is not None:
-            text += f", 지름 {self.radius * 2:,.2f} mm"
+            text += tr(", 지름 {d:,.2f} mm", d=self.radius * 2)
         return text
 
 
@@ -37,7 +39,7 @@ def face_info(face: TopoDS_Face) -> FaceInfo:
     props = GProp_GProps()
     BRepGProp.SurfaceProperties_s(face, props)
     radius = surface.Cylinder().Radius() if kind == GeomAbs_Cylinder else None
-    return FaceInfo(_KIND_NAMES.get(kind, "곡면"), props.Mass(), radius)
+    return FaceInfo(tr(_KIND_NAMES.get(kind, N_("곡면"))), props.Mass(), radius)
 
 
 def face_at(shape, point: tuple[float, float, float]) -> int:

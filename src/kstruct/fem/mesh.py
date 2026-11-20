@@ -23,6 +23,7 @@ import numpy as np
 
 from kstruct.geometry.samples import write_step
 from kstruct.geometry.tessellate import bounding_diagonal
+from kstruct.i18n import tr
 from kstruct.model import FaceRef, Project
 
 MESH_TIMEOUT = 600  # seconds per part before the meshing process is killed
@@ -139,14 +140,20 @@ def _mesh_all(
                 except multiprocessing.TimeoutError:
                     if attempt == 2:
                         raise MeshingError(
-                            f"'{name}' 부품의 메시 생성이 {MESH_TIMEOUT // 60}분 안에 끝나지 않았습니다. "
-                            "메시 품질을 '거침'이나 '보통'으로 바꿔 보세요."
+                            tr(
+                                "'{name}' 부품의 메시 생성이 {minutes}분 안에 끝나지 않았습니다. "
+                                "메시 품질을 '거침'이나 '보통'으로 바꿔 보세요.",
+                                name=name,
+                                minutes=MESH_TIMEOUT // 60,
+                            )
                         ) from None
                     raise _Retry from None
                 except _Stop as stop:  # check() raised: pass its exception on untouched
                     raise stop.error from None
                 except Exception as e:  # netgen raises plain Exception
-                    raise MeshingError(f"'{name}' 부품의 메시 생성에 실패했습니다: {e}") from e
+                    raise MeshingError(
+                        tr("'{name}' 부품의 메시 생성에 실패했습니다: {e}", name=name, e=e)
+                    ) from e
             return results
         except _Retry:
             continue
@@ -187,7 +194,9 @@ def _mesh_or_raise(step: Path, maxh: float, name: str, face_maxh=None, grading=0
     try:
         return _mesh_shape(step, maxh, face_maxh, grading)
     except Exception as e:  # netgen raises plain Exception
-        raise MeshingError(f"'{name}' 부품의 메시 생성에 실패했습니다: {e}") from e
+        raise MeshingError(
+            tr("'{name}' 부품의 메시 생성에 실패했습니다: {e}", name=name, e=e)
+        ) from e
 
 
 def face_sizes(
@@ -214,9 +223,17 @@ def face_sizes(
         if thin:
             prefix = f"{part.name}: " if len(parts) > 1 else ""
             notes.append(
-                f"{prefix}얇은 부분(두께 약 {min(thin):.3g}~{max(thin):.3g} mm) {len(thin)}개 면의 "
-                f"요소를 {min(sizes.values()):.3g} mm로 줄여 두께 방향으로 {preset.layers}개 이상 "
-                "넣었습니다."
+                tr(
+                    "{prefix}얇은 부분(두께 약 {t_min:.3g}~{t_max:.3g} mm) {n}개 면의 "
+                    "요소를 {size:.3g} mm로 줄여 두께 방향으로 {layers}개 이상 "
+                    "넣었습니다.",
+                    prefix=prefix,
+                    t_min=min(thin),
+                    t_max=max(thin),
+                    n=len(thin),
+                    size=min(sizes.values()),
+                    layers=preset.layers,
+                )
             )
         for r in project.mesh_refinements:
             for ref in r.faces:
@@ -225,7 +242,7 @@ def face_sizes(
         per_part.append(sizes)
     if project.mesh_refinements:
         n = sum(len(r.faces) for r in project.mesh_refinements)
-        notes.append(f"사용자가 지정한 면 {n}개에 더 작은 요소를 썼습니다.")
+        notes.append(tr("사용자가 지정한 면 {n}개에 더 작은 요소를 썼습니다.", n=n))
     return maxh, per_part, notes
 
 
@@ -237,7 +254,7 @@ def generate_mesh(
     preset = MESH_PRESETS[quality]
     parts = [p for p in project.parts if p.visible]
     if not parts:
-        raise MeshingError("메시를 만들 부품이 없습니다.")
+        raise MeshingError(tr("메시를 만들 부품이 없습니다."))
     maxh, per_part, notes = face_sizes(project, quality)
 
     nodes, tets, tet_part, tris, tri_part, tri_face = [], [], [], [], [], []
@@ -247,7 +264,7 @@ def generate_mesh(
         meshes = _mesh_all(steps, maxh, [p.name for p in parts], per_part, preset.grading, check)
         for part, (n, t, s, f) in zip(parts, meshes, strict=True):
             if len(t) == 0:
-                raise MeshingError(f"'{part.name}' 부품의 메시 생성에 실패했습니다.")
+                raise MeshingError(tr("'{name}' 부품의 메시 생성에 실패했습니다.", name=part.name))
             nodes.append(n)
             tets.append(t + offset)
             tet_part.append(np.full(len(t), part.id))

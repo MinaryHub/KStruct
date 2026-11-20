@@ -18,6 +18,7 @@ from kstruct.fem.assembly import (
 from kstruct.fem.bolts import bolt_stiffness_and_preload, build_bolts
 from kstruct.fem.constraints import build_constraints
 from kstruct.fem.mesh import FEMesh
+from kstruct.i18n import tr
 from kstruct.model import Material, Project
 
 Progress = Callable[[float, str], None]
@@ -48,7 +49,7 @@ def solve_modal(
 ) -> ModalResult:
     report = progress or (lambda frac, msg: None)
     n_dof = mesh.n_nodes * 3
-    report(0.05, "경계조건 준비 중")
+    report(0.05, tr("경계조건 준비 중"))
     if project.fixtures:
         c = build_constraints(project, mesh)
     else:  # free-free modal is legitimate: rigid modes come out at ~0 Hz and are skipped
@@ -58,7 +59,7 @@ def solve_modal(
         for conn in project.connections:
             add_bonded(c, mesh, conn)
 
-    report(0.15, "강성·질량 행렬 조립 중")
+    report(0.15, tr("강성·질량 행렬 조립 중"))
     K = stiffness_matrix(mesh, materials)
     K = K + c.penalty_matrix(n_dof, K.diagonal().max()) + c.spring_matrix()
     K = K + bolt_stiffness_and_preload(build_bolts(project, mesh), n_dof)[0]
@@ -66,7 +67,7 @@ def solve_modal(
     free = np.flatnonzero(~c.fixed)
     Kf, Mf = K[free][:, free].tocsc(), M[free][:, free].tocsc()
 
-    report(0.4, "고유진동수 계산 중")
+    report(0.4, tr("고유진동수 계산 중"))
     extra = 0 if project.fixtures else 6
     k = min(n_modes + extra, len(free) - 2)
     # shift slightly below zero so rigid-body (zero) modes don't make K - σM singular
@@ -99,5 +100,5 @@ def solve_modal(
         participation[:, d] = (shapes @ Mr) ** 2 / np.einsum("mi,mi->m", shapes @ M, shapes)
     participation /= total
 
-    report(1.0, "완료")
+    report(1.0, tr("완료"))
     return ModalResult(mesh, freq, shapes.reshape(len(freq), -1, 3), participation, rigid)

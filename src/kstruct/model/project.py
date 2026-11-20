@@ -15,6 +15,8 @@ from pathlib import Path
 
 from OCP.TopoDS import TopoDS_Shape
 
+from kstruct.i18n import N_, tr
+
 GRAVITY = 9810.0  # mm/s²
 
 
@@ -176,7 +178,7 @@ class Project:
     connections: list[Connection] = field(default_factory=list)
     bolts: list[Bolt] = field(default_factory=list)
     fixtures: list[Fixture] = field(default_factory=list)
-    cases: list[LoadCase] = field(default_factory=lambda: [LoadCase("하중 케이스 1")])
+    cases: list[LoadCase] = field(default_factory=lambda: [LoadCase(tr("하중 케이스 1"))])
     active_case: int = 0  # the case shown in the wizard and used by thermal / buckling
     mesh_quality: str = "normal"  # key of fem.mesh.MESH_PRESETS
     mesh_refinements: list[MeshRefinement] = field(default_factory=list)
@@ -210,7 +212,7 @@ class Project:
     @property
     def case(self) -> LoadCase:
         if not self.cases:
-            self.cases.append(LoadCase("하중 케이스 1"))
+            self.cases.append(LoadCase(tr("하중 케이스 1")))
         self.active_case = min(max(self.active_case, 0), len(self.cases) - 1)
         return self.cases[self.active_case]
 
@@ -259,9 +261,9 @@ def excluded_by_hidden_parts(project: Project) -> list[str]:
     """Short Korean descriptions of what active_project() drops, for the checklist."""
     active = active_project(project)
     counts = {
-        "고정": len(project.fixtures) - len(active.fixtures),
-        "하중": len(project.all_loads()) - len(active.all_loads()),
-        "연결": len(project.connections) - len(active.connections),
-        "볼트": len(project.bolts) - len(active.bolts),
+        N_("고정 {n}개"): len(project.fixtures) - len(active.fixtures),
+        N_("하중 {n}개"): len(project.all_loads()) - len(active.all_loads()),
+        N_("연결 {n}개"): len(project.connections) - len(active.connections),
+        N_("볼트 {n}개"): len(project.bolts) - len(active.bolts),
     }
-    return [f"{name} {n}개" for name, n in counts.items() if n]
+    return [tr(text, n=n) for text, n in counts.items() if n]

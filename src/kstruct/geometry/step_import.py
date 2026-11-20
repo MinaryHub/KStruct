@@ -15,6 +15,7 @@ from OCP.TopAbs import TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS_Shape
 
+from kstruct.i18n import tr
 from kstruct.model import Part, Project
 
 STEP_SUFFIXES = {".step", ".stp"}
@@ -32,14 +33,14 @@ def _read_shape(path: Path) -> TopoDS_Shape:
     elif suffix in IGES_SUFFIXES:
         reader = IGESControl_Reader()
     else:
-        raise GeometryImportError(f"지원하지 않는 파일 형식입니다: {suffix}")
+        raise GeometryImportError(tr("지원하지 않는 파일 형식입니다: {suffix}", suffix=suffix))
 
     if reader.ReadFile(str(path)) != IFSelect_RetDone:
-        raise GeometryImportError(f"파일을 읽을 수 없습니다: {path.name}")
+        raise GeometryImportError(tr("파일을 읽을 수 없습니다: {name}", name=path.name))
     reader.TransferRoots()
     shape = reader.OneShape()
     if shape.IsNull():
-        raise GeometryImportError(f"파일에 형상이 없습니다: {path.name}")
+        raise GeometryImportError(tr("파일에 형상이 없습니다: {name}", name=path.name))
     return shape
 
 
@@ -152,7 +153,7 @@ def load_cad(path: str | Path) -> Project:
         names = _unique([""] * len(solids), path.stem)
     if not solids:
         raise GeometryImportError(
-            "솔리드(속이 찬 형상)가 없습니다. 곡면만 있는 모델은 해석할 수 없습니다."
+            tr("솔리드(속이 찬 형상)가 없습니다. 곡면만 있는 모델은 해석할 수 없습니다.")
         )
 
     project = Project(source_path=path)
