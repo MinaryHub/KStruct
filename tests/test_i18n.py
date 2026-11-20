@@ -252,3 +252,19 @@ def test_english_window_and_report_have_no_korean(qtbot, tmp_path, english, kind
     found = _english_run(qtbot, tmp_path, AnalysisKind[kind])
     assert not found, "Korean left in the English UI:\n" + "\n".join(found)
     assert not i18n.missing(), f"shown without translation: {sorted(i18n.missing())}"
+
+
+def test_catalog_files_agree_on_shared_texts():
+    """The same Korean text in two catalog files must get the same English (otherwise
+    the file loaded last silently wins)."""
+    folder = resources.files("kstruct.resources.i18n").joinpath("en")
+    seen: dict[str, tuple[str, str]] = {}
+    clashes = []
+    for entry in sorted(folder.iterdir(), key=lambda e: e.name):
+        if not entry.name.endswith(".json"):
+            continue
+        for source, english in json.loads(entry.read_text("utf-8")).items():
+            if source in seen and seen[source][1] != english:
+                clashes.append(f"{source!r}: {seen[source]} vs ({entry.name}, {english!r})")
+            seen.setdefault(source, (entry.name, english))
+    assert not clashes, "\n".join(clashes)

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from kstruct import __version__, standards
+from kstruct.i18n import tr
 from kstruct.model import Material
 from kstruct.paths import environment_summary, log_path, notices_text, user_materials_path
 from kstruct.ui.help import with_help
@@ -41,7 +42,7 @@ class MaterialDialog(QDialog):
 
     def __init__(self, base: Material | None, system: str, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("사용자 재료")
+        self.setWindowTitle(tr("사용자 재료"))
         self.setMinimumWidth(460)
         self._system = system
         stress, temp = quantity(system, "stress"), quantity(system, "temperature")
@@ -49,19 +50,21 @@ class MaterialDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "재료 성적서(mill sheet)나 제조사 데이터시트의 값을 넣으세요. 항복강도는 실제보다 "
-                "높게 넣지 않는 것이 안전합니다."
+                tr(
+                    "재료 성적서(mill sheet)나 제조사 데이터시트의 값을 넣으세요. 항복강도는 "
+                    "실제보다 높게 넣지 않는 것이 안전합니다."
+                )
             )
         )
         form = QFormLayout()
         self.name = QLineEdit(base.name if base else "")
-        form.addRow("이름", with_help(self.name, "material.custom_name"))
+        form.addRow(tr("이름"), with_help(self.name, "material.custom_name"))
         self.category = QComboBox()
         for key, label in standards.CATEGORY_NAMES.items():
-            self.category.addItem(label, key)
+            self.category.addItem(tr(label), key)
         if base:
             self.category.setCurrentIndex(max(0, self.category.findData(base.category)))
-        form.addRow("종류", self.category)
+        form.addRow(tr("종류"), self.category)
 
         def spin(value, lo, hi, decimals, suffix):
             box = QDoubleSpinBox()
@@ -90,25 +93,25 @@ class MaterialDialog(QDialog):
             0,
             temp.unit,
         )
-        self.ductile = QCheckBox("연성재 (휘다가 파손; 주철·다이캐스팅·세라믹은 해제)")
+        self.ductile = QCheckBox(tr("연성재 (휘다가 파손; 주철·다이캐스팅·세라믹은 해제)"))
         self.ductile.setChecked(b.ductile if b else True)
-        form.addRow("탄성계수 E", with_help(self.E, "material.custom_props"))
-        form.addRow("포아송비 ν", self.nu)
-        form.addRow("밀도", self.density)
-        form.addRow("항복강도", self.yield_)
-        form.addRow("인장강도", self.uts)
-        form.addRow("열팽창계수", self.alpha)
-        form.addRow("열전도율", self.k)
-        form.addRow("비열", self.cp)
-        form.addRow("피로 한도 (0 = 인장강도의 절반으로 추정)", self.fatigue)
-        form.addRow("최고 사용온도 (0 = 판정 안 함)", self.tmax)
+        form.addRow(tr("탄성계수 E"), with_help(self.E, "material.custom_props"))
+        form.addRow(tr("포아송비 ν"), self.nu)
+        form.addRow(tr("밀도"), self.density)
+        form.addRow(tr("항복강도"), self.yield_)
+        form.addRow(tr("인장강도"), self.uts)
+        form.addRow(tr("열팽창계수"), self.alpha)
+        form.addRow(tr("열전도율"), self.k)
+        form.addRow(tr("비열"), self.cp)
+        form.addRow(tr("피로 한도 (0 = 인장강도의 절반으로 추정)"), self.fatigue)
+        form.addRow(tr("최고 사용온도 (0 = 판정 안 함)"), self.tmax)
         form.addRow("", self.ductile)
         layout.addLayout(form)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("저장")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(tr("저장"))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(tr("취소"))
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -116,11 +119,13 @@ class MaterialDialog(QDialog):
 
     def _accept(self) -> None:
         if not self.name.text().strip():
-            QMessageBox.warning(self, "확인이 필요합니다", "재료 이름을 입력하세요.")
+            QMessageBox.warning(self, tr("확인이 필요합니다"), tr("재료 이름을 입력하세요."))
             return
         if self.uts.value() < self.yield_.value():
             QMessageBox.warning(
-                self, "확인이 필요합니다", "인장강도는 항복강도보다 작을 수 없습니다."
+                self,
+                tr("확인이 필요합니다"),
+                tr("인장강도는 항복강도보다 작을 수 없습니다."),
             )
             return
         self.accept()
@@ -174,7 +179,7 @@ def save_user_library(materials: dict[str, Material]) -> None:
 class AboutDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("KStruct 정보")
+        self.setWindowTitle(tr("KStruct 정보"))
         self.resize(640, 480)
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
@@ -182,22 +187,26 @@ class AboutDialog(QDialog):
         box = QVBoxLayout(about)
         text = QLabel(
             f"<h2>KStruct {__version__}</h2>"
-            "<p>기계 부품용 3D 유한요소해석 — 비전문가를 위한 7단계 강도·진동·열·좌굴 검토</p>"
-            f"<pre>{environment_summary()}</pre>"
-            "<p>해석 결과는 설계 검토를 돕는 참고 자료입니다. 실제 제작·사용 여부는 자격을 갖춘 "
-            "기술자가 최종 판단해야 합니다.</p>"
+            + tr(
+                "<p>기계 부품용 3D 유한요소해석 — 비전문가를 위한 7단계 강도·진동·열·좌굴 검토</p>"
+            )
+            + f"<pre>{environment_summary()}</pre>"
+            + tr(
+                "<p>해석 결과는 설계 검토를 돕는 참고 자료입니다. 실제 제작·사용 여부는 자격을 "
+                "갖춘 기술자가 최종 판단해야 합니다.</p>"
+            )
         )
         text.setWordWrap(True)
         text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         box.addWidget(text)
         box.addStretch(1)
-        tabs.addTab(about, "정보")
+        tabs.addTab(about, tr("정보"))
         notices = QPlainTextEdit(notices_text())
         notices.setReadOnly(True)
-        tabs.addTab(notices, "오픈소스 고지")
+        tabs.addTab(notices, tr("오픈소스 고지"))
         layout.addWidget(tabs)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText(tr("닫기"))
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
@@ -218,14 +227,19 @@ def write_bug_report(path: Path, project_file: Path | None, extra: dict[str, str
 
 
 def save_bug_report(parent: QWidget, project_file: Path | None, extra: dict[str, str]) -> None:
-    default = f"kstruct_문제보고_{dt.datetime.now():%Y%m%d_%H%M}.zip"
-    chosen, _ = QFileDialog.getSaveFileName(parent, "문제 보고 파일 저장", default, "ZIP (*.zip)")
+    default = tr("kstruct_문제보고_{stamp}.zip", stamp=f"{dt.datetime.now():%Y%m%d_%H%M}")
+    chosen, _ = QFileDialog.getSaveFileName(
+        parent, tr("문제 보고 파일 저장"), default, "ZIP (*.zip)"
+    )
     if not chosen:
         return
     write_bug_report(Path(chosen), project_file, extra)
     QMessageBox.information(
         parent,
-        "문제 보고 파일",
-        f"저장했습니다:\n{chosen}\n\n이 파일을 지원 담당자에게 보내 주세요. "
-        "로그와 프로젝트 파일(입력 조건·형상)이 들어 있습니다.",
+        tr("문제 보고 파일"),
+        tr(
+            "저장했습니다:\n{path}\n\n이 파일을 지원 담당자에게 보내 주세요. "
+            "로그와 프로젝트 파일(입력 조건·형상)이 들어 있습니다.",
+            path=chosen,
+        ),
     )

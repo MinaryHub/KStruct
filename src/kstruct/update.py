@@ -37,6 +37,7 @@ from importlib import resources
 from pathlib import Path
 
 from kstruct import RELEASE_VERSION, __version__
+from kstruct.i18n import tr
 
 log = logging.getLogger(__name__)
 API = "https://api.github.com"
@@ -169,31 +170,37 @@ def _request(url: str, headers: dict):
                 headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
                 headers["Accept"] = "application/octet-stream"
             url = target
-    raise UpdateError("업데이트 서버가 너무 여러 번 다른 주소로 보냈습니다.")
+    raise UpdateError(tr("업데이트 서버가 너무 여러 번 다른 주소로 보냈습니다."))
 
 
 def _explain(error: Exception, tok: str | None) -> UpdateError:
     if isinstance(error, urllib.error.HTTPError):
         if error.code == 404:
             return UpdateError(
-                "릴리스를 찾을 수 없습니다. 아직 릴리스가 없거나 저장소 주소가 바뀌었을 수 "
-                "있습니다(저장소가 비공개라면 읽기 권한이 있는 GitHub 토큰이 필요합니다)."
+                tr(
+                    "릴리스를 찾을 수 없습니다. 아직 릴리스가 없거나 저장소 주소가 바뀌었을 수 "
+                    "있습니다(저장소가 비공개라면 읽기 권한이 있는 GitHub 토큰이 필요합니다)."
+                )
                 if not tok
-                else "릴리스를 찾을 수 없습니다. 아직 릴리스가 없거나, 토큰에 이 저장소를 "
-                "읽을 권한이 없습니다."
+                else tr(
+                    "릴리스를 찾을 수 없습니다. 아직 릴리스가 없거나, 토큰에 이 저장소를 "
+                    "읽을 권한이 없습니다."
+                )
             )
         if error.code == 401:
-            return UpdateError("GitHub 토큰이 맞지 않거나 만료되었습니다. 토큰을 다시 입력하세요.")
+            return UpdateError(
+                tr("GitHub 토큰이 맞지 않거나 만료되었습니다. 토큰을 다시 입력하세요.")
+            )
         if error.code in (403, 429):
             return UpdateError(
-                "GitHub 요청 한도에 걸렸거나 접근이 거부되었습니다. 잠시 뒤 다시 시도하세요."
+                tr("GitHub 요청 한도에 걸렸거나 접근이 거부되었습니다. 잠시 뒤 다시 시도하세요.")
             )
-        return UpdateError(f"업데이트 서버 오류 (HTTP {error.code}).")
+        return UpdateError(tr("업데이트 서버 오류 (HTTP {code}).", code=error.code))
     if isinstance(error, (urllib.error.URLError, TimeoutError, OSError)):
         return UpdateError(
-            "업데이트 서버에 연결할 수 없습니다. 인터넷(또는 사내 프록시) 연결을 확인하세요."
+            tr("업데이트 서버에 연결할 수 없습니다. 인터넷(또는 사내 프록시) 연결을 확인하세요.")
         )
-    return UpdateError(f"업데이트 확인 중 오류: {error}")
+    return UpdateError(tr("업데이트 확인 중 오류: {error}", error=error))
 
 
 def latest_release(tok: str | None = None, repo: str | None = None) -> Release:
@@ -279,7 +286,11 @@ def download(
     asset = pick_installer(release)
     if asset is None:
         raise UpdateError(
-            f"{release.tag} 릴리스에 이 운영체제({platform.system()})용 설치 파일이 없습니다."
+            tr(
+                "{tag} 릴리스에 이 운영체제({system})용 설치 파일이 없습니다.",
+                tag=release.tag,
+                system=platform.system(),
+            )
         )
     folder.mkdir(parents=True, exist_ok=True)
     out = folder / asset.name
@@ -295,8 +306,10 @@ def download(
     if expected is None or expected != actual:
         out.unlink(missing_ok=True)
         raise UpdateError(
-            "받은 설치 파일이 릴리스의 체크섬과 맞지 않아 지웠습니다(다운로드가 깨졌거나 "
-            "파일이 바뀌었을 수 있음). 다시 시도하세요."
+            tr(
+                "받은 설치 파일이 릴리스의 체크섬과 맞지 않아 지웠습니다(다운로드가 깨졌거나 "
+                "파일이 바뀌었을 수 있음). 다시 시도하세요."
+            )
         )
     return out
 

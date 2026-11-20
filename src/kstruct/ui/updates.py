@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from kstruct import __version__, update
+from kstruct.i18n import tr
 from kstruct.paths import data_dir
 from kstruct.ui import prefs
 from kstruct.ui.help import with_help
@@ -65,7 +66,7 @@ class _Task(QObject):
             self.failed.emit(str(e))
         except Exception as e:  # noqa: BLE001 (reported, never crashes the app)
             log.exception("update task failed")
-            self.failed.emit(f"예상하지 못한 오류: {e}")
+            self.failed.emit(tr("예상하지 못한 오류: {error}", error=e))
         else:
             self.done.emit(value)
 
@@ -80,25 +81,30 @@ def open_contact(parent: QWidget | None = None, detail: str = "") -> None:
     if detail and len(home) > 3:
         detail = detail.replace(home, "~")  # paths would show the user's account name
     body = (
-        "### 무엇을 하다가 어떤 일이 있었나요?\n\n\n"
-        "### 기대한 동작\n\n\n"
-        "### 환경\n"
-        f"{update.environment_text()}\n"
-        + (f"\n### 오류 내용\n```\n{detail[-1500:]}\n```\n" if detail else "")
-        + "\n(로그와 프로젝트가 필요하면 '문제 보고'로 만든 zip 파일을 끌어다 붙여 주세요.)\n"
+        tr(
+            "### 무엇을 하다가 어떤 일이 있었나요?\n\n\n### 기대한 동작\n\n\n### 환경\n{environment}\n",
+            environment=update.environment_text(),
+        )
+        + (tr("\n### 오류 내용\n```\n{detail}\n```\n", detail=detail[-1500:]) if detail else "")
+        + tr("\n(로그와 프로젝트가 필요하면 '문제 보고'로 만든 zip 파일을 끌어다 붙여 주세요.)\n")
     )
     if not open_url(update.issue_url("", body)):
         QMessageBox.information(
             parent,
-            "문의하기",
-            f"브라우저를 열 수 없습니다. 아래 주소로 문의해 주세요.\n\n{update.links()['issues']}",
+            tr("문의하기"),
+            tr(
+                "브라우저를 열 수 없습니다. 아래 주소로 문의해 주세요.\n\n{url}",
+                url=update.links()["issues"],
+            ),
         )
 
 
 def open_sponsor(parent: QWidget | None = None) -> None:
     url = update.links().get("sponsor", "")
     if not url or not open_url(url):
-        QMessageBox.information(parent, "후원하기", f"브라우저를 열 수 없습니다.\n\n{url}")
+        QMessageBox.information(
+            parent, tr("후원하기"), tr("브라우저를 열 수 없습니다.\n\n{url}", url=url)
+        )
 
 
 class UpdateDialog(QDialog):
@@ -106,12 +112,12 @@ class UpdateDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None, release=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("업데이트")
+        self.setWindowTitle(tr("업데이트"))
         self.resize(620, 520)
         self.release = release
         self._task: _Task | None = None
         layout = QVBoxLayout(self)
-        self.current = QLabel(f"지금 버전: <b>{__version__}</b>")
+        self.current = QLabel(tr("지금 버전: <b>{version}</b>", version=__version__))
         layout.addWidget(self.current)
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -123,30 +129,30 @@ class UpdateDialog(QDialog):
 
         self.token = QLineEdit(prefs.github_token())
         self.token.setEchoMode(QLineEdit.EchoMode.Password)
-        self.token.setPlaceholderText("선택 사항 — 비워 두어도 됩니다")
+        self.token.setPlaceholderText(tr("선택 사항 — 비워 두어도 됩니다"))
         if update.TOKEN_ENV in os.environ:
-            self.token.setPlaceholderText(f"환경 변수 {update.TOKEN_ENV} 사용 중")
+            self.token.setPlaceholderText(tr("환경 변수 {name} 사용 중", name=update.TOKEN_ENV))
         row = QHBoxLayout()
-        row.addWidget(QLabel("GitHub 토큰 (선택)"))
+        row.addWidget(QLabel(tr("GitHub 토큰 (선택)")))
         row.addWidget(self.token, 1)
         holder = QWidget()
         holder.setLayout(row)
         row.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(with_help(holder, "help.update_token"))
-        self.auto = QCheckBox("시작할 때 하루 한 번 자동으로 확인")
+        self.auto = QCheckBox(tr("시작할 때 하루 한 번 자동으로 확인"))
         self.auto.setChecked(prefs.auto_update())
         self.auto.toggled.connect(prefs.set_auto_update)
         layout.addWidget(self.auto)
 
         buttons = QHBoxLayout()
-        self.check_button = QPushButton("다시 확인")
+        self.check_button = QPushButton(tr("다시 확인"))
         self.check_button.clicked.connect(self.check)
-        self.page_button = QPushButton("릴리스 페이지")
+        self.page_button = QPushButton(tr("릴리스 페이지"))
         self.page_button.clicked.connect(self.open_page)
-        self.install_button = QPushButton("받아서 설치")
+        self.install_button = QPushButton(tr("받아서 설치"))
         self.install_button.setProperty("primary", "true")
         self.install_button.clicked.connect(self.install)
-        close = QPushButton("닫기")
+        close = QPushButton(tr("닫기"))
         close.clicked.connect(self.reject)
         for b in (self.check_button, self.page_button):
             buttons.addWidget(b)
@@ -171,7 +177,7 @@ class UpdateDialog(QDialog):
         tok = self._token()
         self.install_button.setEnabled(False)
         self.check_button.setEnabled(False)
-        self.status.setText("새 버전을 확인하는 중…")
+        self.status.setText(tr("새 버전을 확인하는 중…"))
         self.notes.clear()
         self._task = _Task(lambda report, cancelled: update.latest_release(tok), self)
         self._task.done.connect(self._checked)
@@ -190,24 +196,27 @@ class UpdateDialog(QDialog):
         else:
             self.release = None
             self.status.setText(
-                f"최신 버전을 쓰고 있습니다. (최신 릴리스: {release.tag or '없음'})"
+                tr(
+                    "최신 버전을 쓰고 있습니다. (최신 릴리스: {tag})",
+                    tag=release.tag or tr("없음"),
+                )
             )
             self.notes.setMarkdown(release.notes or "")
 
     def _check_failed(self, message: str) -> None:
         self.check_button.setEnabled(True)
-        self.status.setText(f"<span>확인하지 못했습니다: {message}</span>")
+        self.status.setText(tr("<span>확인하지 못했습니다: {message}</span>", message=message))
 
     def _show_release(self, release) -> None:
         self.release = release
         asset = update.pick_installer(release)
         self.status.setText(
-            f"새 버전 <b>{release.version}</b>이 있습니다."
-            + ("" if asset else " 다만 이 운영체제용 설치 파일이 릴리스에 없습니다.")
+            tr("새 버전 <b>{version}</b>이 있습니다.", version=release.version)
+            + ("" if asset else tr(" 다만 이 운영체제용 설치 파일이 릴리스에 없습니다."))
         )
-        self.notes.setMarkdown(release.notes or "(릴리스 설명 없음)")
+        self.notes.setMarkdown(release.notes or tr("(릴리스 설명 없음)"))
         self.install_button.setEnabled(asset is not None)
-        self.install_button.setText("받아서 설치" if update.frozen() else "설치 파일 받기")
+        self.install_button.setText(tr("받아서 설치") if update.frozen() else tr("설치 파일 받기"))
 
     def open_page(self) -> None:
         open_url(self.release.page if self.release else update.links()["releases"])
@@ -218,8 +227,8 @@ class UpdateDialog(QDialog):
         release, tok = self.release, self._token()
         if release is None:
             return
-        dialog = QProgressDialog("설치 파일을 받는 중…", "취소", 0, 100, self)
-        dialog.setWindowTitle("업데이트")
+        dialog = QProgressDialog(tr("설치 파일을 받는 중…"), tr("취소"), 0, 100, self)
+        dialog.setWindowTitle(tr("업데이트"))
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setMinimumDuration(0)
         dialog.setAutoClose(False)
@@ -236,7 +245,11 @@ class UpdateDialog(QDialog):
                 dialog.setMaximum(100)
                 dialog.setValue(int(100 * done / total))
                 dialog.setLabelText(
-                    f"설치 파일을 받는 중… {done / 1e6:,.1f} / {total / 1e6:,.1f} MB"
+                    tr(
+                        "설치 파일을 받는 중… {done:,.1f} / {total:,.1f} MB",
+                        done=done / 1e6,
+                        total=total / 1e6,
+                    )
                 )
             else:
                 dialog.setMaximum(0)
@@ -248,7 +261,7 @@ class UpdateDialog(QDialog):
         def failed(message: str) -> None:
             dialog.close()
             if message:
-                QMessageBox.warning(self, "업데이트", message)
+                QMessageBox.warning(self, tr("업데이트"), message)
 
         task.progress.connect(progress)
         task.done.connect(finished)
@@ -261,17 +274,19 @@ class UpdateDialog(QDialog):
         if not update.frozen():
             QMessageBox.information(
                 self,
-                "업데이트",
-                f"소스에서 실행 중이라 설치하지 않고 받아만 두었습니다.\n\n{path}",
+                tr("업데이트"),
+                tr("소스에서 실행 중이라 설치하지 않고 받아만 두었습니다.\n\n{path}", path=path),
             )
             update.launch_installer(path)  # opens the folder / disk image
             return
         if _will_quit():
             answer = QMessageBox.question(
                 self,
-                "업데이트",
-                "설치하려면 KStruct를 닫습니다. 저장하지 않은 작업이 있으면 먼저 저장할지 "
-                "묻습니다. 설치가 끝나면 KStruct가 다시 열립니다.\n\n지금 설치할까요?",
+                tr("업데이트"),
+                tr(
+                    "설치하려면 KStruct를 닫습니다. 저장하지 않은 작업이 있으면 먼저 저장할지 "
+                    "묻습니다. 설치가 끝나면 KStruct가 다시 열립니다.\n\n지금 설치할까요?"
+                ),
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
@@ -285,8 +300,8 @@ class UpdateDialog(QDialog):
         update.launch_installer(path)
         QMessageBox.information(
             self,
-            "업데이트",
-            "설치 파일을 열었습니다. 안내에 따라 설치한 뒤 KStruct를 다시 시작하세요.",
+            tr("업데이트"),
+            tr("설치 파일을 열었습니다. 안내에 따라 설치한 뒤 KStruct를 다시 시작하세요."),
         )
 
 
