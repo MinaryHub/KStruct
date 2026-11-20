@@ -1,8 +1,8 @@
 ; Inno Setup script: builds KStruct-Setup-<version>.exe from dist\KStruct
-; Build: iscc /DAppVersion=0.2.0 packaging\windows\kstruct.iss
+; Build: iscc /DAppVersion=0.2.1 packaging\windows\kstruct.iss
 
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.2.1"
 #endif
 
 [Setup]

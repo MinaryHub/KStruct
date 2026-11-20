@@ -520,6 +520,7 @@ class MainWindow(QMainWindow):
         self._autosave_timer.stop()
         prefs.clear_autosave()
         self._save_window_state()
+        self.viewer.shutdown()
         super().closeEvent(event)
 
     # --- autosave / recovery ----------------------------------------------------------

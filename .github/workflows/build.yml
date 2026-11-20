@@ -115,7 +115,11 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A platform whose job was cancelled (e.g. no macOS runner assigned) does not hold
+    # back the others; a failed build or test still blocks the release.
+    if: >-
+      always() && startsWith(github.ref, 'refs/tags/v')
+      && needs.build.result != 'failure'
     needs: build
     runs-on: ubuntu-22.04
     permissions:
@@ -130,6 +134,7 @@ jobs:
           mkdir release
           find artifacts -type f \( -name 'KStruct-Setup-*.exe' -o -name '*.dmg' -o -name '*.tar.gz' \) \
             -exec cp {} release/ \;
+          if [ -z "$(ls release)" ]; then echo "no installers were built" >&2; exit 1; fi
           (cd release && sha256sum * > SHA256SUMS.txt)
           ls -l release
 

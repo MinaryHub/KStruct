@@ -65,7 +65,9 @@ class ModelViewer(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.plotter = QtInteractor(self)
+        # Always interactive: PYVISTA_OFF_SCREEN=true (set by headless CI actions) would
+        # otherwise leave plotter.iren as None and break picking.
+        self.plotter = QtInteractor(self, off_screen=False)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.plotter)
@@ -387,6 +389,16 @@ class ModelViewer(QWidget):
         if self._animated and self._anim_surface is not None:
             self._anim_timer.start()
         self.plotter.render()
+
+    def shutdown(self) -> None:
+        """Release the OpenGL render window (the main window is closing).
+
+        Without this every closed window keeps its GL context alive; under software
+        OpenGL (Xvfb / Mesa in CI) a test run that opens dozens of windows crashes in
+        render().
+        """
+        self._anim_timer.stop()
+        self.plotter.close()
 
     def set_animated(self, on: bool) -> None:
         self._animated = on
