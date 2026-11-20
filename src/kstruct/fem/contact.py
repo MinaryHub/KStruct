@@ -420,15 +420,23 @@ class ContactSolver:
                 return None
             self._update = (signature, C, Y, S_inv)
         _, C, Y, S_inv = self._update
-        y = self._fact_solve(rhs)
-        x = y - Y @ (S_inv @ (C @ y))
-        # Measured on a lap joint: the update matches a fresh factorization to 2e-7
-        # (the factorization's own accuracy). The residual of K_c cannot be used as a
-        # check and iterative refinement diverges, because the penalty rows (alpha ~ 1e13)
-        # amplify round-off far beyond what the displacements need; so the guard is the
-        # conditioning of the small system plus finiteness.
+
+        def apply(b: np.ndarray) -> np.ndarray:
+            y = self._fact_solve(b)
+            return y - Y @ (S_inv @ (C @ y))
+
+        x = apply(rhs)
         if not np.all(np.isfinite(x)):
             return None
+        # The update alone is only as accurate as cond(S)·eps allows: on a lap joint
+        # cond(S) ~ 1e6 left 8e-7 of the peak displacement (a fresh factorization agrees
+        # with another ordering to 6e-10), and on Windows CI it crossed 1e-6. One step of
+        # iterative refinement with the same operator brings it to 1.5e-9. The residual
+        # itself is no accuracy measure (the penalty rows amplify round-off), so the step
+        # is kept only when it is a small correction; otherwise the plain update stands.
+        dx = apply(rhs - K_c @ x)
+        if np.all(np.isfinite(dx)) and np.abs(dx).max() <= 1e-3 * np.abs(x).max():
+            x = x + dx
         self.updates += 1
         return x
 

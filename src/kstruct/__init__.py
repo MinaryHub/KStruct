@@ -1,6 +1,6 @@
 """KStruct: mechanical part FEA for non-experts."""
 
-RELEASE_VERSION = "0.2.1"  # keep in sync with pyproject.toml (tests check)
+RELEASE_VERSION = "0.2.2"  # keep in sync with pyproject.toml (tests check)
 
 # The build number is stamped into kstruct/_build.py by packaging/build.py (and by the CI
 # workflow) right before freezing, so every build gets a higher version:
