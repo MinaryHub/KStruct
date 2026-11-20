@@ -1,6 +1,6 @@
 [project]
 name = "kstruct"
-version = "0.1.0"
+version = "0.2.0"
 description = "Mechanical part FEA for non-experts"
 readme = "README.md"
 authors = [
