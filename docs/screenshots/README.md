@@ -1,5 +1,7 @@
 # 앱 등록용 스크린샷
 
+한국어 화면은 이 폴더, 영어 화면은 `en/` 아래 같은 구조(`en/1920x1080/`, `en/2880x1800/`)에 있습니다.
+
 | 폴더 | 크기 | 용도 |
 |---|---|---|
 | `1920x1080/` | 1920×1080 (16:9) | Microsoft Store, 웹사이트, 일반 등록 |
@@ -25,3 +27,23 @@ QT_SCALE_FACTOR=2   xvfb-run -a uv run python packaging/store_screenshots.py 03_
 ```
 
 장면 이름: `01_welcome 02_setup 03_stress 04_safety 05_bolts 06_modal 07_thermal 08_nonlinear`, 어두운 화면은 장면 이름 뒤에 `_dark`(예: `03_stress_dark` → `09_dark_theme.png`).
+
+언어별로 전부 다시 만들기(영어는 `KSTRUCT_LANG=en`으로 앱을 영어로 띄움):
+
+```
+xvfb-run -a -s "-screen 0 3000x2000x24" ./packaging/all_store_screenshots.sh ko
+xvfb-run -a -s "-screen 0 3000x2000x24" ./packaging/all_store_screenshots.sh en
+```
+
+| File | Caption (English, example) |
+|---|---|
+| `01_welcome.png` | Open a CAD file and follow seven steps to find out whether the part holds. |
+| `02_setup.png` | Click faces in the 3D view to place supports and loads. |
+| `03_stress.png` | Stress distribution with a plain-language verdict: safe, caution or unsafe. |
+| `04_safety.png` | A safety-factor map shows where the part has margin and how much. |
+| `05_bolts.png` | Bolt preload and contact between plates are included. |
+| `06_modal.png` | Natural frequencies, mode shapes and resonance with the operating speed. |
+| `07_thermal.png` | Temperature distribution from heat input, convection and radiation. |
+| `08_nonlinear.png` | Beyond yield: permanent deformation and the load at which the part gives way. |
+| `09_dark_theme.png` | Light and dark appearance. |
+

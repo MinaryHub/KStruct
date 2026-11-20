@@ -143,3 +143,112 @@ def test_korean_is_unchanged_by_tr():
     i18n.set_language("ko")
     assert i18n.tr("부품 {n}개", n=3) == "부품 3개"
     assert i18n.tr("{ 그대로 }") == "{ 그대로 }"  # no values: no formatting
+
+
+# --- the English window: nothing Korean on screen ----------------------------------------
+
+
+def _korean_on_screen(window) -> list[str]:
+    """Every widget text, tooltip, list/combo/table item, menu entry and 3D colour-bar
+    title of the window that still contains Hangul."""
+    from PySide6.QtWidgets import (
+        QAbstractButton,
+        QComboBox,
+        QGroupBox,
+        QLabel,
+        QLineEdit,
+        QListWidget,
+        QMenu,
+        QTableWidget,
+        QTabWidget,
+        QWidget,
+    )
+
+    texts: list[tuple[str, str]] = [("window", window.windowTitle())]
+    for w in window.findChildren(QWidget):
+        name = type(w).__name__
+        texts.append((name + ".toolTip", w.toolTip()))
+        if isinstance(w, QLabel | QAbstractButton):
+            texts.append((name, w.text()))
+        if isinstance(w, QLineEdit):
+            texts.append((name, w.placeholderText()))
+        if isinstance(w, QGroupBox):
+            texts.append((name, w.title()))
+        if isinstance(w, QComboBox):
+            texts += [(name, w.itemText(i)) for i in range(w.count())]
+        if isinstance(w, QListWidget):
+            for i in range(w.count()):
+                texts += [(name, w.item(i).text()), (name, w.item(i).toolTip())]
+        if isinstance(w, QTableWidget):
+            for r in range(w.rowCount()):
+                for c in range(w.columnCount()):
+                    if w.item(r, c) is not None:
+                        texts.append((name, w.item(r, c).text()))
+            for c in range(w.columnCount()):
+                if w.horizontalHeaderItem(c) is not None:
+                    texts.append((name, w.horizontalHeaderItem(c).text()))
+        if isinstance(w, QTabWidget):
+            texts += [(name, w.tabText(i)) for i in range(w.count())]
+        if isinstance(w, QMenu):
+            texts += [(name, a.text()) for a in w.actions()]
+    texts += [("scalar bar", t) for t in window.viewer.plotter.scalar_bars.keys()]
+    return [f"{where}: {t!r}" for where, t in texts if t and HANGUL.search(t) and t not in ALLOWED]
+
+
+def _visit_all_steps(window) -> list[str]:
+    found: list[str] = []
+    for row in range(window.nav.count()):
+        window._go(row)
+        found += _korean_on_screen(window)
+    return sorted(set(found))
+
+
+def _english_run(qtbot, tmp_path, analysis):
+    from kstruct.geometry.face_info import face_at
+    from kstruct.model import AnalysisKind, FaceRef, Fixture, FixtureKind, Load, LoadKind
+    from kstruct.report.pdf import build_html
+    from kstruct.ui import main_window as mw
+
+    window = mw.MainWindow()
+    window.ask_before_close = False
+    qtbot.addWidget(window)
+    window.show()
+    assert not _korean_on_screen(window)  # welcome page
+    window.open_sample("bracket")
+    shape = window.project.parts[0].shape
+    back = FaceRef(0, face_at(shape, (0, 30, 40)))
+    top = FaceRef(0, face_at(shape, (90, 30, 8)))
+    for part in window.project.parts:
+        part.material_id = "s355"
+    window.project.fixtures = [Fixture(FixtureKind.FIXED, [back])]
+    if analysis is AnalysisKind.THERMAL:
+        window.project.loads = [
+            Load(LoadKind.HEAT_FLOW, [top], magnitude=5.0),
+            Load(LoadKind.CONVECTION, [back], magnitude=50.0),
+        ]
+    else:
+        window.project.loads = [Load(LoadKind.FORCE, [top], vector=(0, 0, -3000.0))]
+    window.project.analysis = analysis
+    window._go(mw.STEP_SOLVE)
+    window.panels[mw.STEP_SOLVE].refresh()
+    window.solve()
+    qtbot.waitUntil(lambda: window.result is not None, timeout=120_000)
+    found = _visit_all_steps(window)
+    html = build_html(
+        window.project,
+        window.result,
+        window.summary,
+        window.capture_result_images(),
+        window.materials,
+    )
+    found += [f"report: {line.strip()[:80]!r}" for line in html.splitlines() if HANGUL.search(line)]
+    return found
+
+
+@pytest.mark.parametrize("kind", ["STATIC", "MODAL", "THERMAL"])
+def test_english_window_and_report_have_no_korean(qtbot, tmp_path, english, kind):
+    from kstruct.model import AnalysisKind
+
+    found = _english_run(qtbot, tmp_path, AnalysisKind[kind])
+    assert not found, "Korean left in the English UI:\n" + "\n".join(found)
+    assert not i18n.missing(), f"shown without translation: {sorted(i18n.missing())}"
