@@ -25,7 +25,7 @@
  "Z 방향으로 자르기": "Cut along Z",
  "Z 축": "Z axis",
  "{axis} 방향": "{axis} direction",
- "{i}차: {f:,.1f} Hz ({rpm:,.0f} rpm)": "Mode {i}: {f:,.1f} Hz ({rpm:,.0f} rpm)",
+ "{i}차: {f:,.1f} Hz ({rpm:,.0f} rpm)": "{i}: {f:,.1f} Hz ({rpm:,.0f} rpm)",
  "{name}  (면 {n}개)": "{name}  ({n} faces)",
  "{name} ({n}개)": "{name} ({n})",
  "{name} (수정)": "{name} (modified)",
