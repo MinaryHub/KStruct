@@ -43,6 +43,14 @@ def _topics(lang: str = "ko") -> dict[str, HelpTopic]:
 
 
 def topic(key: str) -> HelpTopic:
+    from kstruct.i18n import language
+
+    lang = language()
+    if lang != "ko":
+        try:
+            return _topics(lang)[key]
+        except (KeyError, FileNotFoundError):
+            pass  # fall back to Korean
     try:
         return _topics()[key]
     except KeyError:

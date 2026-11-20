@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from kstruct import standards
+from kstruct import i18n, standards
 from kstruct.fem import ConstraintError, MeshingError, SolverError, generate_mesh
 from kstruct.fem.buckling import BucklingResult, solve_buckling
 from kstruct.fem.mesh import FEMesh
@@ -45,6 +45,7 @@ from kstruct.fem.thermal import ThermalResult, solve_thermal
 from kstruct.geometry import GeometryImportError, load_cad
 from kstruct.geometry.contacts import find_touching_faces
 from kstruct.geometry.samples import bolted_plates, l_bracket, two_plates, write_step
+from kstruct.i18n import tr
 from kstruct.model import (
     TEMPERATURE_REFERENCES,
     THERMAL_LOADS,
@@ -144,7 +145,8 @@ def friendly_error(e: Exception) -> str:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("KStruct — 부품 강도 해석")
+        i18n.set_language(prefs.language())  # before any widget text is made
+        self.setWindowTitle(tr("KStruct — 부품 강도 해석"))
         self.resize(1440, 900)
         self.project: Project | None = None
         self.project_path: Path | None = None
@@ -441,8 +443,26 @@ class MainWindow(QMainWindow):
         info_menu.addAction("문의하기 (GitHub)", lambda: open_contact(self))
         info_menu.addAction("문제 보고 (로그·프로젝트 묶기)", self.report_problem)
         info_menu.addAction("후원하기 (GitHub Sponsors)", lambda: open_sponsor(self))
+        info_menu.addSeparator()
+        language_menu = info_menu.addMenu("언어 / Language")
+        for code, name in i18n.LANGUAGES.items():
+            item = language_menu.addAction(name, lambda c=code: self.choose_language(c))
+            item.setCheckable(True)
+            item.setChecked(code == prefs.language())
         self.info_button.setMenu(info_menu)
         bar.addWidget(self.info_button)
+
+    def choose_language(self, lang: str) -> None:
+        """Saved now, applied at the next start (widgets are built with their texts)."""
+        if lang == prefs.language():
+            return
+        prefs.set_language(lang)
+        QMessageBox.information(
+            self,
+            "언어 / Language",
+            "KStruct를 다시 시작하면 바뀐 언어로 표시됩니다.\n"
+            "Restart KStruct to switch the language.",
+        )
 
     # --- updates ---------------------------------------------------------------------
 
