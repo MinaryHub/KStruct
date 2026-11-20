@@ -504,7 +504,9 @@ class MaterialStep(StepPanel):
             return
         pack = self._pack()
         kind = tr("연성재 (휘다가 파손)") if m.ductile else tr("취성재 (갑자기 깨짐)")
-        names = " · ".join(f"{k.upper()} {v}" for k, v in m.designations.items() if k != "iso")
+        names = " · ".join(
+            f"{k.upper()} {tr_data(v)}" for k, v in m.designations.items() if k != "iso"
+        )
         if m.id in self.app.project.custom_materials:
             names = tr("사용자 정의 재료")
         self.props.setText(
