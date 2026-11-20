@@ -1,0 +1,563 @@
+{
+  "help.mode": {
+    "title": "Getting started with KStruct",
+    "short": "Follow steps 1–7 at the top in order to complete an analysis. Click any ? for an explanation.",
+    "detail": "<b>Workflow</b><br>1. Open model → 2. Material → 3. Supports → 4. Loads → 5. Mesh → 6. Solve → 7. Results<br><br><b>Mouse</b><br>• Left-drag: rotate<br>• Wheel: zoom in/out<br>• Middle button or Shift+drag: pan<br>• Click: select a face, Ctrl+click: select several faces<br>• F key: fit to view<br><br>Hover over any button or input box for a short description; click ? for a detailed explanation.",
+    "related": [
+      "step.open",
+      "step.result"
+    ]
+  },
+  "project.new": {
+    "title": "New project",
+    "short": "Clears the current work and starts from scratch.",
+    "detail": "The open model and all the materials, supports and loads you entered will be cleared. If you need them, use 'Save project' first."
+  },
+  "project.open": {
+    "title": "Open project",
+    "short": "Opens a saved KStruct project (.kst).",
+    "detail": "A project file contains the geometry, materials, supports, loads and mesh settings. Analysis results are not saved, so solve again in step 6 after opening."
+  },
+  "project.save": {
+    "title": "Save project",
+    "short": "Saves everything you have entered to a .kst file.",
+    "detail": "The geometry and all inputs are saved in a single file, so it can be reopened even without the original CAD file. You can also send this file to a colleague so they can run the analysis under the same conditions."
+  },
+  "step.open": {
+    "title": "Step 1: Open model",
+    "short": "Loads the 3D file of the part to analyze.",
+    "detail": "Open a part file created in a CAD program.<br><br><b>CAD formats (recommended)</b>: STEP (.step, .stp), IGES (.iges, .igs)<br><b>Mesh formats</b>: STL, OBJ, FBX, glTF (.gltf, .glb), 3MF<br><br>For native SolidWorks, Inventor or CATIA files, save them as STEP in that program first, then open them.<br><br>If you save an assembly as STEP and open it, each part is loaded separately and touching faces are automatically 'Bonded'.",
+    "related": [
+      "file.export_step",
+      "file.mesh_formats",
+      "connection.bonded"
+    ]
+  },
+  "file.export_step": {
+    "title": "How do I open native CAD files?",
+    "short": "Save as STEP from SolidWorks, Inventor or CATIA, and the file can be opened.",
+    "detail": "STEP is an international standard (ISO 10303) 3D file format supported by all CAD programs. The geometry is transferred without loss.<br><br><b>SolidWorks</b>: File → Save As → choose 'STEP AP214 (*.step)' as the file type<br><b>Inventor</b>: File → Export → CAD Format → choose 'STEP Files (*.stp)'<br><b>CATIA</b>: File → Save As → choose 'stp' as the format<br><br>If you save an assembly, each part is loaded separately."
+  },
+  "view.parts": {
+    "title": "Part list",
+    "short": "The loaded parts. Uncheck a part to remove it from the analysis and the view.",
+    "detail": "When you load an assembly, each part is shown on its own row.<br><br>An unchecked part is hidden from the view and <b>also left out of the analysis</b>. Leaving out parts that don't need a strength check, such as bolts or washers, makes the calculation faster. However, the part also stops holding other parts in place, so check your supports again."
+  },
+  "view.face_pick": {
+    "title": "Face selection",
+    "short": "Click a face of a part to select it. Ctrl+click to select several faces.",
+    "detail": "Click a face with the left mouse button and it is highlighted in yellow. Hold Ctrl while clicking to select several faces together; click an empty area to clear the selection."
+  },
+  "view.fit": {
+    "title": "Fit to view",
+    "short": "Fits the whole model in the view (shortcut F).",
+    "detail": "Press this when you have lost the model while zooming or rotating."
+  },
+  "connection.bonded": {
+    "title": "Bonded parts",
+    "short": "Treats touching parts as if they were joined into one piece.",
+    "detail": "To analyze several parts together, you must tell the program how they are attached to each other. 'Bonded' assumes that touching faces <b>never separate or slide</b>, as with welding or adhesive.<br><br>'Find touching faces automatically' finds flat faces that touch each other and cylindrical faces where a shaft fits snugly in a hole, and bonds them.<br><br><b>Caution</b>: Places that can actually open up, such as plates clamped by bolts, are also calculated as bonded, so the results may show the design as stronger than it really is.",
+    "related": [
+      "step.fixture"
+    ]
+  },
+  "step.material": {
+    "title": "Step 2: Material",
+    "short": "Choose the material the part is made of.",
+    "detail": "The material determines the stiffness (elastic modulus) and the stress it can withstand (yield strength). For the same shape, aluminum deflects about 3 times as much as steel.<br><br>Select a part in the part list, then choose a material from the list below.",
+    "related": [
+      "material.standard",
+      "material.properties"
+    ]
+  },
+  "material.standard": {
+    "title": "Standard",
+    "short": "Chooses which country's standard is used for material names and target safety factors.",
+    "detail": "The same material has different names in different countries. For example, general structural steel is called S235JR (international), SS235 (Korea), SS400 (Japan), ASTM A36 (USA) and Q235B (China).<br><br>The default is <b>International (ISO)</b>. Changing the standard changes the material names, the target safety factors and the reference standards listed in the report. The calculation itself stays the same."
+  },
+  "material.choose": {
+    "title": "Choosing a material",
+    "short": "Pick a material from the list. Materials are grouped by type.",
+    "detail": "Choose the material whose name matches the material field on the drawing. If the name comes from another country's standard, try changing 'Standard' above.<br><br>If a material is not in the list, choose the one with the most similar properties; it is safer to pick one whose yield strength is not higher than the real value."
+  },
+  "material.properties": {
+    "title": "Material properties",
+    "short": "The stiffness and strength of the selected material.",
+    "detail": "<b>Elastic modulus</b>: how little it bends. The higher, the stiffer.<br><b>Yield strength</b>: above this stress, the part does not return to its original shape even after the load is removed (permanent deformation).<br><b>Tensile strength</b>: above this stress, it breaks.<br><b>Ductile/brittle</b>: ductile materials (most metals) bend before they fail, while brittle materials (gray cast iron, die castings, etc.) crack without warning. A larger safety factor is recommended for brittle materials.<br><br>The values shown are typical values. Actual values depend on thickness and heat treatment, so check the mill certificate for important parts."
+  },
+  "step.fixture": {
+    "title": "Step 3: Supports",
+    "short": "Specifies where the part is held in place.",
+    "detail": "Click the faces that are actually bolted, welded or resting on the floor so they cannot move, choose a support type, and press 'Support selected faces'.<br><br>Without any support, the part floats in the air and cannot be analyzed. Supported faces are shown in green (fixed), teal (sliding) and purple (pin).",
+    "related": [
+      "fixture.fixed",
+      "fixture.roller",
+      "fixture.pin"
+    ]
+  },
+  "fixture.fixed": {
+    "title": "Fixed support",
+    "short": "The face does not move at all. Use it for faces that are firmly bolted or welded.",
+    "detail": "Assumes that no point on the selected faces can move in any direction.<br><br>This is the most commonly used support. However, it holds the part more rigidly than in reality, so stresses at the edges of fixed faces may come out higher than they really are."
+  },
+  "fixture.roller": {
+    "title": "Sliding support",
+    "short": "The face cannot move into the surface but can slide along it.",
+    "detail": "Use it for faces resting on a smooth floor, symmetry planes and the like. Only the direction normal to the face is blocked; the other directions are free.<br><br>With sliding supports alone, the part can be pushed sideways, so they are usually combined with other supports."
+  },
+  "fixture.pin": {
+    "title": "Pin support",
+    "short": "Like a pin fitted in a hole, the part can only rotate about the axis.",
+    "detail": "Can only be used on the inside face of a hole or the outer cylindrical face of a shaft. Movement in the radial and axial directions is blocked; only rotation about the axis is allowed.<br><br>Use it for the pivots of links, hinges and levers. A single pin alone lets the part spin around, so another support is also needed."
+  },
+  "step.load": {
+    "title": "Step 4: Loads",
+    "short": "Specifies the forces or pressures applied to the part.",
+    "detail": "Click the faces where the force acts, enter the load type, magnitude and direction, and press 'Add load'. Loaded faces are shown in orange with arrows.<br><br><b>Note</b>: An object with a mass of 1 kg pushes down with about 9.81 N (newtons). 100 kg is about 981 N.",
+    "related": [
+      "load.bearing",
+      "load.centrifugal",
+      "load.force",
+      "load.gravity",
+      "load.pressure",
+      "load.temperature",
+      "load.torque"
+    ]
+  },
+  "load.force": {
+    "title": "Force",
+    "short": "A force (N) spread evenly over all the selected faces.",
+    "detail": "Assumes the force you enter spreads evenly in proportion to the area of the selected faces. If you select several faces, the total on all of them equals the value you entered (it is not applied to each face separately).<br><br>It helps to think of it as weight: hanging 50 kg is about 490 N.",
+    "related": [
+      "load.direction"
+    ]
+  },
+  "load.direction": {
+    "title": "Force direction",
+    "short": "Choose which way the force pushes. Refer to the X·Y·Z axes at the lower left of the view.",
+    "detail": "<b>Push/pull normal to the face</b>: pushes or pulls at a right angle to the face. On curved faces, it is applied as a pressure of the same magnitude.<br><b>±X, ±Y, ±Z</b>: the directions of the axis indicator at the lower left of the view. Usually −Z is down (the direction of gravity)."
+  },
+  "load.pressure": {
+    "title": "Pressure",
+    "short": "A pressure (MPa) pushing evenly on the face. Use it for fluid or air pressure.",
+    "detail": "Pressure acts normal to the face everywhere on it. Positive (+) pushes into the face; negative (−) pulls (sucks) it outward.<br><br>1 MPa = 10 bar ≈ 10 kgf/cm². Factory compressed air is usually 0.5–0.7 MPa, and hydraulics about 7–21 MPa."
+  },
+  "load.gravity": {
+    "title": "Self-weight (gravity)",
+    "short": "Adds the weight of the part itself as a load.",
+    "detail": "The weight is calculated from the material density and the part volume. It matters for heavy parts such as large castings or long beams.<br><br>A factor of 1 g is Earth's gravity. To account for shocks or acceleration during transport, enter 2–3 g. The direction is usually −Z (down)."
+  },
+  "load.temperature": {
+    "title": "Temperature change",
+    "short": "Calculates the expansion and stress when the whole part is heated or cooled uniformly.",
+    "detail": "When the temperature rises, the material expands; if the supports keep it from expanding freely, stress develops (thermal stress). Example: heating a steel rod fixed at both ends by 50 °C produces a stress of about 120 MPa.<br><br>The whole part is assumed to change to the same temperature. Where different materials are bonded together, they expand by different amounts, which creates stress."
+  },
+  "step.mesh": {
+    "title": "Step 5: Mesh",
+    "short": "Divides the part into small pieces for the calculation.",
+    "detail": "The computer calculates by dividing the part into many small tetrahedral pieces (elements). Smaller pieces are more accurate but take longer to compute.<br><br>Usually you can just keep 'Medium'. If you skip this step, the mesh is created automatically in step 6.",
+    "related": [
+      "mesh.quality"
+    ]
+  },
+  "mesh.quality": {
+    "title": "Mesh quality",
+    "short": "Sets the size of the pieces. Finer is more accurate but slower.",
+    "detail": "<b>Coarse</b>: for a quick look at the overall behavior.<br><b>Medium</b>: recommended in most cases.<br><b>Fine</b>: when the results go into a report, or when there are small holes or fillets.<br><b>Very fine</b>: to see small areas of concentrated stress accurately. Calculation time increases greatly.<br><br><b>How to check</b>: solve once with 'Medium' and once with 'Fine'; if the maximum stress differs by 10% or more, a finer mesh is needed.<br><br>Each grade also sets the number of elements through the thickness of thin walls: Coarse 1, Medium 2, Fine 3, Very fine 4 or more.<br><br>Models with contact or bolt preload take much longer at the same grade because the calculation is repeated many times (bolt example: Coarse 20 seconds, Medium 3 minutes). Check the overall behavior with 'Coarse' first, then raise the grade."
+  },
+  "step.solve": {
+    "title": "Step 6: Solve",
+    "short": "Checks that everything is ready and runs the calculation.",
+    "detail": "When every item in the list has a ✔, press 'Start analysis'. It takes from a few seconds to a few minutes depending on the model size.<br><br>If an error occurs, the cause and how to fix it are explained in plain language."
+  },
+  "step.result": {
+    "title": "Step 7: Results",
+    "short": "Check whether the part is safe and how much it deflects.",
+    "detail": "The verdict card at the top is the conclusion. Colors show the stress (the intensity of the force inside the part) and the deformation; the redder, the more critical.<br><br>Click on the result to show the value at that point. Use 'Save report' to create a PDF report.",
+    "related": [
+      "result.verdict",
+      "result.field",
+      "result.disclaimer"
+    ]
+  },
+  "result.verdict": {
+    "title": "Verdict",
+    "short": "Whether the part is safe, judged by the safety factor.",
+    "detail": "<b>Safety factor</b> = stress the material can withstand ÷ actual stress.<br>2.0 means it can withstand up to twice the current load.<br><br>✅ <b>Safe</b>: safety factor at or above the target<br>⚠ <b>Caution</b>: 1 or more but below the target — it holds, but without enough margin<br>❌ <b>Unsafe</b>: below 1 — may deform permanently or break<br><br>The targets are typical values for static conditions with well-known loads (ductile 1.5, brittle 3.0). Parts with uncertain loads, repeated or impact loads, or parts that could injure people need a larger safety factor.",
+    "related": [
+      "analysis.target",
+      "result.hotspot",
+      "result.previous"
+    ]
+  },
+  "result.field": {
+    "title": "Result display",
+    "short": "Choose which result to show in color.",
+    "detail": "<b>Stress (von Mises)</b>: the standard stress for judging whether a metal will hold. Compare it with the yield strength.<br><b>Safety factor</b>: red is critical, green has margin.<br><b>Deformation</b>: how far each point moved from its original position (mm).<br><b>Deformation X/Y/Z</b>: movement in each direction. Red is the + direction, blue the − direction.<br><b>Maximum principal stress</b>: the pulling (tensile) stress. Important for materials that crack easily, such as cast iron and plastics."
+  },
+  "result.scale": {
+    "title": "Deformation display",
+    "short": "Sets how much the deformed shape is exaggerated.",
+    "detail": "The actual deformation is usually too small to see, so 'Auto scale' enlarges it tens to thousands of times so the shape is easy to see (the scale factor is shown in the color bar title). 'True scale' shows it without enlargement. The gray lines show the shape before deformation."
+  },
+  "result.report": {
+    "title": "Save report",
+    "short": "Creates a PDF report with the verdict, analysis conditions and result images.",
+    "detail": "The report contains the verdict summary, the maximum stress and safety factor of each part, materials, support and load conditions, reaction forces, result images, and the analysis method and its limitations. Use it for design reviews or records."
+  },
+  "result.disclaimer": {
+    "title": "Using the results with care",
+    "short": "For reference only. Final decisions must be made by a qualified engineer.",
+    "detail": "This program performs linear static analysis. In the following cases, the results can differ greatly from reality.<br>• Large deformation (thin plates, springs)<br>• Behavior after the material yields<br>• Fatigue from repeated loads, impact, vibration<br>• Contact where parts slide or separate<br>• High temperature, corrosion, weld quality<br><br>Whether to actually build and use the part must be finally decided by a qualified engineer, taking into account the load conditions, material certificates and applicable regulations."
+  },
+  "file.mesh_formats": {
+    "title": "Opening mesh formats (STL, OBJ, FBX, glTF, 3MF)",
+    "short": "Triangle-based files can be opened too, but use STEP whenever possible.",
+    "detail": "Mesh formats approximate the outer surface with small triangles. They are widely used for 3D printing and in game and graphics programs.<br><br><b>Things to watch</b><br>• The surface must be completely closed (no holes or gaps) to be analyzed as a solid object.<br>• Flat faces are merged into a single face, but curved faces (such as the inside of a hole) are split into small pieces, so you must select the pieces together with Ctrl+click.<br>• Rounded areas become faceted, so stresses near them may differ from reality.<br><br><b>Units</b>: STL and OBJ are read in mm, glTF in m, and FBX and 3MF in the units stated in the file. If the size looks wrong, re-save the file in mm from the original program."
+  },
+  "analysis.static": {
+    "title": "Strength analysis",
+    "short": "Calculates whether the part will break or bend permanently under load, and how much it deflects.",
+    "detail": "The most basic analysis. It needs the supports from step 3 and the forces, pressures or self-weight from step 4.<br><br>If you add thermal conditions (fixed temperature, heat input, convection) or a temperature change in step 4, the <b>thermal stress</b> caused by thermal expansion is calculated as well."
+  },
+  "analysis.modal": {
+    "title": "Vibration (natural frequency) analysis",
+    "short": "Finds the frequencies at which the part naturally tends to vibrate, to check the risk of resonance.",
+    "detail": "Every object has its own natural frequencies at which it vibrates easily. If the frequency of a motor, pump, engine, etc. is close to one of them, even a small force causes large vibration (resonance), leading to noise or fatigue failure.<br><br>No loads are needed. Specify the supports as they are in reality. Without supports, the part is calculated as floating in the air.<br><br>If you enter the operating speed (rpm or Hz), the resonance risk is judged. Generally the natural frequency and the operating frequency should be <b>at least ±20%</b> apart to be safe.",
+    "related": [
+      "modal.operating",
+      "result.mode"
+    ]
+  },
+  "analysis.thermal": {
+    "title": "Thermal analysis",
+    "short": "Calculates the temperature throughout the part as heat flows in and out.",
+    "detail": "Use it for parts where temperature matters, such as heat sinks, motor brackets and heater blocks. Specify the thermal conditions in step 4.<br>• <b>Fixed temperature</b>: a face that always stays at a constant temperature<br>• <b>Heat input</b>: a face where heat enters, and the amount of heat (W)<br>• <b>Convection cooling</b>: a face cooled by air or water<br>• <b>Radiation cooling</b>: a hot face giving off heat as infrared light (important above 200 °C)<br><br>Faces without conditions are assumed to let no heat in or out (insulated). At least one of fixed temperature, convection or radiation is needed to determine the temperature. If the material has a table of thermal conductivity versus temperature (k_table), it is taken into account as well. By default it gives the temperature after a long enough time (steady state); turn on 'change over time' in step 6 to follow the part warming up or cooling down (transient analysis).",
+    "related": [
+      "load.face_temperature",
+      "load.heat_flow",
+      "load.convection",
+      "load.radiation"
+    ]
+  },
+  "modal.count": {
+    "title": "Number of frequencies",
+    "short": "Sets how many natural frequencies to find, starting from the lowest.",
+    "detail": "The lowest frequencies are usually the most important. If the operating speed is high, increase the number so that frequencies above it are found as well. More frequencies take longer to calculate."
+  },
+  "modal.operating": {
+    "title": "Operating speed",
+    "short": "The speed of a nearby vibration source (such as motor speed). Used to judge resonance.",
+    "detail": "Enter the motor speed (rpm) or the vibration frequency (Hz). 1 Hz = 60 rpm. Example: an 1800 rpm motor = 30 Hz.<br><br>If 0, only the frequencies are shown, without a verdict."
+  },
+  "result.mode": {
+    "title": "Vibration mode",
+    "short": "Choose which natural frequency's vibration shape to view.",
+    "detail": "Each natural frequency has its own vibration shape (mode). Turn on 'Animate' to see an animation of how it actually vibrates.<br><br>The size of the shape is relative, not the actual amplitude. Adding ribs or supports where it moves most (red) can raise that frequency."
+  },
+  "load.face_temperature": {
+    "title": "Fixed temperature",
+    "short": "The selected faces are always kept at this temperature.",
+    "detail": "Use it where the temperature is nearly constant, such as faces touching a heater, faces with coolant flowing past them, or faces attached to a large block of metal."
+  },
+  "load.heat_flow": {
+    "title": "Heat input",
+    "short": "The amount of heat (W) entering through the selected faces.",
+    "detail": "Enter the heat generated by a component such as a motor, power supply or LED on the face it touches. Use the loss (W) from the product datasheet, or the part of the power consumption that turns into heat. If you select several faces, the entered value is the total."
+  },
+  "load.convection": {
+    "title": "Convection cooling",
+    "short": "Represents the selected faces being cooled by surrounding air or water.",
+    "detail": "The larger the heat transfer coefficient h, the better it cools. Approximate values:<br>• Natural air cooling (no wind): 5–10 W/m²K<br>• Desk fan or light breeze: 20–50<br>• Forced air from a fan: 50–200<br>• Water cooling: 500–10,000<br><br>Enter the surrounding air temperature as well."
+  },
+  "fatigue.cycle": {
+    "title": "Repeated load (fatigue)",
+    "short": "If a load is repeated thousands to millions of times, cracks can form even under forces far below the strength (fatigue).",
+    "detail": "Bending a paper clip back and forth until it snaps is fatigue. If the load is repeated, be sure to select this.<br><br><b>One-way repeated</b>: the force rises from 0 to the maximum and is released, again and again (pedals, presses, lifting arms)<br><b>Fully reversed</b>: the force alternates with the same magnitude in opposite directions (bending of a rotating shaft, vibrating parts) — the most severe case.<br><br>The entered load is treated as the maximum of the repeated load; the fatigue safety factor is calculated with the modified Goodman diagram, and the expected number of cycles until a crack forms with the S-N curve. Surface finish and reliability are corrected with the settings below. Welds and threads can have a much shorter real life."
+  },
+  "analysis.buckling": {
+    "title": "Buckling analysis",
+    "short": "Finds the load at which a slender or thin part under compression suddenly bows sideways and collapses.",
+    "detail": "If you push a ruler from both ends, at some point it suddenly bows out. This is buckling; even with a strong material, a slender or thin part buckles at a force far below its strength. Check it for columns, long shafts, thin plates and frames.<br><br>Specify supports and loads (compressive forces) exactly as for the strength analysis. A <b>load factor</b> of 2.0 in the results means it buckles at twice the current load.<br><br>Real parts are slightly bent or loaded off-center, so they buckle earlier than calculated; a margin of <b>3 or more</b> is usually recommended."
+  },
+  "connection.contact": {
+    "title": "Connection types: Bonded and Contact",
+    "short": "Choose whether the parts are joined (Bonded) or just placed against each other (Contact).",
+    "detail": "<b>Bonded</b>: touching faces never separate or slide, as with welding, adhesive or press fits. Fast to calculate and always solves.<br><br><b>Contact</b>: the parts are simply placed against each other. Pushing forces are transmitted, but the parts separate when pulled, and sideways they hold only up to the friction limit before sliding (a friction coefficient of 0 means no friction). It is a little slower because the calculation is repeated several times.<br><br><b>Caution</b>: A part connected only by contact can be pushed past the friction limit or come loose, so it must also be supported on its own or clamped with bolts. In vibration, buckling and thermal analyses, contact is calculated as bonded.",
+    "related": [
+      "connection.friction"
+    ]
+  },
+  "bolt.joint": {
+    "title": "Bolted joint",
+    "short": "Represents two parts clamped with a bolt. Also calculates the bolt forces and safety factor.",
+    "detail": "Ctrl+click the hole faces of the two parts, one in each, and press 'Connect the two selected holes with a bolt'. A bolt size that fits the hole is chosen automatically.<br><br>The bolt is calculated as a spring connecting the holes (axial + sideways). The effect of the bolt head and nut pressing on the plates is simplified, so it is best to also define the faces where the plates touch as 'Contact' or 'Bonded' in step 1.<br><br>The results show, for each bolt, the axial force (pulling force), the shear force (sideways cutting force) and the safety factor against the proof stress.",
+    "related": [
+      "bolt.size",
+      "bolt.grade",
+      "bolt.preload"
+    ]
+  },
+  "bolt.size": {
+    "title": "Bolt size",
+    "short": "The bolt diameter (nominal thread diameter). When you pick a hole, a matching size is selected automatically.",
+    "detail": "M10 means a nominal thread diameter of 10 mm. The hole the bolt passes through is usually slightly larger than the bolt (M10 → 11 mm). The strength calculation uses the tensile stress area of the thread (M10: 58 mm²)."
+  },
+  "bolt.grade": {
+    "title": "Bolt property class",
+    "short": "The number stamped on the bolt head (e.g. 8.8, 10.9). Higher is stronger.",
+    "detail": "Property classes per ISO 898-1. First number × 100 = tensile strength (MPa); product of the two numbers × 10 = yield strength (MPa). Example: 8.8 → tensile 800 MPa, yield 640 MPa.<br><br>Use 8.8 for general machinery, 10.9 or 12.9 when high strength is needed, and stainless A2-70 or A4-80 where rust is not allowed."
+  },
+  "bolt.preload": {
+    "title": "Clamping force (preload)",
+    "short": "The pulling force created by tightening the bolt with a wrench. Bolts are usually tightened to 70% of the proof load.",
+    "detail": "A tightened bolt is already pulled with a large force, and this force clamps the parts together. 'Recommended preload (auto)' enters 70% of the proof load (yield strength × tensile stress area) (M10 8.8: about 26 kN).<br><br>The actual clamping force can vary by ±25% or more depending on the tightening torque and lubrication. Entering 0 calculates without clamping force."
+  },
+  "material.units": {
+    "title": "Display units",
+    "short": "Shows inputs and results in SI (mm·N·MPa·°C) or US units (in·lbf·psi·°F).",
+    "detail": "'Follow standard' matches the selected standard (US units for the US standard, SI for all others).<br><br>Changing the units does not change the calculation results, only the display. Loads you have already entered are shown again in the new units.<br><br>Conversions: 1 in = 25.4 mm, 1 lbf = 4.448 N, 1 MPa = 145.04 psi, °F = °C × 1.8 + 32"
+  },
+  "material.custom": {
+    "title": "Custom materials",
+    "short": "You can create your own materials that are not in the list. Select an existing material and press 'Add' to start from its values.",
+    "detail": "Enter values from the mill certificate or the manufacturer's datasheet.<br><br>• First select an existing material with similar properties and press 'Add custom material…'; its values are copied, so you only need to change the fields that differ.<br>• Materials you create are saved in this project file (.kst) and also appear in the list for other projects on this computer.<br>• For yield and tensile strength, it is safer to enter the <b>minimum</b> values of the standard. Entering an average or a single test result may give a more favorable verdict than reality.",
+    "related": [
+      "material.choose",
+      "material.custom_props"
+    ]
+  },
+  "material.custom_name": {
+    "title": "Material name",
+    "short": "The name shown in the list and the report. It helps to include the standard designation and condition (heat treatment, etc.).",
+    "detail": "Examples: 'SCM440 QT', 'AL6061-T6 (Supplier A)'. Several materials may share the same name, but they are then hard to tell apart, so include the condition or source as well."
+  },
+  "material.custom_props": {
+    "title": "Material property values",
+    "short": "Elastic modulus, yield and tensile strength are required; thermal and fatigue values are used only for those analyses.",
+    "detail": "<b>Elastic modulus (E)</b>: stiffness. Steel about 200 GPa, aluminum about 70 GPa, plastics 2–4 GPa.<br><b>Poisson's ratio</b>: about 0.3 for metals.<br><b>Yield strength</b>: the stress at which permanent deformation begins. Basis of the verdict for ductile materials.<br><b>Tensile strength</b>: the stress at which it breaks. Basis of the verdict for brittle materials.<br><b>Thermal expansion coefficient, thermal conductivity, specific heat</b>: used for thermal and thermal stress analyses.<br><b>Fatigue limit</b>: used for fatigue checks under repeated loads. If unknown, leave it at 0 and it is estimated as half the tensile strength.<br><b>Maximum service temperature</b>: used for the temperature verdict in thermal analysis. If 0, no verdict is made.<br><b>Ductile</b>: a material that stretches before it fails. Uncheck it for materials that break suddenly, such as cast iron, die castings and ceramics (they are judged by the maximum principal stress against the tensile strength, with a larger safety factor)."
+  },
+  "analysis.target": {
+    "title": "Target safety factor",
+    "short": "The safety factor that the verdict (Safe, Caution, Unsafe) is based on. The default is the general machine design recommendation of the selected standard.",
+    "detail": "The defaults (ductile 1.5, brittle 3.0, buckling 3.0) are common machine design recommendations for static conditions with well-known loads; they are not values required by a standard.<br><br>Use larger values in cases such as:<br>• The load magnitude is uncertain, or there is impact or vibration (2–3)<br>• Parts that could injure people, or lifting equipment (check company rules and regulations; usually 4 or more)<br>• Using estimated properties without a material certificate<br><br>If you change the values, the report shows them as 'user-defined safety factors'.",
+    "related": [
+      "result.verdict"
+    ]
+  },
+  "help.about": {
+    "title": "About KStruct",
+    "short": "Shows the program version, the runtime environment and the open-source notices.",
+    "detail": "When contacting us, please include the version shown here. The 'Open-source notices' tab lists the open-source components used by this program and their licenses."
+  },
+  "help.report": {
+    "title": "Report a problem",
+    "short": "Saves the log, runtime environment and current project in a single zip. Sending it to support helps reproduce the problem.",
+    "detail": "What is saved: the program log (recent actions and errors), the runtime environment (version, operating system) and the current project (.kst: geometry and input conditions). Result data is not included.<br><br>If the geometry must not leave your company, remove the .kst file from the zip before sending it."
+  },
+  "result.hotspot": {
+    "title": "Stress singularities and hotspots",
+    "short": "Stress at sharp re-entrant corners or at the edges of fixed faces grows without limit as the mesh gets finer. Values that exclude those areas are shown as well.",
+    "detail": "In linear finite element analysis, re-entrant corners without fillets and the boundaries of fixed faces are 'singularities' where the stress is theoretically infinite. The finer the mesh, the larger the calculated value there becomes, so a verdict based on that number would depend on the mesh.<br><br>KStruct finds singularities automatically and also shows the stress and safety factor slightly away from them (about 3% of the part size or 1.5 elements) as 'excluding singularities' values.<br>• <b>Ductile materials</b> (steel, aluminum, etc.) yield only locally at a singularity and the load is redistributed, so the verdict uses the value excluding singularities.<br>• <b>Brittle materials</b> (cast iron, etc.) can actually crack at sharp corners, so the verdict uses the maximum value.<br><br>If you add fillets (rounds) to the corners of the real part and include them in the CAD model, the singularity disappears and a realistic stress is calculated."
+  },
+  "load.torque": {
+    "title": "Torque (twisting)",
+    "short": "A force that twists a shaft (N·m). Use it for rotating parts such as shafts, gears and pulleys.",
+    "detail": "Distributes a tangential force over the selected faces that grows with the distance from the rotation axis (the same as the torsional stress distribution in a round shaft), so that the total equals the torque you entered.<br><br>• If you select a <b>cylindrical face</b> of a shaft or hole, its axis becomes the rotation axis. If you selected a flat face (such as the end face of a shaft), specify the X, Y or Z axis under 'Rotation axis'.<br>• Sign: positive is the rotation in which a right-hand screw advances along the rotation axis (counterclockwise), negative is the opposite.<br>• Torque = force × lever arm. Example: the motor's rated torque, or a 10 kg force at the end of a handle × 0.3 m = 29.4 N·m.<br>• The side opposite to where the torque is applied must be held with a 'Fixed support' or 'Pin support'.",
+    "related": [
+      "load.axis",
+      "fixture.pin"
+    ]
+  },
+  "load.bearing": {
+    "title": "Bearing load",
+    "short": "The force with which a shaft or pin in a hole pushes on the hole wall. Select the hole's cylindrical face and set the force direction.",
+    "detail": "Just as a pin pushes on a hole wall, pressure is applied to the half of the wall facing the force direction with a cosine distribution (largest in the middle, falling to 0 at the edges). The total equals the force you entered.<br><br>• Can only be applied to the inside <b>cylindrical face</b> of a hole (several faces must be holes on the same axis).<br>• Choose the direction from the X, Y and Z axes. The component along the axis (along the length of the hole) cannot be carried by the wall and is ignored.<br>• This is closer to reality than applying a 'Force' to the whole hole, and gives more accurate stresses around the hole.",
+    "related": [
+      "load.force",
+      "fixture.pin"
+    ]
+  },
+  "load.centrifugal": {
+    "title": "Centrifugal load (rotation)",
+    "short": "The outward force on a part rotating about an axis. Specify the rotational speed (rpm) and the rotation axis, and it is applied to all parts.",
+    "detail": "Material at a distance r from the rotation axis feels an outward force of density × ω² × r (ω = angular velocity). Use it for impellers, flywheels, rotating disks and couplings.<br><br>• Rotation axis: if you select a cylindrical face of a shaft or hole, its axis is used; otherwise specify the X, Y or Z axis under 'Rotation axis' (passing through the model center).<br>• The force is proportional to the square of the speed, so twice the speed gives four times the force. Enter the maximum speed (overspeed test speed).<br>• Only one centrifugal load can be specified. Adding another replaces the previous one.",
+    "related": [
+      "load.axis",
+      "load.gravity"
+    ]
+  },
+  "load.axis": {
+    "title": "Rotation axis",
+    "short": "The rotation axis for torque and centrifugal load. Automatic if you select a cylindrical face; otherwise specify the X, Y or Z axis.",
+    "detail": "'Axis of selected cylindrical face': used when all the selected faces are cylindrical faces on the same axis (outer face of a shaft, inner face of a hole).<br>'X, Y, Z axis': uses the coordinate axis passing through the center of the selected faces (or the model center if no face is selected). Refer to the axis indicator at the lower left of the view.<br><br>The rotation axis is shown as an orange line in the 3D view."
+  },
+  "load.cases": {
+    "title": "Load cases",
+    "short": "A group of loads that act together. If you split different situations (e.g. running, stopped, impact) into cases, the strength analysis calculates them all and tells you which one is most critical.",
+    "detail": "Loads within one case act at the same time. Put loads that occur at different times (e.g. 'maximum load', 'emergency stop', 'wind load') in separate cases.<br><br>• Create a case with 'Add'; when you select it in the list, only that case's loads are shown below, and new loads are added to it.<br>• The strength analysis calculates all cases, and the results view and report show the safety factor of each case and the most critical case.<br>• Thermal and buckling analyses use only the loads of the currently selected case.<br>• More cases mean correspondingly longer calculation time.",
+    "related": [
+      "step.load",
+      "result.case"
+    ]
+  },
+  "result.case": {
+    "title": "Result case",
+    "short": "Choose which load case's results to view. The most critical case is shown above the verdict card.",
+    "detail": "The strength analysis calculates all load cases. The color plot and detailed values are for the case selected here; the report contains a comparison table of the cases and the details of the selected case.",
+    "related": [
+      "load.cases"
+    ]
+  },
+  "mesh.refine": {
+    "title": "Local mesh refinement",
+    "short": "Select hole, fillet or edge faces where stress concentrates and assign a smaller element size. Thin walls automatically get enough elements through the thickness.",
+    "detail": "The mesh grade sets the element size for the whole part. To see particular faces (inside a hole, a fillet, a small loaded face) more accurately, select those faces in the 3D view and press 'Refine selected faces'. The suggested size is 1/3 of the overall element size.<br><br>Thin walls need no separate setting. The thickness under each face is measured automatically, and the element size of that face is reduced so that there are 2 elements through the thickness for 'Medium', 3 for 'Fine' and 4 or more for 'Very fine' (shown in the message after the mesh is created).<br><br>Smaller elements increase the calculation time rapidly. Refine only around areas with low safety factors; if the results stay similar when you change the grade, the mesh is fine enough.",
+    "related": [
+      "mesh.quality",
+      "result.hotspot"
+    ]
+  },
+  "result.clip": {
+    "title": "Section view",
+    "short": "Cuts the part with a plane to see the stress or temperature inside. Choose the cutting direction and position.",
+    "detail": "Looking only at the outer surface does not reveal the stress distribution inside. Turning on section view cuts the part along the selected axis and shows the values on the cut face in color. Move the cutting position with the slider.<br><br>• Useful for bending of thick parts (high stress at the surface, low inside), around holes, and inside welded or bonded faces.<br>• The deformation animation is turned off during section view.<br>• When you save a report, the section image you are viewing is included as well.",
+    "related": [
+      "result.field"
+    ]
+  },
+  "result.export": {
+    "title": "Export results",
+    "short": "Saves node results (coordinates, displacement, stress, safety factor, temperature) as a CSV table or a VTU file for ParaView.",
+    "detail": "<b>CSV</b>: one row per node, with units in the column names. You can open it in Excel to sort and filter, or use it in other calculations.<br><b>VTU</b>: a VTK file that also includes element connectivity. Free post-processing programs such as ParaView can create a wider variety of plots from it.<br><br>Values are saved in the currently selected display units. Vibration analysis saves the relative size of the mode shapes; thermal analysis saves temperature and heat flow.",
+    "related": [
+      "result.report",
+      "material.units"
+    ]
+  },
+  "result.previous": {
+    "title": "Compare with previous analysis",
+    "short": "Shows the safety factor, maximum stress and maximum deformation side by side with the previous strength analysis. Solving again with a different mesh grade shows how much the results change.",
+    "detail": "When you change the design or raise the mesh grade and calculate again, the differences from the previous result are shown.<br><br>• If you changed only the mesh and the safety factor changes by more than 10%, the result has not converged yet. Go one grade finer or check the stress singularity notes.<br>• If you changed the geometry or loads, the difference is the effect of that change.<br><br>The comparison is lost when you close the program.",
+    "related": [
+      "mesh.quality",
+      "result.hotspot"
+    ]
+  },
+  "fatigue.surface": {
+    "title": "Surface finish",
+    "short": "Fatigue cracks start at the surface, so the rougher the surface, the lower the fatigue limit. Choose the actual finish.",
+    "detail": "A material's fatigue limit is measured on smooth, polished test specimens. For real parts it is reduced by multiplying by the following factor for the surface finish (Marin surface factor from Shigley, which varies with tensile strength):<br>• Ground: about 0.9<br>• Machined or cold-drawn: about 0.75–0.9<br>• Hot-rolled: about 0.5–0.7<br>• As-forged: about 0.3–0.5<br><br>Welds, sharp notches and corrosive environments are not covered here, so allow a larger safety factor for them separately.",
+    "related": [
+      "fatigue.cycle",
+      "fatigue.reliability"
+    ]
+  },
+  "fatigue.reliability": {
+    "title": "Reliability",
+    "short": "The fatigue limit scatters widely, so choose what percentage of parts should outlast the calculated life. Usually 90–99 %.",
+    "detail": "Even for the same material, the fatigue limit scatters between specimens with a standard deviation of about 8 %. The higher the reliability, the lower the fatigue limit used in the calculation:<br>50 % → 1.00, 90 % → 0.90, 95 % → 0.87, 99 % → 0.81, 99.9 % → 0.75<br><br>99 % or more is recommended for parts that could injure people or are hard to replace.",
+    "related": [
+      "fatigue.cycle",
+      "fatigue.surface"
+    ]
+  },
+  "project.recent": {
+    "title": "Recent files",
+    "short": "Quickly opens one of the 8 most recently opened model or project files.",
+    "detail": "The file open dialog also starts in the folder you used last. Your work is saved temporarily every 3 minutes, and if the program closes unexpectedly, recovery is offered the next time it starts. The temporary save is deleted when you save the project or exit normally.",
+    "related": [
+      "project.open",
+      "project.save"
+    ]
+  },
+  "connection.friction": {
+    "title": "Friction coefficient",
+    "short": "The ratio of the sideways force that touching faces can resist before they slide (Coulomb friction: resisting force ≤ μ × pressing force).",
+    "detail": "The larger the friction coefficient μ, the more sideways force is resisted relative to the pressing force. Approximate values (dry, unlubricated):<br>• Steel–steel: 0.15–0.3 (machined faces and bolted joint faces 0.15–0.2)<br>• Steel–aluminum: 0.3–0.45<br>• Steel–cast iron: 0.2–0.25<br>• Steel–plastic (POM, nylon): 0.2–0.35<br>• Rubber, friction pads: 0.5 or more<br>• With lubricant or grease: 0.05–0.1<br><br>Entering 0 calculates free sliding without friction.<br><br>The calculation follows Coulomb friction: each contact point sticks if the sideways force is less than μ × the pressing force, and if it exceeds that, slides while transmitting only that force. The result notes show the share that slid. A bolted joint face gains a slip resistance of clamping force × μ, so use this to check whether the clamping force carries the shear load by friction."
+  },
+  "load.radiation": {
+    "title": "Radiation cooling",
+    "short": "Represents the selected faces cooling by giving off heat as light (infrared) when they get hot.",
+    "detail": "Standing in front of a stove, you are warmed by light rather than by the air: that is radiation. It grows sharply with temperature (with the fourth power of the absolute temperature), so it becomes more important than convection for parts above 200 °C or where there is no air, such as in vacuum or space. Below 100 °C, convection cooling alone is usually enough.<br><br><b>Emissivity ε</b> (0–1) is how well the surface gives off heat:<br>• Black paint, oxidized steel, anodized aluminum: 0.8–0.95<br>• Rough rolled steel: 0.5–0.7<br>• Polished aluminum or stainless steel: 0.05–0.2<br><br>The ambient temperature is the temperature of the walls and air that the face sees. It can be applied to the same face together with convection cooling. Because radiation depends on temperature, the calculation is repeated several times (a little slower). Radiation exchange between two parts facing each other is not calculated.",
+    "related": [
+      "load.convection",
+      "analysis.thermal"
+    ]
+  },
+  "view.theme": {
+    "title": "Light mode · Dark mode",
+    "short": "Switches the screen between light and dark colors.",
+    "detail": "The dark mode is easier on the eyes when working for a long time in a dark place. Your choice is saved and kept the next time you start the program. It has no effect on analysis results or reports."
+  },
+  "project.undo": {
+    "title": "Undo · Redo",
+    "short": "Reverts your last change (Ctrl+Z) or reapplies a reverted change (Ctrl+Y).",
+    "detail": "Changes such as assigning materials, adding or deleting supports, loads, connections and bolts, analysis settings and hiding parts can be undone up to 50 steps back. Undoing clears analysis results that no longer match that state, so you need to solve again. The mesh is kept if the mesh quality, local refinements and visible parts are unchanged. Opening a new file clears the history."
+  },
+  "analysis.estimate": {
+    "title": "Analysis size and estimated time",
+    "short": "Shows the size of the mesh and roughly how long this analysis will take.",
+    "detail": "Elements are the small pieces the part is divided into; unknowns are the number of values the computer has to solve for. More unknowns give more precision but take longer. Contact, vibration and buckling analyses take longer than a strength analysis of the same size. The times are rough estimates for a typical office PC, and you can stop the analysis at any time with 'Cancel'. If it takes too long, lower the mesh quality by one grade in step 5."
+  },
+  "fixture.displacement": {
+    "title": "Prescribed displacement",
+    "short": "Moves the selected faces by a set distance (e.g. press fits, assembly misalignment, pushing parts into place).",
+    "detail": "Only the checked directions among X, Y and Z move by the entered value; unchecked directions are free to move. A value of 0 is the same as fixing only that direction. Use it when you know 'how far it moves' rather than the force. For example, to find the force and stress needed to open a clip by 2 mm, apply a 2 mm prescribed displacement to the face that opens and look at the reaction force (the force required) in the results. When used together with contact, the movement is applied in steps along with the loads."
+  },
+  "fixture.elastic": {
+    "title": "Elastic support",
+    "short": "A support that gives a little when pressed, like rubber mounts, springs or a soft floor.",
+    "detail": "Enter the force (stiffness) needed to push the whole selected face 1 (mm or in) in the direction normal to the face. This force is spread evenly over the face area. A fixed support assumes the base never moves and often overestimates the stress; if you know the actual stiffness of the mount, an elastic support is more realistic. It supports only normal to the face, so another support (such as a sliding support) may be needed to keep the part from sliding sideways. If you don't know the stiffness, look for the 'spring constant' or 'stiffness' in the mount manufacturer's data."
+  },
+  "load.remote": {
+    "title": "Remote force",
+    "short": "Transfers a force acting at a point outside the part to faces rigidly connected to that point.",
+    "detail": "Use it when the force acts away from the part's faces, such as at the end of a lever, at the center of gravity of a heavy device hanging on a bracket, or at a pulley on the end of a shaft. The bending effect (moment) created by that distance is also calculated. Select the faces that receive the force (e.g. the bolt mounting face where the device attaches), then enter the force magnitude and direction and the distance from the face center to the point of application in X, Y and Z. The faces share the load as if tied together by a rigid plate."
+  },
+  "load.remote_offset": {
+    "title": "Point of application",
+    "short": "The distance (X, Y, Z) from the center of the selected faces to the point where the force acts.",
+    "detail": "For example, if the device's center of gravity is 120 mm above and 50 mm in front of the center of the mounting face, enter Z 120 and X 50. If all three values are 0, it is the same as applying a plain force at the face center."
+  },
+  "load.moment": {
+    "title": "Moment",
+    "short": "Applies a bending or twisting effect (turning force) to the selected faces.",
+    "detail": "The direction is the rotation axis (right-hand rule: with your thumb pointing in that direction, the rotation follows the way your other fingers curl). To apply only twisting to a cylindrical face around a shaft, 'Torque' is the right choice; to apply bending to a flat face, use this 'Moment'. The load is distributed as if the face were rigidly tied together, increasing linearly with the distance from the face center."
+  },
+  "analysis.transient": {
+    "title": "Temperature change over time",
+    "short": "When on, calculates how the part heats up or cools down over a set time. When off, calculates the state after a long enough time when nothing changes any more (steady state).",
+    "detail": "Use it when time matters, for example 'how hot is the housing 10 minutes after the motor starts?' or 'what temperature is a part 1 hour after it is taken out of a hot mold?'. Starting from the initial temperature, the time is divided into 60 steps, and you can view the temperature at intermediate times with 'Time' in the results view. The verdict uses the highest temperature reached during that time. The material's specific heat and density are required. It can be calculated even without a fixed temperature or convection (with heat input only). If you include thermal conditions in a strength analysis, the thermal stress is calculated from the temperature at the end of the calculated time."
+  },
+  "analysis.plasticity": {
+    "title": "Calculate beyond yield",
+    "short": "Calculates the behavior after the material yields (starts to deform permanently). Shows the deformation that remains after unloading and the load at which the part collapses.",
+    "detail": "A normal strength analysis is a linear calculation that is valid only until the material yields. That is why it can only report 'Unsafe' when the safety factor is below 1. With this option on, the program calculates how the yielded region stretches further and passes load on to its surroundings. The result tells you whether ① yielding is local and the permanent deformation is small (⚠ Caution), ② it yields extensively and bends permanently (❌, showing the deformation left after unloading), or ③ it cannot carry the full load and collapses (❌, showing the fraction of the load it carried). The material curve is assumed to be straight up to the yield strength, rise gently up to the tensile strength, and be nearly flat after that (if the material data has a hardening slope, that value is used). Because the load is applied in several steps with repeated calculation, it takes 5–20 times longer than a linear analysis. It cannot yet be used for models with contact or bolts, or for the repeated-load (fatigue) verdict. Brittle materials (cast iron, etc.) crack rather than yield, so the linear verdict is still used for them."
+  },
+  "analysis.large_deformation": {
+    "title": "Large deformation",
+    "short": "Includes the effect of the shape changing as the part bends a lot (thin plates, long bars, springs).",
+    "detail": "A normal strength analysis assumes the deformation is small and calculates the force balance on the original shape. For parts that bend a lot, such as thin plates or long bars, the directions in which forces act and the lever arms change as they bend, which changes the result. With this option on, the balance is calculated repeatedly on the deformed shape (e.g. a long cantilever loaded at its tip deflects less than the linear calculation predicts). Load directions stay as they were at the start, even after deformation (pressure does not turn with the face). In the results view, a 'Deformation scale' of 1× shows the real shape. Turning this on is recommended when the deformation exceeds a few % of the part size."
+  },
+  "help.contact": {
+    "title": "Contact us",
+    "short": "Sends questions, suggestions or bug reports as a GitHub issue (version and environment details are filled in for you).",
+    "detail": "Opens the new issue page of the KStruct repository (GitHub, MinaryHub/KStruct) in your browser. The version and operating system are already filled in, so just describe what you were doing and what happened. You need to sign in with a (free) GitHub account to write an issue, and issues are visible to everyone, so do not include confidential company drawings or figures. If logs and the project file are needed, drag the zip file created with 'Report a problem' into the issue body to attach it (it will be public, so check its contents before uploading)."
+  },
+  "help.sponsor": {
+    "title": "Sponsor",
+    "short": "Support KStruct development (opens the GitHub Sponsors page).",
+    "detail": "Opens the GitHub Sponsors page in your browser. Sponsoring does not affect the program's features."
+  },
+  "help.update": {
+    "title": "Update",
+    "short": "Checks for a new version, then downloads and installs it.",
+    "detail": "Checks GitHub Releases for the latest version. If a new version is available, its release notes are shown; press 'Download and install' to download the installer for this operating system, verify it against the release checksum (SHA-256) and install it. On Windows, KStruct closes, installs the update and reopens (if there is unsaved work, you are asked first). On macOS, the disk image is opened, so drag KStruct into the Applications folder. On Linux, the folder containing the downloaded archive is opened. If 'Check automatically at startup' is on, it checks quietly once a day, and an 'Update' button appears in the toolbar only when a new version is available."
+  },
+  "help.update_token": {
+    "title": "GitHub token (optional)",
+    "short": "Usually leave this empty. Enter one only if update checks are blocked by the 'rate limit'.",
+    "detail": "The KStruct repository is public, so updates can be checked and downloaded without a token. However, GitHub limits requests without sign-in to 60 per hour from the same internet address, so if your whole company goes out through one address, you may get a 'rate limit' error. In that case, create a token with no permissions (read-only access to public repositories) under GitHub → Settings → Developer settings → Personal access tokens and paste it here. The token is saved in the user data folder on this computer (prefs.json). You can also set it with the environment variable KSTRUCT_GITHUB_TOKEN, which then takes precedence."
+  }
+}
