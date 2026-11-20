@@ -45,7 +45,7 @@ from kstruct.fem.thermal import ThermalResult, solve_thermal
 from kstruct.geometry import GeometryImportError, load_cad
 from kstruct.geometry.contacts import find_touching_faces
 from kstruct.geometry.samples import bolted_plates, l_bracket, two_plates, write_step
-from kstruct.i18n import N_, tr
+from kstruct.i18n import N_, tr, tr_data
 from kstruct.model import (
     TEMPERATURE_REFERENCES,
     THERMAL_LOADS,
@@ -1565,7 +1565,7 @@ class MainWindow(QMainWindow):
                 if p.hotspot_fos is not None:
                     lines[-1] += tr(
                         "<br>&nbsp;특이점({kind}) 제외: 응력 {stress}, 안전율 <b>{fos:.2f}</b>",
-                        kind=p.singular_kind,
+                        kind=tr_data(p.singular_kind),
                         stress=fmt(us, "stress", p.hotspot_stress, ",.1f"),
                         fos=p.hotspot_fos,
                     )

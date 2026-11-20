@@ -28,10 +28,11 @@ FIXTURE_NAMES = {
     FixtureKind.DISPLACEMENT: N_("강제 변위"),
     FixtureKind.ELASTIC: N_("탄성 지지"),
 }
-CONNECTION_NAMES = {
-    ConnectionKind.BONDED: N_("접합"),
-    ConnectionKind.CONTACT: N_("접촉"),
-    ConnectionKind.BOLT: N_("볼트"),
+# whole sentences per kind ({a}, {b}: the two face lists)
+CONNECTION_TEXTS = {
+    ConnectionKind.BONDED: N_("접합: {a} ↔ {b}"),
+    ConnectionKind.CONTACT: N_("접촉: {a} ↔ {b}"),
+    ConnectionKind.BOLT: N_("볼트: {a} ↔ {b}"),
 }
 
 FaceNamer = Callable[[list[FaceRef]], str]
@@ -70,12 +71,12 @@ def describe_fixture(project: Project, fx: Fixture, faces: FaceNamer | None = No
 
 def describe_connection(project: Project, c: Connection, faces: FaceNamer | None = None) -> str:
     faces = faces or plain_faces(project)
-    name = tr(CONNECTION_NAMES[c.kind])
+    a, b = faces(c.faces_a), faces(c.faces_b)
+    if c.kind == ConnectionKind.CONTACT and c.friction > 0:
+        return tr("접촉 (마찰 μ={mu:g}): {a} ↔ {b}", mu=c.friction, a=a, b=b)
     if c.kind == ConnectionKind.CONTACT:
-        name = (
-            tr("접촉 (마찰 μ={mu:g})", mu=c.friction) if c.friction > 0 else tr("접촉 (마찰 없음)")
-        )
-    return f"{name}: {faces(c.faces_a)} ↔ {faces(c.faces_b)}"
+        return tr("접촉 (마찰 없음): {a} ↔ {b}", a=a, b=b)
+    return tr(CONNECTION_TEXTS[c.kind], a=a, b=b)
 
 
 def describe_load(project: Project, ld: Load, faces: FaceNamer | None = None) -> str:

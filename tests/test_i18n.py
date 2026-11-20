@@ -135,7 +135,7 @@ def english(monkeypatch):
 
 
 def test_tr_formats_and_falls_back(english):
-    assert i18n.tr("해석 중…") != "해석 중…"
+    assert i18n.tr("저장") == "Save"
     assert i18n.tr_data("사용자가 입력한 이름") == "사용자가 입력한 이름"
 
 

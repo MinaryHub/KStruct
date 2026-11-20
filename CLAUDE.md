@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-KStruct: 기계 부품용 3D 유한요소해석 데스크톱 앱(비전문가 대상). 목표는 **상용 소프트웨어 수준의 품질**(정확도·안정성·사용성·성능)이며 판매·외부 배포용 제품은 아니다 — 코드 서명·EULA·릴리스 같은 배포 업무는 우선순위가 아니다. 사용자와의 대화와 UI 문구는 한국어.
+KStruct: 기계 부품용 3D 유한요소해석 데스크톱 앱(비전문가 대상). 목표는 **상용 소프트웨어 수준의 품질**(정확도·안정성·사용성·성능)이며 판매·외부 배포용 제품은 아니다 — 코드 서명·EULA·릴리스 같은 배포 업무는 우선순위가 아니다. 사용자와의 대화는 한국어. UI 문구는 한국어로 쓰고 영어 번역을 함께 넣는다(아래 '언어').
 
 ## 명령어
 
@@ -41,7 +41,8 @@ CI(`.github/workflows/build.yml`)가 Windows/macOS/Linux에서 테스트 → PyI
 - **여러 부품**: 처음부터 `Project.parts` 리스트 + `connections`. STEP의 솔리드마다 Part 하나(이름은 XCAF `read_named_solids`로 읽고 어셈블리는 배치를 적용해 평탄화; STEP의 UTF-8 이름은 바이트당 한 코드포인트로 돌아오므로 `_decode_name`으로 복원), 맞닿은 면은 `geometry/contacts.py`가 자동 접합(바깥 법선이 마주보고 실제 겹침 면적이 있어야 함).
 - **메시 포맷**(`geometry/mesh_import.py`, `geometry/fbx.py`): 삼각형을 공유 위상 B-rep 솔리드로 만들고 같은 평면 삼각형을 병합. 열린 메시는 자동 보정하지 않고 거부한다(보정이 형상을 몰래 바꾸므로). FBX 리더는 자체 구현.
 - **기준 팩/재료**: `resources/standards.json`, `resources/materials.json`. 국가별 명칭·권장 안전율(좌굴 하중 배수 포함)은 데이터로만 추가한다. 계산 코드에 국가 기준을 하드코딩하지 말 것. 볼트 규격·등급은 `resources/bolts.json`.
-- **도움말**: 모든 UI 요소는 `resources/help/ko.json`의 키를 참조(`HelpButton`, `with_help`, `topic(key).short`). `tests/test_ui.py`가 UI 코드에 쓰인 키가 JSON에 다 있는지 검사하므로 새 접두어를 쓰면 그 테스트의 `PREFIXES`도 갱신.
+- **언어**(`i18n.py`): 사용자에게 보이는 모든 문구는 한국어 원문을 `tr("…")`로 감싸고(값은 `tr("부품 {name}", name=…)` — f-string 금지), 영어는 `resources/i18n/en/<영역>.json`의 `{한국어: English}`(여러 파일을 합침; 같은 키는 같은 번역이어야 함). 한국어 모드에서 `tr`은 원문 그대로라 기존 동작·테스트가 바뀌지 않는다. import 때 만들어지는 상수 표는 `N_()`로 표시하고 보여 줄 때 `tr(값)`, 재료 설명·기준 팩 이름 같은 데이터와 사용자 입력 이름은 `tr_data()`(내장 데이터 번역은 `en/data.json`, 없으면 그대로). 로그 메시지·주석·docstring은 번역하지 않는다. 언어는 `prefs.language()`(정보 메뉴 '언어 / Language', 다시 시작해야 적용) 또는 `KSTRUCT_LANG=en`. `tests/test_i18n.py`가 tr 밖의 한글 리터럴, 영어 없는 문구, 자리표시자 불일치, 파일 간 번역 충돌, 영어 도움말 누락을 잡고, 영어 창으로 강도·진동·열 해석을 돌려 화면·보고서에 한글이 남으면 실패한다. 새 문구를 추가하면 해당 영역 JSON에 영어도 넣을 것. 도움말은 `help/en.json`(키·HTML·related가 ko.json과 같아야 함).
+- **도움말**: 모든 UI 요소는 `resources/help/ko.json`의 키를 참조(`HelpButton`, `with_help`, `topic(key).short`; 영어 모드는 `help/en.json`, 없는 항목은 한국어). `tests/test_ui.py`가 UI 코드에 쓰인 키가 JSON에 다 있는지 검사하므로 새 접두어를 쓰면 그 테스트의 `PREFIXES`도 갱신.
 - **화면 디자인**(`ui/theme.py`): 색은 전부 `Theme` 토큰(LIGHT/DARK)에서 온다 — 위젯에 색을 직접 쓰지 말고 `theme.current()`를 읽거나 스타일시트가 고르는 속성을 붙인다(`primary="true"` 주 버튼은 패널당 하나, `role="hint"|"section"|"disclaimer"|"help"`, `compact`). `theme.apply()`가 Fusion 스타일 + 팔레트 + QSS + 글꼴을 앱 전체에 건다(`MainWindow.__init__`에서 호출, 선택은 `prefs.theme()`에 저장, `toggle_theme`). 글꼴은 번들 Noto Sans KR **가변 폰트라 기본 굵기가 Thin(100)** 이다: `theme.weighted()`로 `wght` 축을 지정해야 하고(본문 420, 굵게 700), 직접 그리는 글자(`StepDelegate`)도 이걸 쓴다. 콤보·스핀박스는 QSS로 테두리를 건드리지 않는다(화살표 그림이 사라짐). 툴바 아이콘은 `theme.icon()`이 코드로 그린다(이미지 파일 없음). 단계 표시는 가로형 `StepNav`(QListWidget 그대로라 `nav.currentRow()`로 구동, 완료 표시는 `STEP_DONE` 데이터 = `MainWindow._step_done`). 프로젝트가 없으면 오른쪽은 시작 화면(`pane` 0번), 있으면 3D 뷰(1번). 3D 배경·모서리·색 막대 글자는 `viewer.apply_theme`.
 - **UI**: `ui/main_window.py`가 Project·mesh·result를 소유하고, `ui/steps.py`의 7개 패널이 이를 편집해 `changed`를 보낸다. 메싱·해석은 `ui/worker.run_job`으로 백그라운드 실행. `run_job`이 돌려주는 `JobHandle.cancel()`(취소 버튼 → `MainWindow.cancel_job`)은 협조적 취소라 다음 진행 보고(`progress`)에서 `Cancelled`가 나고, 메싱 대기 중에는 `generate_mesh(check=progress.check)`가 0.25초마다 확인해 Netgen 워커 프로세스를 죽인다. 분해(factorization) 도중에는 멈추지 않는다. 결과 종류(Static/Modal/Thermal)에 따라 결과 패널 필드가 바뀐다.
 - **단면·내보내기**: 뷰어는 평소 TRI6 겉면만 그리지만 단면 보기는 `viewer.linear_volume_grid`(TET10을 선형 사면체 8개로 분할; VTK clip은 비선형 셀을 못 다룸)를 잘라 보여준다. VTU 내보내기는 `volume_grid`(VTK 2차 사면체, 중간 절점 순서 `_TET10_TO_VTK`로 재배열 — Netgen과 VTK의 중간 절점 순서가 다르다). 결과 열 정의는 `report/export.py.result_columns` 한 곳.
