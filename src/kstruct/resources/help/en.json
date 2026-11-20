@@ -232,7 +232,7 @@
   "analysis.thermal": {
     "title": "Thermal analysis",
     "short": "Calculates the temperature throughout the part as heat flows in and out.",
-    "detail": "Use it for parts where temperature matters, such as heat sinks, motor brackets and heater blocks. Specify the thermal conditions in step 4.<br>• <b>Fixed temperature</b>: a face that always stays at a constant temperature<br>• <b>Heat input</b>: a face where heat enters, and the amount of heat (W)<br>• <b>Convection cooling</b>: a face cooled by air or water<br>• <b>Radiation cooling</b>: a hot face giving off heat as infrared light (important above 200 °C)<br><br>Faces without conditions are assumed to let no heat in or out (insulated). At least one of fixed temperature, convection or radiation is needed to determine the temperature. If the material has a table of thermal conductivity versus temperature (k_table), it is taken into account as well. By default it gives the temperature after a long enough time (steady state); turn on 'change over time' in step 6 to follow the part warming up or cooling down (transient analysis).",
+    "detail": "Use it for parts where temperature matters, such as heat sinks, motor brackets and heater blocks. Specify the thermal conditions in step 4.<br>• <b>Fixed temperature</b>: a face that always stays at a constant temperature<br>• <b>Heat input</b>: a face where heat enters, and the amount of heat (W)<br>• <b>Convection cooling</b>: a face cooled by air or water<br>• <b>Radiation cooling</b>: a hot face giving off heat as infrared light (important above 200 °C)<br><br>Faces without conditions are assumed to let no heat in or out (insulated). At least one of fixed temperature, convection or radiation is needed to determine the temperature. If the material has a table of thermal conductivity versus temperature (k_table), it is taken into account as well. By default it gives the temperature after a long enough time (steady state); turn on 'Over time' in step 6 to follow the part warming up or cooling down (transient analysis).",
     "related": [
       "load.face_temperature",
       "load.heat_flow",
@@ -311,7 +311,7 @@
   "bolt.preload": {
     "title": "Clamping force (preload)",
     "short": "The pulling force created by tightening the bolt with a wrench. Bolts are usually tightened to 70% of the proof load.",
-    "detail": "A tightened bolt is already pulled with a large force, and this force clamps the parts together. 'Recommended preload (auto)' enters 70% of the proof load (yield strength × tensile stress area) (M10 8.8: about 26 kN).<br><br>The actual clamping force can vary by ±25% or more depending on the tightening torque and lubrication. Entering 0 calculates without clamping force."
+    "detail": "A tightened bolt is already pulled with a large force, and this force clamps the parts together. 'Auto' enters 70% of the proof load (yield strength × tensile stress area) (M10 8.8: about 26 kN).<br><br>The actual clamping force can vary by ±25% or more depending on the tightening torque and lubrication. Entering 0 calculates without clamping force."
   },
   "material.units": {
     "title": "Display units",

@@ -301,7 +301,7 @@ class MainWindow(QMainWindow):
         intro = QLabel(
             tr(
                 "CAD에서 만든 부품을 열고 재료·고정·하중을 고르면, 안전한지와 얼마나 휘는지를 "
-                "색과 쉬운 말로 알려 드립니다. 왼쪽의 7단계를 차례로 따라가면 됩니다."
+                "색과 쉬운 말로 알려 드립니다. 위쪽의 7단계를 차례로 따라가면 됩니다."
             )
         )
         intro.setWordWrap(True)
