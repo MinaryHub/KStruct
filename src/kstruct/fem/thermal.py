@@ -161,16 +161,29 @@ def capacity_matrix(mesh: FEMesh, materials: dict[int, Material]) -> sp.csr_matr
     return sp.csr_matrix((Ce.ravel(), (rows, cols)), shape=(n, n))
 
 
+class _Conduction:
+    """Element conduction matrices for k = 1, computed once per mesh. k is constant over
+    an element (the element mean temperature picks it), so K(k) only rescales them:
+    rebuilding the gradients every transient step cost 19 of 168 s on a 94k-DOF part."""
+
+    def __init__(self, mesh: FEMesh):
+        X = mesh.nodes[mesh.tets]
+        Ke = np.zeros((len(mesh.tets), 10, 10))
+        for p, w in zip(tet10.GAUSS_POINTS, tet10.GAUSS_WEIGHTS, strict=True):
+            dNdx, det = tet10.gradients(X, p)
+            Ke += np.einsum("eni,emi,e->enm", dNdx, dNdx, det * w)
+        self.unit = Ke
+        self.rows = np.repeat(mesh.tets, 10, axis=1).ravel()
+        self.cols = np.tile(mesh.tets, (1, 10)).ravel()
+        self.n = mesh.n_nodes
+
+    def matrix(self, k: np.ndarray) -> sp.csr_matrix:
+        data = (self.unit * np.asarray(k, dtype=float)[:, None, None]).ravel()
+        return sp.csr_matrix((data, (self.rows, self.cols)), shape=(self.n, self.n))
+
+
 def _conductivity_matrix(mesh: FEMesh, k: np.ndarray) -> sp.csr_matrix:
-    X = mesh.nodes[mesh.tets]
-    Ke = np.zeros((len(mesh.tets), 10, 10))
-    for p, w in zip(tet10.GAUSS_POINTS, tet10.GAUSS_WEIGHTS, strict=True):
-        dNdx, det = tet10.gradients(X, p)
-        Ke += np.einsum("eni,emi,e->enm", dNdx, dNdx, k * det * w)
-    rows = np.repeat(mesh.tets, 10, axis=1).ravel()
-    cols = np.tile(mesh.tets, (1, 10)).ravel()
-    n = mesh.n_nodes
-    return sp.csr_matrix((Ke.ravel(), (rows, cols)), shape=(n, n))
+    return _Conduction(mesh).matrix(k)
 
 
 def _surface_matrices(mesh: FEMesh, tris: np.ndarray, h):
@@ -246,14 +259,18 @@ def solve_thermal(
     for dofs, coefs in zip(ties.penalty_rows, ties.penalty_coefs, strict=True):
         if np.all(dofs % 3 == 0):
             scalar.add_equation(dofs // 3, coefs)
-    K0 = _conductivity_matrix(mesh, element_conductivity(mesh, materials))
+    conduction = _Conduction(mesh)
+    K0 = conduction.matrix(element_conductivity(mesh, materials))
+    k_depends_on_t = any(m.conductivity_table for m in materials.values())
     tie_matrix = scalar.penalty_matrix(n, K0.diagonal().max())
 
     def assemble(T_prev: np.ndarray | None):
         """Linear problem at the previous temperatures: (K, f, fixed mask, prescribed T,
         film terms (tris, h, ambient, ∫N dA) for the heat balance)."""
-        k = element_conductivity(mesh, materials, T_prev)
-        K = (K0 if T_prev is None else _conductivity_matrix(mesh, k)).tolil()
+        if T_prev is None or not k_depends_on_t:
+            K = K0
+        else:
+            K = conduction.matrix(element_conductivity(mesh, materials, T_prev))
         f = np.zeros(n)
         fixed = np.zeros(n, dtype=bool)
         T = np.zeros(n)
@@ -283,11 +300,11 @@ def solve_thermal(
                 H, integral_n = _surface_matrices(mesh, tris, h)
                 rows = np.repeat(tris, 6, axis=1).ravel()
                 cols = np.tile(tris, (1, 6)).ravel()
-                K = K + sp.csr_matrix((H.ravel(), (rows, cols)), shape=(n, n)).tolil()
+                K = K + sp.csr_matrix((H.ravel(), (rows, cols)), shape=(n, n))
                 source = np.broadcast_to(np.asarray(h * ambient, dtype=float), (len(tris),))
                 np.add.at(f, tris.ravel(), (integral_n * source[:, None]).ravel())
                 films.append((tris, h, ambient, integral_n))
-        return K.tocsr() + tie_matrix, f, fixed, T, films
+        return K + tie_matrix, f, fixed, T, films
 
     def solve_once(T_prev):
         Kp, f, fixed, T, films = assemble(T_prev)

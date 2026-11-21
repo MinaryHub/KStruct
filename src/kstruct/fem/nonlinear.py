@@ -107,6 +107,24 @@ class _Elements:
             else:
                 self.thermal.append(alpha * (dT_nodes[mesh.tets] @ tet10.shape_functions(p)))
         self.n = len(mesh.tets)
+        self._pattern = None
+
+    def pattern(self, mesh: FEMesh):
+        """(indptr, indices, slot of every element entry) of the tangent's CSR pattern,
+        built once: the pattern never changes, so each Newton iteration only sums the
+        element values into place instead of building and adding sparse matrices
+        (that sorting and conversion took a third of a 38k-DOF run)."""
+        if self._pattern is None:
+            n_dof = mesh.n_nodes * 3
+            dofs = element_dofs(mesh.tets).astype(np.int64)
+            rows = np.repeat(dofs, 30, axis=1).ravel()
+            cols = np.tile(dofs, (1, 30)).ravel()
+            keys, slot = np.unique(rows * n_dof + cols, return_inverse=True)
+            indptr = np.zeros(n_dof + 1, dtype=np.int64)
+            np.cumsum(np.bincount(keys // n_dof, minlength=n_dof), out=indptr[1:])
+            dtype = np.int32 if len(keys) < 2**31 else np.int64
+            self._pattern = (indptr, (keys % n_dof).astype(dtype), slot.astype(dtype))
+        return self._pattern
 
 
 def _deformation_gradient(ue: np.ndarray, dN: np.ndarray) -> np.ndarray:
@@ -150,7 +168,9 @@ def _evaluate(
     eps_p, alpha = state
     new_eps_p, new_alpha = eps_p.copy(), alpha.copy()
     f_int = np.zeros(n_dof)
-    K = sp.csr_matrix((n_dof, n_dof)) if want_matrix else None
+    if want_matrix:
+        indptr, indices, slot = el.pattern(mesh)
+        values = np.zeros(len(indices))
     S_points = np.zeros((el.n, 4, 6))
     for start in range(0, el.n, CHUNK):
         sl = slice(start, min(start + CHUNK, el.n))
@@ -176,11 +196,11 @@ def _evaluate(
                     Gab = np.einsum("eai,eij,ebj->eab", dN, St, dN) * dv[:, None, None]
                     for k in range(3):
                         Ke[:, k::3, k::3] += Gab
-        np.add.at(f_int, dofs.ravel(), fe.ravel())
+        f_int += np.bincount(dofs.ravel(), weights=fe.ravel(), minlength=n_dof)
         if want_matrix:
-            rows = np.repeat(dofs, 30, axis=1).ravel()
-            cols = np.tile(dofs, (1, 30)).ravel()
-            K = K + sp.csr_matrix((Ke.ravel(), (rows, cols)), shape=(n_dof, n_dof))
+            entries = slot[sl.start * 900 : sl.stop * 900]
+            values += np.bincount(entries, weights=Ke.ravel(), minlength=len(values))
+    K = sp.csr_matrix((values, indices, indptr), shape=(n_dof, n_dof)) if want_matrix else None
     return f_int, K, (new_eps_p, new_alpha), S_points
 
 

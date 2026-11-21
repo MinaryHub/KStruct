@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" width="128" alt="KStruct"></p>
+
 # KStruct — 부품 강도 해석
 
 CAD 모델을 불러와 재료·고정·하중을 지정하면, 부품이 안전한지 색과 쉬운 말로 알려주는

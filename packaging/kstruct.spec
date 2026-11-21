@@ -40,6 +40,26 @@ for f in occt.files or []:
     if f.suffix.lower() in (".dll", ".so", ".dylib") or ".so." in f.name:
         binaries.append((str(f.locate().resolve()), "."))
 
+# MKL for the PARDISO solver (Windows/Linux x86-64; fem/pardiso.py loads it with ctypes,
+# so PyInstaller cannot see it). Only what PARDISO loads: the runtime, core, LP64
+# interface and OpenMP threading layers, every CPU-specific kernel (MKL picks one at run
+# time), OpenMP and tbbmalloc. The wheels hold ~1 GB more (MPI, ScaLAPACK, GPU offload).
+import re
+
+MKL_KEEP = re.compile(
+    r"^(lib)?(mkl_(rt|core|intel_lp64|intel_thread|sequential|def|mc3|avx\d*|vml_\w+)"
+    r"|iomp5(md)?|tbbmalloc)[.\d]*\.(dll|so[.\d]*|dylib)$",
+    re.IGNORECASE,
+)
+for dist in ("mkl", "intel-openmp", "tbb"):
+    try:
+        files = distribution(dist).files or []
+    except Exception:  # not installed on this platform (macOS)
+        continue
+    for f in files:
+        if MKL_KEEP.match(f.name) and "_db" not in f.name:
+            binaries.append((str(f.locate().resolve()), "."))
+
 a = Analysis(
     [str(ROOT / "src" / "kstruct" / "app.py")],
     pathex=[str(ROOT / "src")],
@@ -69,8 +89,14 @@ exe = EXE(
     name="KStruct",
     console=False,
     disable_windowed_traceback=False,
+    icon=str(ROOT / "packaging" / "windows" / "kstruct.ico") if sys.platform == "win32" else None,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="KStruct")
 
 if sys.platform == "darwin":
-    app = BUNDLE(coll, name="KStruct.app", bundle_identifier="kr.smic.kstruct")
+    app = BUNDLE(
+        coll,
+        name="KStruct.app",
+        icon=str(ROOT / "packaging" / "macos" / "kstruct.icns"),
+        bundle_identifier="kr.smic.kstruct",
+    )

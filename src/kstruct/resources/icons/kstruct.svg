@@ -1,0 +1,18 @@
+<!-- KStruct logo: the letter K drawn as a truss (bars, bracing and pin joints). Source for every icon size: packaging/make_icons.py -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2D6FE3"/><stop offset="1" stop-color="#1746A6"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M150 108 V404" stroke-width="44"/>
+    <path d="M172 256 L366 108 M172 256 L366 404" stroke-width="40"/>
+    <path d="M150 182 L268 181 M150 330 L268 331 M150 108 L268 181 M150 404 L268 331" stroke-width="16" stroke-opacity="0.85"/>
+  </g>
+  <g fill="#FF8A1F" stroke="#FFFFFF" stroke-width="10">
+    <circle cx="366" cy="108" r="22"/><circle cx="366" cy="404" r="22"/>
+    <circle cx="172" cy="256" r="24"/><circle cx="268" cy="181" r="16"/><circle cx="268" cy="331" r="16"/>
+  </g>
+</svg>
