@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import ctypes
 import glob
+import hashlib
 import logging
 import os
 import sys
 import weakref
+from collections import OrderedDict
 from functools import cache
 
 import numpy as np
@@ -85,6 +87,21 @@ def available() -> bool:
     return _library() is not None
 
 
+# METIS ordering is ~75 % of a factorization (85k DOF: 0.8 s of 1.05 s) and depends only
+# on the sparsity pattern, which repeats: every transient heat step, contact iterations
+# whose active set comes back, load cases. Remember the last few orderings by pattern.
+_ORDERINGS: OrderedDict[bytes, np.ndarray] = OrderedDict()
+_ORDERINGS_KEPT = 4
+
+
+def _pattern_key(upper: sp.csr_matrix) -> bytes:
+    h = hashlib.blake2b(digest_size=16)
+    h.update(np.int64(upper.shape[0]).tobytes())
+    h.update(upper.indptr.tobytes())
+    h.update(upper.indices.tobytes())
+    return h.digest()
+
+
 class _Factor:
     """One factorization; free() releases MKL's memory (also on garbage collection)."""
 
@@ -107,7 +124,16 @@ class _Factor:
         self.iparm = np.zeros(64, dtype=np.int32)
         ip = self.iparm
         ip[0] = 1  # supply all values below
-        ip[1] = 2  # METIS nested dissection ordering
+        ip[1] = 3  # METIS nested dissection, parallel (0.76 -> 0.45 s at 85k, same order)
+        key = _pattern_key(upper)
+        known = _ORDERINGS.get(key)
+        if known is not None:
+            _ORDERINGS.move_to_end(key)
+            self.perm = known.copy()
+            ip[4] = 1  # use this ordering
+        else:
+            self.perm = np.zeros(n, dtype=np.int32)
+            ip[4] = 2  # return the computed ordering in perm
         ip[7] = 0  # refine only if pivots were perturbed (never for SPD): 1e-12 as is
         ip[9] = 13  # pivot perturbation 1e-13 (not used for SPD)
         ip[17] = -1  # report nonzeros in the factor
@@ -119,6 +145,10 @@ class _Factor:
         self._finalizer = weakref.finalize(self, _release, lib, self.pt, n)
         self._call(_PHASE_ANALYZE_FACTOR, None)
         self.nnz_factor = int(ip[17])
+        if known is None:
+            _ORDERINGS[key] = self.perm.copy()
+            while len(_ORDERINGS) > _ORDERINGS_KEPT:
+                _ORDERINGS.popitem(last=False)
 
     def pivots(self) -> tuple[np.ndarray, np.ndarray]:
         """(diagonal of the factor, diagonal of the matrix), as pardiso_getdiag gives them."""
@@ -157,7 +187,7 @@ class _Factor:
             self.a.ctypes.data_as(f64),
             self.ia.ctypes.data_as(i32),
             self.ja.ctypes.data_as(i32),
-            None,  # perm
+            self.perm.ctypes.data_as(i32),
             ctypes.byref(ctypes.c_int32(nrhs)),
             self.iparm.ctypes.data_as(i32),
             ctypes.byref(ctypes.c_int32(0)),  # msglvl
