@@ -185,6 +185,9 @@ class MainWindow(QMainWindow):
 
         app = QApplication.instance()
         self.theme = theme.apply(app, prefs.theme()) if app is not None else theme.current()
+        self.setWindowIcon(theme.app_icon())
+        if app is not None:
+            app.setWindowIcon(self.windowIcon())
         self.viewer = ModelViewer()
         self.viewer.apply_theme(self.theme)
         self.viewer.selection_changed.connect(self._selection_changed)
@@ -376,6 +379,10 @@ class MainWindow(QMainWindow):
         bar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
         bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         bar.setIconSize(QSize(18, 18))
+        logo = QLabel()
+        logo.setPixmap(self.windowIcon().pixmap(QSize(26, 26)))
+        logo.setContentsMargins(4, 0, 6, 0)
+        bar.addWidget(logo)
         name = QLabel("KStruct")
         name.setObjectName("appName")
         bar.addWidget(name)

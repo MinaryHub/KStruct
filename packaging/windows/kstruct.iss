@@ -19,6 +19,8 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+SetupIconFile=kstruct.ico
+UninstallDisplayIcon={app}\KStruct.exe
 LicenseFile=..\..\THIRD_PARTY_NOTICES.md
 
 [Languages]

@@ -95,6 +95,13 @@ def main() -> None:
 
     setup_logging()
     install_excepthook()
+    if sys.platform == "win32":  # own taskbar entry and icon, not python.exe's
+        import ctypes
+
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MinaryHub.KStruct")
+        except (AttributeError, OSError):
+            pass
     if "--version" in sys.argv:
         from kstruct import build_info
 

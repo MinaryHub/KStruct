@@ -89,8 +89,14 @@ exe = EXE(
     name="KStruct",
     console=False,
     disable_windowed_traceback=False,
+    icon=str(ROOT / "packaging" / "windows" / "kstruct.ico") if sys.platform == "win32" else None,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="KStruct")
 
 if sys.platform == "darwin":
-    app = BUNDLE(coll, name="KStruct.app", bundle_identifier="kr.smic.kstruct")
+    app = BUNDLE(
+        coll,
+        name="KStruct.app",
+        icon=str(ROOT / "packaging" / "macos" / "kstruct.icns"),
+        bundle_identifier="kr.smic.kstruct",
+    )
