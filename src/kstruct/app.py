@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import platform
 import sys
 from pathlib import Path
 
@@ -23,7 +24,21 @@ def selftest() -> int:
     result = solve_static(project, mesh, {0: standards.materials()["s235"]})
     peak = float(result.von_mises.max())
     ok = 80 < peak < 200 and abs(result.reactions[0][2] - 2000) < 1e-3
-    print(f"selftest: elements={len(mesh.tets)} peak_vm={peak:.1f} MPa -> {'OK' if ok else 'FAIL'}")
+    # a frozen build for Windows/Linux x86-64 must carry MKL; without it every analysis
+    # silently runs on the 18-55x slower SuperLU
+    from kstruct.fem import pardiso
+
+    wants_mkl = sys.platform in ("win32", "linux") and platform.machine().lower() in (
+        "x86_64",
+        "amd64",
+    )
+    solver = "PARDISO" if pardiso.available() else "SuperLU"
+    if getattr(sys, "frozen", False) and wants_mkl and not pardiso.available():
+        ok = False
+    print(
+        f"selftest: elements={len(mesh.tets)} peak_vm={peak:.1f} MPa solver={solver} "
+        f"-> {'OK' if ok else 'FAIL'}"
+    )
     return 0 if ok else 1
 
 
