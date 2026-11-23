@@ -1,8 +1,8 @@
 ; Inno Setup script: builds KStruct-Setup-<version>.exe from dist\KStruct
-; Build: iscc /DAppVersion=0.3.0 packaging\windows\kstruct.iss
+; Build: iscc /DAppVersion=0.3.1 packaging\windows\kstruct.iss
 
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #define AppVersion "0.3.1"
 #endif
 
 [Setup]
@@ -19,6 +19,8 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+SetupIconFile=kstruct.ico
+UninstallDisplayIcon={app}\KStruct.exe
 LicenseFile=..\..\THIRD_PARTY_NOTICES.md
 
 [Languages]

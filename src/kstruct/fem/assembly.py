@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
-from kstruct.fem import tet10
+from kstruct.fem import pardiso, tet10
 from kstruct.fem.mesh import FEMesh
 from kstruct.model import Material
 
@@ -21,6 +22,22 @@ DIRECT_SOLVER_MAX_DOF = 120_000
 # between a low-rank update and a fresh factorization without timing anything
 REFACTOR_COLUMNS_PER_FILL = 0.25
 AMG_BREAKEVEN = 2.0  # AMG setup is worth about this many preconditioned CG solves
+
+# PARDISO (MKL, Windows/Linux x86-64): measured 18-55x faster factorization than SuperLU
+# (85k-DOF bracket 16.2 s -> 0.9 s, 73k-DOF bolted joint 52 s -> 1.2 s, same answers),
+# so with it the direct path is kept for much larger models (73k DOF peaked at 320 MB;
+# fill grows about as n^(4/3), so 300k DOF stays near 2.3 GB)
+PARDISO_MIN_DOF = 2_000  # below this SuperLU is as fast and starts no threads
+PARDISO_MAX_DOF = 300_000
+# a factor pivot below this fraction of its diagonal entry means K is singular (a part
+# not held): an exact singularity came out at 1.7e-14, a 1e-9 stabilising spring at 5e-10
+PARDISO_PIVOT_TOL = 1e-12
+# refactorization vs low-rank update break-even for PARDISO: a factorization costs about
+# this many (batched) back-substitutions per nonzero-per-column of the factor (73k DOF:
+# 1.2 s factorization, 0.02 s per batched column, 460 nonzeros per column)
+PARDISO_REFACTOR_COLUMNS_PER_FILL = 0.12
+
+log = logging.getLogger(__name__)
 
 Progress = Callable[[float, str], None]
 
@@ -100,6 +117,10 @@ def make_solver(K: sp.csr_matrix, near_null: np.ndarray):
     import warnings
 
     n = K.shape[0]
+    if PARDISO_MIN_DOF <= n <= PARDISO_MAX_DOF and pardiso.available():
+        solve = _pardiso_solver(K)
+        if solve is not None:
+            return solve
     if n <= DIRECT_SOLVER_MAX_DOF:
         with warnings.catch_warnings():
             warnings.simplefilter("error", spla.MatrixRankWarning)
@@ -140,6 +161,34 @@ def make_solver(K: sp.csr_matrix, near_null: np.ndarray):
         return x
 
     solve.breakeven = AMG_BREAKEVEN
+    return solve
+
+
+def _pardiso_solver(K: sp.csr_matrix):
+    """PARDISO factorization of the SPD K, or None to fall back to SuperLU / AMG: a K
+    that is not positive definite (singular, or an indefinite buckling shift) is left
+    to them so that they diagnose it exactly as before."""
+    try:
+        factor = pardiso.factorize(K)
+        df, da = factor.pivots()
+    except pardiso.PardisoError as e:
+        log.info("PARDISO declined (%s): using SuperLU", e)
+        return None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        smallest = float(np.min(df / np.abs(da))) if len(df) else 1.0
+    if not smallest > PARDISO_PIVOT_TOL:
+        factor.free()
+        log.info("PARDISO: relative pivot %.1e, treating K as singular", smallest)
+        return None
+
+    def solve(f: np.ndarray) -> np.ndarray:
+        x = factor.solve(f)
+        if not np.all(np.isfinite(x)):
+            raise SolverError("unstable")
+        return x
+
+    solve.breakeven = PARDISO_REFACTOR_COLUMNS_PER_FILL * factor.nnz_factor / K.shape[0]
+    solve.factor = factor  # keeps the factorization alive as long as the solver
     return solve
 
 

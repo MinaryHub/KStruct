@@ -488,6 +488,22 @@ def _paths() -> dict[str, list]:
     }
 
 
+LOGO_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
+
+
+def app_icon() -> QIcon:
+    """The KStruct logo (window, taskbar, dialogs) from the committed PNG sizes
+    (packaging/make_icons.py renders them from resources/icons/kstruct.svg)."""
+    icons = resources.files("kstruct.resources").joinpath("icons")
+    result = QIcon()
+    for size in LOGO_SIZES:
+        data = icons.joinpath(f"kstruct_{size}.png").read_bytes()
+        pixmap = QPixmap()
+        pixmap.loadFromData(data, "PNG")
+        result.addPixmap(pixmap)
+    return result
+
+
 def icon(name: str, colour: str | None = None, size: int = 20) -> QIcon:
     """A toolbar icon in the theme's text colour (2x pixmap for sharp HiDPI rendering)."""
     scale = 2
