@@ -99,6 +99,15 @@ def open_contact(parent: QWidget | None = None, detail: str = "") -> None:
         )
 
 
+def open_discussion(parent: QWidget | None = None) -> None:
+    """GitHub Discussions: questions, ideas and how-to, as opposed to bug reports."""
+    url = update.links().get("discussions", "")
+    if not url or not open_url(url):
+        QMessageBox.information(
+            parent, tr("문의하기"), tr("브라우저를 열 수 없습니다.\n\n{url}", url=url)
+        )
+
+
 def open_sponsor(parent: QWidget | None = None) -> None:
     url = update.links().get("sponsor", "")
     if not url or not open_url(url):

@@ -78,7 +78,13 @@ from kstruct.report.summary import (
 from kstruct.ui import prefs, steps, theme
 from kstruct.ui.dialogs import AboutDialog, save_bug_report
 from kstruct.ui.help import HelpDialog, topic
-from kstruct.ui.updates import UpdateChecker, UpdateDialog, open_contact, open_sponsor
+from kstruct.ui.updates import (
+    UpdateChecker,
+    UpdateDialog,
+    open_contact,
+    open_discussion,
+    open_sponsor,
+)
 from kstruct.ui.viewer import ModelViewer, ResultField
 from kstruct.ui.worker import Cancelled, JobHandle, run_job
 from kstruct.units import fmt, quantity, system_of
@@ -443,13 +449,26 @@ class MainWindow(QMainWindow):
             "help",
             True,
         )
-        action(
+        # 문의하기: bug reports go to GitHub Issues (version and environment filled in),
+        # questions and ideas to GitHub Discussions
+        self.contact_menu = QMenu(self)
+        self.contact_menu.addAction(tr("오류 신고 (GitHub 이슈)"), lambda: open_contact(self))
+        self.contact_menu.addAction(
+            tr("질문·아이디어 (GitHub 토론)"), lambda: open_discussion(self)
+        )
+        contact = action(
             tr("문의하기"),
-            lambda: open_contact(self),
+            lambda: self.contact_menu.exec(
+                bar.widgetForAction(contact).mapToGlobal(
+                    bar.widgetForAction(contact).rect().bottomLeft()
+                )
+            ),
             "help.contact",
             icon="contact",
             icon_only=True,
         )
+        contact.setMenu(self.contact_menu)
+        bar.widgetForAction(contact).setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         action(tr("문제 보고"), self.report_problem, "help.report", icon="report", icon_only=True)
         action(
             tr("후원하기"), lambda: open_sponsor(self), "help.sponsor", icon="heart", icon_only=True
@@ -465,7 +484,8 @@ class MainWindow(QMainWindow):
         info_menu.addAction(tr("사용 안내"), lambda: HelpDialog("help.mode", self).exec())
         info_menu.addAction(tr("업데이트 확인…"), self.show_update)
         info_menu.addSeparator()
-        info_menu.addAction(tr("문의하기 (GitHub)"), lambda: open_contact(self))
+        info_menu.addAction(tr("오류 신고 (GitHub 이슈)"), lambda: open_contact(self))
+        info_menu.addAction(tr("질문·아이디어 (GitHub 토론)"), lambda: open_discussion(self))
         info_menu.addAction(tr("문제 보고 (로그·프로젝트 묶기)"), self.report_problem)
         info_menu.addAction(tr("후원하기 (GitHub Sponsors)"), lambda: open_sponsor(self))
         info_menu.addSeparator()
