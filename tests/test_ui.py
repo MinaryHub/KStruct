@@ -967,8 +967,9 @@ def test_nonlinear_run_from_the_panel(qtbot):
 
 
 def test_contact_sponsor_and_update_from_the_toolbar(qtbot, monkeypatch, tmp_path):
-    """문의하기 opens a pre-filled GitHub issue, 후원하기 the sponsor page, and an update
-    found at start-up shows the toolbar button whose dialog offers the installer."""
+    """문의하기 offers a pre-filled GitHub issue (bugs) and GitHub Discussions (questions,
+    ideas), 후원하기 opens the sponsor page, and an update found at start-up shows the
+    toolbar button whose dialog offers the installer."""
     from kstruct import update
     from kstruct.ui import updates
 
@@ -977,10 +978,15 @@ def test_contact_sponsor_and_update_from_the_toolbar(qtbot, monkeypatch, tmp_pat
     monkeypatch.setattr(updates, "open_url", lambda url: opened.append(url) or True)
     window = _window(qtbot)
     actions = {a.text(): a for a in window.findChildren(type(window.update_action))}
-    actions["문의하기"].trigger()
+    contact = [a.text() for a in actions["문의하기"].menu().actions()]
+    assert contact == ["오류 신고 (GitHub 이슈)", "질문·아이디어 (GitHub 토론)"]
+    actions["오류 신고 (GitHub 이슈)"].trigger()
+    actions["질문·아이디어 (GitHub 토론)"].trigger()
     actions["후원하기"].trigger()
     assert opened[0].startswith("https://github.com/MinaryHub/KStruct/issues/new?")
-    assert "KStruct" in opened[0] and opened[1] == "https://github.com/sponsors/MinaryHub"
+    assert "KStruct" in opened[0]
+    assert opened[1] == "https://github.com/MinaryHub/KStruct/discussions/new/choose"
+    assert opened[2] == "https://github.com/sponsors/MinaryHub"
 
     release = update.Release(
         "v99.0.0",

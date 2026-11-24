@@ -542,8 +542,8 @@
   },
   "help.contact": {
     "title": "Contact us",
-    "short": "Sends questions, suggestions or bug reports as a GitHub issue (version and environment details are filled in for you).",
-    "detail": "Opens the new issue page of the KStruct repository (GitHub, MinaryHub/KStruct) in your browser. The version and operating system are already filled in, so just describe what you were doing and what happened. You need to sign in with a (free) GitHub account to write an issue, and issues are visible to everyone, so do not include confidential company drawings or figures. If logs and the project file are needed, drag the zip file created with 'Report a problem' into the issue body to attach it (it will be public, so check its contents before uploading)."
+    "short": "Bugs go to GitHub Issues; questions and ideas to GitHub Discussions.",
+    "detail": "<b>Report a bug (GitHub Issues)</b>: opens a new issue for the KStruct repository (MinaryHub/KStruct) in your browser. The version and operating system are already filled in; just describe what you were doing and what happened. If logs or the project file are needed, drag the zip made with 'Report a problem' into the issue text to attach it.<br><br><b>Questions &amp; ideas (GitHub Discussions)</b>: a forum for anything that is not a bug, such as how-to questions, feature ideas or comments on results. You can also read other users' questions and answers.<br><br>Both need a (free) GitHub account and are public, so do not post confidential drawings or figures (attachments are public too; check them before uploading)."
   },
   "help.sponsor": {
     "title": "Sponsor",
